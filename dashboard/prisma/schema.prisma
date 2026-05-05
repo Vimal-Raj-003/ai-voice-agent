@@ -547,3 +547,61 @@ model AgentProfile {
   @@index([isDefault])
   @@map("agent_profiles")
 }
+
+// =============================================================================
+//  OUTBOUNDAI — Contacts / ContactMemory / Appointments
+// =============================================================================
+
+model Contact {
+  id            String   @id @default(cuid())
+  phoneNumber   String   @unique @map("phone_number")
+  name          String?
+  email         String?
+  notes         String?
+  tags          String   @default("[]")
+  totalCalls    Int      @default(0) @map("total_calls")
+  lastCallAt    DateTime? @map("last_call_at")
+  lastOutcome   String?  @map("last_outcome")
+  isBooked      Boolean  @default(false) @map("is_booked")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  memory        ContactMemory[]
+  appointments  Appointment[]
+
+  @@map("contacts")
+}
+
+model ContactMemory {
+  id            String   @id @default(cuid())
+  phoneNumber   String   @map("phone_number")
+  insight       String
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  contact       Contact? @relation(fields: [phoneNumber], references: [phoneNumber], onDelete: Cascade)
+
+  @@index([phoneNumber, createdAt])
+  @@map("contact_memory")
+}
+
+model Appointment {
+  id                String            @id @default(cuid())
+  bookingId         String            @unique @map("booking_id")
+  name              String
+  phoneNumber       String            @map("phone_number")
+  email             String?
+  date              String
+  time              String
+  service           String
+  status            AppointmentStatus @default(BOOKED)
+  calcomBookingUid  String?           @map("calcom_booking_uid")
+  gcalEventId       String?           @map("gcal_event_id")
+  notes             String?
+  createdAt         DateTime          @default(now()) @map("created_at")
+
+  contact           Contact? @relation(fields: [phoneNumber], references: [phoneNumber])
+
+  @@index([date, time])
+  @@index([phoneNumber])
+  @@map("appointments")
+}
