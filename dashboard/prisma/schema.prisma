@@ -605,3 +605,40 @@ model Appointment {
   @@index([phoneNumber])
   @@map("appointments")
 }
+
+// =============================================================================
+//  OUTBOUNDAI — Settings / ErrorLogs / ActiveCalls
+// =============================================================================
+
+model Setting {
+  key         String   @id
+  value       String
+  isSensitive Boolean  @default(false) @map("is_sensitive")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("settings")
+}
+
+model ErrorLog {
+  id        String     @id @default(cuid())
+  source    String
+  level     ErrorLevel @default(ERROR)
+  message   String
+  detail    String?
+  timestamp DateTime   @default(now())
+
+  @@index([timestamp])
+  @@index([source, level])
+  @@map("error_logs")
+}
+
+model ActiveCall {
+  roomId       String   @id @map("room_id")
+  phoneNumber  String?  @map("phone_number")
+  callerName   String?  @map("caller_name")
+  status       String   @default("ringing")
+  startedAt    DateTime @default(now()) @map("started_at")
+  lastUpdated  DateTime @default(now()) @updatedAt @map("last_updated")
+
+  @@map("active_calls")
+}
