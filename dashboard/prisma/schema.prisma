@@ -1,0 +1,488 @@
+// =============================================================================
+//  Rapid X AI — Voice Agent Platform (Vapi-style data model)
+//  Database: Neon Postgres
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+// =============================================================================
+//  ENUMS
+// =============================================================================
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CallStatus {
+  QUEUED
+  RINGING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  NO_ANSWER
+  BUSY
+  CANCELED
+}
+
+enum EndedReason {
+  CUSTOMER_HANGUP
+  ASSISTANT_HANGUP
+  TRANSFERRED
+  PIPELINE_ERROR
+  SILENCE_TIMEOUT
+  EXCEEDED_MAX_DURATION
+  VOICEMAIL
+  NO_ANSWER
+  BUSY
+  REJECTED
+  UNKNOWN
+}
+
+enum TranscriptRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL
+}
+
+enum LlmProvider {
+  OPENAI
+  GROQ
+  OPENROUTER
+  ANTHROPIC
+  CUSTOM
+}
+
+enum TtsProvider {
+  OPENAI
+  DEEPGRAM
+  SARVAM
+  CARTESIA
+  ELEVENLABS
+}
+
+enum SttProvider {
+  DEEPGRAM
+  OPENAI
+  SARVAM
+}
+
+enum TrunkType {
+  INBOUND
+  OUTBOUND
+}
+
+enum CampaignStatus {
+  DRAFT
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+}
+
+enum CampaignTargetStatus {
+  PENDING
+  DISPATCHED
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+enum WebhookEvent {
+  CALL_STARTED
+  CALL_ENDED
+  CALL_FAILED
+  TRANSCRIPT_UPDATE
+  TRANSFER_INITIATED
+}
+
+// =============================================================================
+//  TENANCY (Org / User / API Key)
+// =============================================================================
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users        User[]
+  assistants   Assistant[]
+  phoneNumbers PhoneNumber[]
+  sipTrunks    SipTrunk[]
+  calls        Call[]
+  campaigns    Campaign[]
+  tools        Tool[]
+  apiKeys      ApiKey[]
+  webhooks     Webhook[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  name           String?
+  passwordHash   String?
+  organizationId String
+  role           String   @default("member") // owner | admin | member
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+model ApiKey {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String
+  keyHash        String    @unique
+  prefix         String // first 8 chars for display ("rk_xxxxxx...")
+  lastUsedAt     DateTime?
+  revokedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("api_keys")
+}
+
+// =============================================================================
+//  ASSISTANT  (the AI voice agent — equivalent of Vapi "Assistant")
+// =============================================================================
+
+model Assistant {
+  id             String  @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+
+  // Persona
+  systemPrompt   String  @db.Text
+  firstMessage   String? @db.Text
+  endCallMessage String? @db.Text
+
+  // LLM
+  llmProvider LlmProvider @default(OPENAI)
+  llmModel    String      @default("gpt-4o-mini")
+  temperature Float       @default(0.7)
+  maxTokens   Int?
+
+  // STT
+  sttProvider SttProvider @default(DEEPGRAM)
+  sttModel    String      @default("nova-2")
+  sttLanguage String      @default("en")
+
+  // TTS
+  ttsProvider TtsProvider @default(DEEPGRAM)
+  ttsModel    String?
+  voiceId     String?
+
+  // Behavior
+  silenceTimeoutSeconds Int     @default(30)
+  maxDurationSeconds    Int     @default(1800)
+  endCallPhrases        String[] @default([])
+  backgroundSound       String?
+
+  // Recording / Privacy
+  recordingEnabled  Boolean @default(true)
+  hipaaEnabled      Boolean @default(false)
+
+  // Misc
+  metadata Json?
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  phoneNumbers  PhoneNumber[]
+  calls         Call[]
+  campaigns     Campaign[]
+  tools         AssistantTool[]
+
+  @@index([organizationId])
+  @@map("assistants")
+}
+
+// =============================================================================
+//  TELEPHONY  (SIP Trunks + Phone Numbers)
+// =============================================================================
+
+model SipTrunk {
+  id             String    @id @default(cuid())
+  organizationId String
+  provider       String    @default("vobiz") // vobiz | twilio | telnyx
+  type           TrunkType
+  name           String
+  livekitTrunkId String    @unique // LiveKit-side trunk identifier
+  sipDomain      String?
+  sipUsername    String?
+  sipPassword    String? // encrypted at rest in production
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  numbers      PhoneNumber[]
+
+  @@index([organizationId])
+  @@map("sip_trunks")
+}
+
+model PhoneNumber {
+  id             String    @id @default(cuid())
+  organizationId String
+  number         String    @unique // E.164 format e.g. +918065480036
+  provider       String    @default("vobiz")
+  trunkId        String?
+  assistantId    String? // assistant that picks up inbound calls on this number
+  label          String?
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  trunk        SipTrunk?    @relation(fields: [trunkId], references: [id], onDelete: SetNull)
+  assistant    Assistant?   @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+  calls        Call[]
+
+  @@index([organizationId])
+  @@index([assistantId])
+  @@map("phone_numbers")
+}
+
+// =============================================================================
+//  CALL  (one row per attempted/completed call)
+// =============================================================================
+
+model Call {
+  id             String        @id @default(cuid())
+  organizationId String
+  assistantId    String?
+  phoneNumberId  String? // owned phone number this call routed through
+  campaignId     String?
+
+  // Telephony identifiers
+  livekitRoomName String? @unique
+  livekitCallId   String? @unique
+  sipCallId       String? @unique
+  dispatchId      String?
+
+  // Parties
+  fromNumber String
+  toNumber   String
+  direction  CallDirection
+  status     CallStatus    @default(QUEUED)
+  endedReason EndedReason?
+
+  // Timing
+  startedAt  DateTime?
+  answeredAt DateTime?
+  endedAt    DateTime?
+  durationSeconds Int?
+
+  // Cost ($ — six decimals)
+  costUsd Decimal? @db.Decimal(10, 6)
+
+  // Recording / artifacts
+  recordingUrl String?
+  summary      String? @db.Text
+
+  // Override snapshot (what config the call actually ran with, captured at dispatch time)
+  modelProviderUsed String?
+  voiceUsed         String?
+  promptOverride    String? @db.Text
+
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistant    Assistant?   @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+  phoneNumber  PhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  transcript   TranscriptMessage[]
+  toolInvocations ToolInvocation[]
+  webhookDeliveries WebhookDelivery[]
+
+  @@index([organizationId, createdAt])
+  @@index([assistantId])
+  @@index([campaignId])
+  @@index([status])
+  @@index([toNumber])
+  @@map("calls")
+}
+
+model TranscriptMessage {
+  id        String         @id @default(cuid())
+  callId    String
+  role      TranscriptRole
+  content   String         @db.Text
+  timestamp DateTime       @default(now())
+  // Optional rich data (e.g. tool args/results)
+  data      Json?
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId, timestamp])
+  @@map("transcript_messages")
+}
+
+// =============================================================================
+//  CAMPAIGN  (bulk dialer)
+// =============================================================================
+
+model Campaign {
+  id             String         @id @default(cuid())
+  organizationId String
+  assistantId    String?
+  name           String
+  prompt         String?        @db.Text
+  status         CampaignStatus @default(DRAFT)
+
+  totalTargets       Int @default(0)
+  dispatchedTargets  Int @default(0)
+  failedTargets      Int @default(0)
+  completedTargets   Int @default(0)
+
+  startedAt DateTime?
+  endedAt   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistant    Assistant?       @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+  targets      CampaignTarget[]
+  calls        Call[]
+
+  @@index([organizationId])
+  @@map("campaigns")
+}
+
+model CampaignTarget {
+  id          String               @id @default(cuid())
+  campaignId  String
+  phoneNumber String
+  status      CampaignTargetStatus @default(PENDING)
+  callId      String?
+  attempts    Int                  @default(0)
+  lastError   String?              @db.Text
+  variables   Json? // per-target template vars
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, status])
+  @@map("campaign_targets")
+}
+
+// =============================================================================
+//  TOOLS (function calling)
+// =============================================================================
+
+model Tool {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  // OpenAI-style function schema (JSON Schema)
+  parameters     Json
+  // Where to send the call — webhook URL OR built-in handler name (e.g. "transfer_call")
+  serverUrl      String?
+  serverSecret   String?
+  builtin        String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistants   AssistantTool[]
+  invocations  ToolInvocation[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("tools")
+}
+
+model AssistantTool {
+  assistantId String
+  toolId      String
+  assistant   Assistant @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  tool        Tool      @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@id([assistantId, toolId])
+  @@map("assistant_tools")
+}
+
+model ToolInvocation {
+  id        String   @id @default(cuid())
+  callId    String
+  toolId    String?
+  toolName  String
+  arguments Json?
+  result    Json?
+  error     String?  @db.Text
+  durationMs Int?
+  createdAt DateTime @default(now())
+
+  call Call  @relation(fields: [callId], references: [id], onDelete: Cascade)
+  tool Tool? @relation(fields: [toolId], references: [id], onDelete: SetNull)
+
+  @@index([callId])
+  @@map("tool_invocations")
+}
+
+// =============================================================================
+//  WEBHOOKS (server events to external systems)
+// =============================================================================
+
+model Webhook {
+  id             String        @id @default(cuid())
+  organizationId String
+  url            String
+  secret         String?
+  events         WebhookEvent[]
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
+
+  @@index([organizationId])
+  @@map("webhooks")
+}
+
+model WebhookDelivery {
+  id           String       @id @default(cuid())
+  webhookId    String
+  callId       String?
+  event        WebhookEvent
+  payload      Json
+  responseCode Int?
+  responseBody String?      @db.Text
+  attempts     Int          @default(1)
+  succeededAt  DateTime?
+  createdAt    DateTime     @default(now())
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  call    Call?   @relation(fields: [callId], references: [id], onDelete: SetNull)
+
+  @@index([webhookId, createdAt])
+  @@map("webhook_deliveries")
+}
