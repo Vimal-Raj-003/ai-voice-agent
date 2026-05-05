@@ -105,6 +105,38 @@ enum WebhookEvent {
   TRANSFER_INITIATED
 }
 
+enum CallOutcome {
+  BOOKED
+  NOT_INTERESTED
+  WRONG_NUMBER
+  VOICEMAIL
+  NO_ANSWER
+  CALLBACK_REQUESTED
+  TRANSFERRED
+  FAILED
+  COMPLETED
+}
+
+enum AppointmentStatus {
+  BOOKED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum ScheduleType {
+  ONCE
+  DAILY
+  WEEKDAYS
+}
+
+enum ErrorLevel {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+}
+
 // =============================================================================
 //  TENANCY (Org / User / API Key)
 // =============================================================================
