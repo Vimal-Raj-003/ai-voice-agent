@@ -335,6 +335,15 @@ model Call {
   recordingUrl String?
   summary      String? @db.Text
 
+  // OutboundAI: outcome / sentiment / notes
+  outcome             CallOutcome?
+  reason              String?
+  sentiment           String?
+  interruptCount      Int          @default(0) @map("interrupt_count")
+  wasBooked           Boolean      @default(false) @map("was_booked")
+  notes               String?
+  callerHistoryLoaded Boolean      @default(false) @map("caller_history_loaded")
+
   // Override snapshot (what config the call actually ran with, captured at dispatch time)
   modelProviderUsed String?
   voiceUsed         String?
@@ -357,6 +366,7 @@ model Call {
   @@index([campaignId])
   @@index([status])
   @@index([toNumber])
+  @@index([toNumber, createdAt])
   @@map("calls")
 }
 
