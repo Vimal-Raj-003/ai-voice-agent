@@ -528,3 +528,22 @@ model WebhookDelivery {
   @@index([webhookId, createdAt])
   @@map("webhook_deliveries")
 }
+
+// =============================================================================
+//  OUTBOUNDAI — AgentProfile
+// =============================================================================
+
+model AgentProfile {
+  id            String   @id @default(cuid())
+  name          String
+  voice         String   @default("Aoede")
+  model         String   @default("gemini-3.1-flash-live-preview")
+  systemPrompt  String?  @map("system_prompt")
+  enabledTools  String   @default("[]") @map("enabled_tools")
+  isDefault     Boolean  @default(false) @map("is_default")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([isDefault])
+  @@map("agent_profiles")
+}
