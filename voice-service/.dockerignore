@@ -1,0 +1,11 @@
+.venv
+.venv-check
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache
+tests/
+.env
+.git
+*.log
+configs/[!d]*.json
