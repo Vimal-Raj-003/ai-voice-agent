@@ -28,6 +28,11 @@ class AppointmentTools(llm.ToolContext):
         self._closed_reason: str | None = None
         self.interrupt_count      = 0
         self._bg_tasks: set = set()
+        self._last_booking_id: str | None = None
+        self._last_booking_time: str | None = None
+        self._last_booking_name: str | None = None
+        self._last_booking_service: str | None = None
+        self._last_booking_notes: str | None = None
 
     def build_tool_list(self, enabled: list[str]) -> list:
         all_methods = [
@@ -58,6 +63,10 @@ class AppointmentTools(llm.ToolContext):
         """Book an appointment after the lead has verbally confirmed all details."""
         try:
             booking_id = await db.insert_appointment(name, phone, date, time, service)
+            self._last_booking_id = booking_id
+            self._last_booking_time = f"{date}T{time}:00+05:30"
+            self._last_booking_name = name
+            self._last_booking_service = service
             return f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} for {service}."
         except Exception as exc:
             logger.error("book_appointment_failed", error=str(exc))
@@ -225,7 +234,12 @@ class AppointmentTools(llm.ToolContext):
             data = resp.json()
             if resp.status_code not in (200, 201):
                 return f"Cal.com booking failed: {data.get('message') or resp.text[:120]}"
-            return f"Cal.com booked. UID: {data.get('uid', '')}"
+            uid = data.get("uid", "")
+            self._last_booking_id = uid or self._last_booking_id
+            self._last_booking_time = local_dt.isoformat()
+            self._last_booking_name = name
+            self._last_booking_notes = notes
+            return f"Cal.com booked. UID: {uid}"
         except Exception as exc:
             logger.error("calcom_book_failed", error=str(exc))
             return f"Cal.com booking failed: {exc}"
