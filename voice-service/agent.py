@@ -16,7 +16,7 @@ def _certifi_ssl(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
     return _orig_ssl(purpose, **kwargs)
 ssl.create_default_context = _certifi_ssl  # type: ignore[assignment]
 
-import asyncio  # noqa: E402, F401
+import asyncio  # noqa: E402
 import json  # noqa: E402
 import re  # noqa: E402
 import time  # noqa: E402
@@ -148,7 +148,12 @@ def _build_session(tools: list, system_prompt: str, profile: dict | None = None)
                 sliding_window=_gt.SlidingWindow(target_tokens=12800),
             )
         except Exception as cfg_err:
-            logger.warning("silence_prevention_config_failed", error=str(cfg_err))
+            logger.error("silence_prevention_config_failed", error=str(cfg_err))
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_exception(cfg_err)
+            except Exception:
+                pass
             realtime_input_cfg = None
             session_resumption_cfg = None
             ctx_compression_cfg = None
@@ -203,6 +208,12 @@ def _build_session(tools: list, system_prompt: str, profile: dict | None = None)
     elif _openai_plugin is not None:
         tts = _openai_plugin.TTS(model="tts-1", voice=profile.get("voice", "alloy"))
 
+    if llm_obj is None:
+        raise RuntimeError(
+            "No LLM plugin available. Install livekit-plugins-openai or enable Gemini realtime "
+            "(USE_GEMINI_REALTIME=true with GOOGLE_API_KEY)."
+        )
+
     return AgentSession(stt=stt, llm=llm_obj, tts=tts, tools=tools)
 
 
@@ -212,8 +223,10 @@ async def _load_caller_history(phone: str) -> str:
     if phone in ("unknown", "demo"):
         return ""
     try:
-        memories = await db.get_contact_memory(phone)
-        calls = await db.get_calls_by_phone(phone)
+        memories, calls = await asyncio.gather(
+            db.get_contact_memory(phone),
+            db.get_calls_by_phone(phone),
+        )
         if not memories and not calls:
             return ""
         bits: list[str] = []
@@ -351,9 +364,17 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
     duration = int(time.time() - agent_tools._call_start_time)
     transcript = ""
     try:
-        msgs = session.history.items if hasattr(session, "history") else []
-        if callable(msgs):
-            msgs = msgs()
+        chat_ctx = getattr(session, "chat_ctx", None)
+        if chat_ctx is None:
+            chat_ctx = getattr(session, "history", None)
+        msgs = []
+        if chat_ctx is not None:
+            items = getattr(chat_ctx, "items", None)
+            if items is None:
+                items = getattr(chat_ctx, "messages", None)
+            if callable(items):
+                items = items()
+            msgs = items or []
         lines = []
         for m in msgs:
             role = getattr(m, "role", None)
@@ -380,6 +401,10 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
         except Exception as exc:
             logger.warning("sentiment_failed", error=str(exc))
 
+    # Pipeline-mode cost estimate (per minute):
+    #   STT @ $0.002 + TTS @ $0.006  (sums via duration/60 terms)
+    #   LLM input @ $0.003 / 1k chars + LLM output @ $0.0001 / 4k chars
+    # NOTE: For Gemini Live realtime mode, this overestimates — Gemini Live is a single priced unit. TODO: differentiate.
     cost_usd = round(
         (duration / 60) * 0.002 + (duration / 60) * 0.006
         + (len(transcript) / 1000) * 0.003 + (len(transcript) / 4000) * 0.0001,
