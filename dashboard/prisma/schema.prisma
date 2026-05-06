@@ -402,6 +402,12 @@ model Campaign {
   failedTargets      Int @default(0)
   completedTargets   Int @default(0)
 
+  scheduleType      ScheduleType?
+  scheduleTime      String?  // "HH:MM" 24h IST
+  callDelaySeconds  Int      @default(3)
+  agentProfileId    String?
+  lastRunAt         DateTime?
+
   startedAt DateTime?
   endedAt   DateTime?
   createdAt DateTime  @default(now())
@@ -422,6 +428,9 @@ model CampaignTarget {
   phoneNumber String
   status      CampaignTargetStatus @default(PENDING)
   callId      String?
+  leadName     String?
+  dispatchId   String?
+  dispatchedAt DateTime?
   attempts    Int                  @default(0)
   lastError   String?              @db.Text
   variables   Json? // per-target template vars
