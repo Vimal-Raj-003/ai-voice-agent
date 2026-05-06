@@ -226,21 +226,25 @@ def _ist():
 
 async def _run_campaign_internal(campaign_id: str) -> None:
     pool = await db.get_pool()
-    row = await pool.fetchrow("SELECT * FROM campaigns WHERE id = $1", campaign_id)
-    if not row or row["status"] not in ("active", "scheduled"):
-        return
-    targets = await pool.fetch(
-        """SELECT * FROM campaign_targets WHERE campaign_id = $1 AND status = 'PENDING'::"CampaignTargetStatus" """,
+    row = await pool.fetchrow(
+        'SELECT id, status, "callDelaySeconds", "agentProfileId" FROM campaigns WHERE id = $1',
         campaign_id,
     )
-    delay = float(row.get("call_delay_seconds") or 3)
-    profile_id = row.get("agent_profile_id")
+    if not row or row["status"] not in ("RUNNING", "DRAFT"):
+        return
+    targets = await pool.fetch(
+        """SELECT id, "phoneNumber", "leadName" FROM campaign_targets
+            WHERE "campaignId" = $1 AND status = 'PENDING'::"CampaignTargetStatus" """,
+        campaign_id,
+    )
+    delay = float(row["callDelaySeconds"] or 3)
+    profile_id = row["agentProfileId"]
     dispatched = 0
     failed = 0
     lk = _lk_client()
     try:
         for t in targets:
-            phone = (t.get("phone_number") or "").strip()
+            phone = (t["phoneNumber"] or "").strip()
             if not phone.startswith("+"):
                 failed += 1
                 continue
@@ -251,16 +255,18 @@ async def _run_campaign_internal(campaign_id: str) -> None:
                         agent_name="voice-agent",
                         room=room,
                         metadata=json.dumps({
-                            "phone_number": phone, "lead_name": t.get("lead_name"),
+                            "phone_number": phone, "lead_name": t["leadName"],
                             "agent_profile_id": profile_id, "campaign_id": campaign_id,
                         }),
                     ),
                 )
                 await pool.execute(
                     """UPDATE campaign_targets
-                       SET status = 'DISPATCHED'::"CampaignTargetStatus",
-                           dispatched_at = now(), dispatch_id = $1
-                       WHERE id = $2""",
+                          SET status = 'DISPATCHED'::"CampaignTargetStatus",
+                              "dispatchedAt" = now(),
+                              "dispatchId" = $1,
+                              "updatedAt" = now()
+                        WHERE id = $2""",
                     d.id, t["id"],
                 )
                 dispatched += 1
@@ -269,8 +275,10 @@ async def _run_campaign_internal(campaign_id: str) -> None:
                 logger.warning("campaign_target_failed", error=str(exc), phone=phone)
                 await pool.execute(
                     """UPDATE campaign_targets
-                       SET status = 'FAILED'::"CampaignTargetStatus", error_message = $1
-                       WHERE id = $2""",
+                          SET status = 'FAILED'::"CampaignTargetStatus",
+                              "lastError" = $1,
+                              "updatedAt" = now()
+                        WHERE id = $2""",
                     str(exc), t["id"],
                 )
                 failed += 1
@@ -278,11 +286,16 @@ async def _run_campaign_internal(campaign_id: str) -> None:
         await lk.aclose()
 
     await pool.execute(
-        """UPDATE campaigns SET last_run_at = now(),
-                                total_dispatched = total_dispatched + $1,
-                                total_failed     = total_failed + $2,
-                                status = CASE WHEN schedule_type = 'ONCE'::"ScheduleType" THEN 'completed' ELSE 'active' END
-           WHERE id = $3""",
+        """UPDATE campaigns
+              SET "lastRunAt" = now(),
+                  "dispatchedTargets" = "dispatchedTargets" + $1,
+                  "failedTargets"     = "failedTargets" + $2,
+                  status = CASE WHEN "scheduleType" = 'ONCE'::"ScheduleType"
+                                THEN 'COMPLETED'::"CampaignStatus"
+                                ELSE 'RUNNING'::"CampaignStatus"
+                           END,
+                  "updatedAt" = now()
+            WHERE id = $3""",
         dispatched, failed, campaign_id,
     )
 
@@ -294,13 +307,14 @@ async def _reload_scheduled_campaigns() -> None:
     _scheduler.remove_all_jobs()
     pool = await db.get_pool()
     rows = await pool.fetch(
-        """SELECT id, schedule_type, schedule_time FROM campaigns
-           WHERE status = 'active' AND schedule_type IN ('DAILY'::"ScheduleType", 'WEEKDAYS'::"ScheduleType")""",
+        """SELECT id, "scheduleType", "scheduleTime" FROM campaigns
+            WHERE status = 'RUNNING'::"CampaignStatus"
+              AND "scheduleType" IN ('DAILY'::"ScheduleType", 'WEEKDAYS'::"ScheduleType")""",
     )
     for r in rows:
         try:
-            hh, mm = (r["schedule_time"] or "09:00").split(":")
-            day = "mon-fri" if r["schedule_type"] == "WEEKDAYS" else "*"
+            hh, mm = (r["scheduleTime"] or "09:00").split(":")
+            day = "mon-fri" if r["scheduleType"] == "WEEKDAYS" else "*"
             _scheduler.add_job(
                 _run_campaign_internal,
                 CronTrigger(day_of_week=day, hour=int(hh), minute=int(mm), timezone=_ist()),
@@ -406,8 +420,8 @@ async def livekit_webhook(request: Request) -> dict:
             if room and file_url:
                 pool = await db.get_pool()
                 await pool.execute(
-                    """UPDATE calls SET recording_url = $1, updated_at = now()
-                       WHERE livekit_room_name = $2""",
+                    """UPDATE calls SET "recordingUrl" = $1, "updatedAt" = now()
+                       WHERE "livekitRoomName" = $2""",
                     file_url, room,
                 )
         return {"ok": True}
