@@ -109,3 +109,98 @@ def is_rate_limited(phone: str) -> bool:
         return True
     _call_timestamps[phone].append(now)
     return False
+
+
+# ── Session factory ──────────────────────────────────────────────────────────
+
+def _build_session(tools: list, system_prompt: str, profile: dict | None = None) -> AgentSession:
+    """
+    Build AgentSession with Gemini Live (default) or pipeline fallback.
+
+    Silence-prevention config (mandatory for Gemini Live):
+    1. SessionResumptionConfig(transparent=True) → auto-reconnect after timeout
+    2. ContextWindowCompressionConfig → sliding window prevents token-limit freeze
+    3. RealtimeInputConfig(END_SENSITIVITY_LOW) → 2s silence threshold
+
+    EndSensitivity MUST use full string form: END_SENSITIVITY_LOW (not .LOW).
+    """
+    profile = profile or {}
+    gemini_model = profile.get("model") or os.getenv("GEMINI_MODEL", config.GEMINI_MODEL)
+    gemini_voice = profile.get("voice") or os.getenv("GEMINI_TTS_VOICE", config.GEMINI_TTS_VOICE)
+    use_realtime = config.USE_GEMINI_REALTIME
+
+    RealtimeClass = _google_realtime or (_google_beta_realtime if use_realtime else None)
+
+    if use_realtime and RealtimeClass is not None:
+        logger.info("session_mode_realtime", model=gemini_model, voice=gemini_voice)
+        try:
+            from google.genai import types as _gt
+            realtime_input_cfg = _gt.RealtimeInputConfig(
+                automatic_activity_detection=_gt.AutomaticActivityDetection(
+                    end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_LOW,
+                    silence_duration_ms=2000,
+                    prefix_padding_ms=200,
+                ),
+            )
+            session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
+            ctx_compression_cfg = _gt.ContextWindowCompressionConfig(
+                trigger_tokens=25600,
+                sliding_window=_gt.SlidingWindow(target_tokens=12800),
+            )
+        except Exception as cfg_err:
+            logger.warning("silence_prevention_config_failed", error=str(cfg_err))
+            realtime_input_cfg = None
+            session_resumption_cfg = None
+            ctx_compression_cfg = None
+
+        kwargs: dict[str, Any] = dict(
+            model=gemini_model,
+            voice=gemini_voice,
+            instructions=system_prompt,
+        )
+        if realtime_input_cfg is not None:
+            kwargs["realtime_input_config"]      = realtime_input_cfg
+            kwargs["session_resumption"]         = session_resumption_cfg
+            kwargs["context_window_compression"] = ctx_compression_cfg
+
+        return AgentSession(llm=RealtimeClass(**kwargs), tools=tools)
+
+    # ── Pipeline fallback (Deepgram STT → OpenAI/Groq/Claude LLM → Sarvam/ElevenLabs/Cartesia TTS)
+    logger.info("session_mode_pipeline")
+
+    stt = None
+    if _deepgram_stt is not None:
+        stt = _deepgram_stt(model=config.STT_MODEL, language=config.STT_LANGUAGE)
+    elif _sarvam is not None:
+        stt = _sarvam.STT(language="unknown", model="saaras:v3", mode="translate", flush_signal=True, sample_rate=16000)
+
+    llm_obj = None
+    if _openai_plugin is not None:
+        llm_provider = (profile.get("llm_provider") or config.DEFAULT_LLM_PROVIDER).lower()
+        if llm_provider == "groq":
+            llm_obj = _openai_plugin.LLM.with_groq(model=config.GROQ_MODEL, max_completion_tokens=120)
+        elif llm_provider == "claude":
+            llm_obj = _openai_plugin.LLM(
+                model=os.getenv("ANTHROPIC_MODEL", "claude-haiku-3-5-latest"),
+                base_url="https://api.anthropic.com/v1/",
+                api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+                max_completion_tokens=120,
+            )
+        else:
+            llm_obj = _openai_plugin.LLM(model=config.DEFAULT_LLM_MODEL, max_completion_tokens=120)
+
+    tts = None
+    tts_provider = (profile.get("tts_provider") or config.DEFAULT_TTS_PROVIDER).lower()
+    if tts_provider == "sarvam" and _sarvam is not None:
+        tts = _sarvam.TTS(target_language_code=config.SARVAM_LANGUAGE, model=config.SARVAM_MODEL,
+                          speaker=profile.get("voice", "kavya"), speech_sample_rate=24000)
+    elif tts_provider == "elevenlabs" and _elevenlabs is not None:
+        tts = _elevenlabs.TTS(model="eleven_turbo_v2_5", voice_id=profile.get("voice", "21m00Tcm4TlvDq8ikWAM"))
+    elif tts_provider == "cartesia" and _cartesia is not None:
+        tts = _cartesia.TTS(model=config.CARTESIA_MODEL, voice=profile.get("voice", config.CARTESIA_VOICE))
+    elif _google_tts is not None:
+        tts = _google_tts()
+    elif _openai_plugin is not None:
+        tts = _openai_plugin.TTS(model="tts-1", voice=profile.get("voice", "alloy"))
+
+    return AgentSession(stt=stt, llm=llm_obj, tts=tts, tools=tools)
