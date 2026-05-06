@@ -218,6 +218,7 @@ async def record_call_metric(request: Request) -> dict:
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
 _scheduler: AsyncIOScheduler | None = None
+_bg_tasks: set[asyncio.Task] = set()
 
 
 def _ist():
@@ -342,7 +343,9 @@ async def _stop_scheduler() -> None:
 
 @app.post("/api/campaigns/{campaign_id}/run-now", dependencies=[Depends(require_token)])
 async def campaign_run_now(campaign_id: str) -> dict:
-    asyncio.create_task(_run_campaign_internal(campaign_id))
+    task = asyncio.create_task(_run_campaign_internal(campaign_id))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
     return {"status": "started", "campaign_id": campaign_id}
 
 

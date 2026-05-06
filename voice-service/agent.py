@@ -21,7 +21,6 @@ import json  # noqa: E402
 import re  # noqa: E402
 import time  # noqa: E402
 from collections import defaultdict  # noqa: E402
-from datetime import datetime  # noqa: E402
 
 from dotenv import load_dotenv  # noqa: E402
 from livekit import agents, api  # noqa: E402, F401
@@ -38,6 +37,7 @@ from livekit.plugins import noise_cancellation, silero  # noqa: E402, F401
 
 import config  # noqa: E402
 import db  # noqa: E402
+import notify  # noqa: E402
 from language_presets import LANGUAGE_PRESETS  # noqa: E402, F401
 from observability import get_logger, init_observability  # noqa: E402
 from prompts import build_prompt, count_tokens  # noqa: E402
@@ -234,8 +234,9 @@ async def _load_caller_history(phone: str) -> str:
             bits.append("Remembered notes: " + " | ".join(m["insight"] for m in memories[:5]))
         if calls:
             last = calls[0]
+            last_at = last.get("createdAt") or last.get("created_at")
             bits.append(
-                f"Last call ({(last['created_at'] or datetime.utcnow()).date().isoformat() if last.get('created_at') else 'recently'}): "
+                f"Last call ({last_at.date().isoformat() if last_at else 'recently'}): "
                 f"{last.get('outcome', '?')} — {last.get('reason', '')}"
             )
         return "\n".join(bits)
@@ -401,6 +402,11 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
         except Exception as exc:
             logger.warning("sentiment_failed", error=str(exc))
 
+    # Constrain sentiment to known enum values; null otherwise to keep DB clean.
+    if sentiment is not None:
+        s = sentiment.strip().lower()
+        sentiment = s if s in ("positive", "neutral", "negative", "frustrated") else None
+
     # Pipeline-mode cost estimate (per minute):
     #   STT @ $0.002 + TTS @ $0.006  (sums via duration/60 terms)
     #   LLM input @ $0.003 / 1k chars + LLM output @ $0.0001 / 4k chars
@@ -415,6 +421,7 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
     reason = agent_tools._closed_reason or "session ended"
     was_booked = outcome == "BOOKED"
 
+    log_call_ok = False
     try:
         call_id = await db.log_call(
             phone_number=phone, lead_name=name or agent_tools.lead_name,
@@ -424,6 +431,7 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
             interrupt_count=getattr(agent_tools, "interrupt_count", 0),
             was_booked=was_booked, transcript=transcript,
         )
+        log_call_ok = True
         logger.info("call_logged", call_id=call_id, duration=duration, outcome=outcome)
     except Exception as exc:
         logger.error("log_call_failed", error=str(exc))
@@ -431,12 +439,39 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
 
     await db.remove_active_call(ctx.room.name)
 
-    # Fire optional webhooks (n8n etc) — Phase 5 will fully wire notify.py
+    # ── Booking-aware notifications (sync notify.py helpers via to_thread) ────
+    if log_call_ok:
+        caller_name = name or agent_tools.lead_name or ""
+        try:
+            if was_booked:
+                booking_id = getattr(agent_tools, "_last_booking_id", "") or ""
+                booking_time_iso = getattr(agent_tools, "_last_booking_time", "") or ""
+                tts_voice = (profile.get("voice") if isinstance(profile, dict) else "") or ""
+                await asyncio.to_thread(
+                    notify.notify_booking_confirmed,
+                    caller_name, phone, booking_time_iso, booking_id, reason, tts_voice,
+                )
+                booking_webhook = os.environ.get("BOOKING_WEBHOOK_URL", "")
+                if booking_webhook:
+                    await notify.send_webhook(booking_webhook, "booking_confirmed", {
+                        "phone": phone, "lead_name": caller_name,
+                        "booking_id": booking_id, "booking_time": booking_time_iso,
+                        "duration": duration, "outcome": outcome, "reason": reason,
+                        "sentiment": sentiment, "cost_usd": cost_usd,
+                    })
+            else:
+                await asyncio.to_thread(
+                    notify.notify_call_no_booking,
+                    caller_name, phone, reason or "", "", duration,
+                )
+        except Exception as exc:
+            logger.warning("booking_notify_failed", error=str(exc))
+
+    # Fire optional webhooks (n8n etc) — generic call_completed event
     try:
-        from notify import send_webhook
         n8n_url = os.getenv("N8N_WEBHOOK_URL")
         if n8n_url:
-            await send_webhook(n8n_url, "call_completed", {
+            await notify.send_webhook(n8n_url, "call_completed", {
                 "phone": phone, "lead_name": name or agent_tools.lead_name,
                 "duration": duration, "outcome": outcome, "reason": reason,
                 "sentiment": sentiment, "cost_usd": cost_usd, "was_booked": was_booked,
