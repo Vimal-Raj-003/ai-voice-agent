@@ -88,3 +88,29 @@ async def test_send_sms_skip_when_unconfigured(monkeypatch):
     t = AppointmentTools(ctx, "+91111", "Ravi")
     out = await t.send_sms_confirmation("+91111", "test")
     assert "Twilio not configured" in out
+
+
+@pytest.mark.asyncio
+async def test_lookup_contact_returns_no_history(monkeypatch):
+    async def fake_empty(_): return []
+    monkeypatch.setattr("tools.db.get_calls_by_phone", fake_empty)
+    monkeypatch.setattr("tools.db.get_appointments_by_phone", fake_empty)
+    monkeypatch.setattr("tools.db.get_contact_memory", fake_empty)
+    ctx = MagicMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    out = await t.lookup_contact("+91111")
+    assert "First-time contact" in out
+
+
+@pytest.mark.asyncio
+async def test_remember_details_inserts_memory(monkeypatch):
+    inserted: list[str] = []
+    async def fake_add(p, ins): inserted.append(ins)
+    async def fake_get(_): return []
+    monkeypatch.setattr("tools.db.add_contact_memory", fake_add)
+    monkeypatch.setattr("tools.db.get_contact_memory", fake_get)
+    ctx = MagicMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    out = await t.remember_details("Prefers morning")
+    assert "Remembered: Prefers morning" in out
+    assert inserted == ["Prefers morning"]

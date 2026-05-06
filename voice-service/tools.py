@@ -128,11 +128,68 @@ class AppointmentTools(llm.ToolContext):
 
     @llm.function_tool
     async def lookup_contact(self, phone: str) -> str:
-        raise NotImplementedError
+        """Pull caller history + appointments + memory at call start."""
+        try:
+            calls   = await db.get_calls_by_phone(phone)
+            appts   = await db.get_appointments_by_phone(phone)
+            mems    = await db.get_contact_memory(phone)
+            if not calls and not appts and not mems:
+                return f"No history for {phone}. First-time contact."
+            lines = [f"Contact history for {phone}:"]
+            if mems:
+                lines.append(f"\nREMEMBERED ({len(mems)}):")
+                for m in mems[:10]:
+                    lines.append(f"  • {m['insight']}")
+            if calls:
+                lines.append(f"\nCALL HISTORY ({len(calls)}):")
+                for c in calls[:5]:
+                    ts = c.get("created_at") or ""
+                    ts = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)[:16]
+                    lines.append(f"  • {ts} — {c.get('outcome', '?')}: {c.get('reason', '')}")
+            if appts:
+                lines.append(f"\nAPPOINTMENTS ({len(appts)}):")
+                for a in appts[:3]:
+                    lines.append(f"  • {a.get('date')} {a.get('time')} — {a.get('service')} [{a.get('status')}]")
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.error("lookup_contact_failed", error=str(exc))
+            return "Unable to retrieve contact history."
 
     @llm.function_tool
     async def remember_details(self, insight: str) -> str:
-        raise NotImplementedError
+        """Store an insight about the lead. Triggers Gemini Flash compression at ≥5 entries."""
+        if not self.phone_number or self.phone_number == "unknown":
+            return "Cannot remember — no phone number for this call."
+        try:
+            await db.add_contact_memory(self.phone_number, insight)
+            mems = await db.get_contact_memory(self.phone_number)
+            if len(mems) >= 5:
+                asyncio.create_task(self._compress_memories())
+            return f"Remembered: {insight}"
+        except Exception as exc:
+            logger.error("remember_details_failed", error=str(exc))
+            return "Could not save detail."
+
+    async def _compress_memories(self) -> None:
+        try:
+            mems = await db.get_contact_memory(self.phone_number or "")
+            if len(mems) < 5:
+                return
+            api_key = os.getenv("GOOGLE_API_KEY", "")
+            if not api_key:
+                return
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            bullets = "\n".join(f"- {m['insight']}" for m in mems)
+            prompt = f"Compress these notes about a sales contact into 3-5 concise bullets. Keep all key facts.\n\n{bullets}"
+            loop = asyncio.get_event_loop()
+            resp = await loop.run_in_executor(None, lambda: model.generate_content(prompt))
+            txt = (resp.text or "").strip()
+            if txt:
+                await db.compress_contact_memory(self.phone_number or "", txt)
+        except Exception as exc:
+            logger.warning("memory_compression_failed", error=str(exc))
 
     @llm.function_tool
     async def book_calcom(self, name: str, email: str, date: str, start_time: str, notes: str = "") -> str:
