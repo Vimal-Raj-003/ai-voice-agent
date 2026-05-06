@@ -61,8 +61,8 @@ def _slots_calcom(date_str: str) -> list[dict]:
 
 
 def _slots_gcal(date_str: str, calendar_id: str, creds_file: str) -> list[dict]:
-    from googleapiclient.discovery import build
     from google.oauth2 import service_account
+    from googleapiclient.discovery import build
     creds = service_account.Credentials.from_service_account_file(
         creds_file, scopes=["https://www.googleapis.com/auth/calendar.readonly"],
     )
@@ -132,8 +132,8 @@ async def _calcom_book(start_time: str, name: str, phone: str, notes: str) -> di
 
 async def _gcal_book(start_time: str, name: str, phone: str, notes: str, calendar_id: str, creds_file: str) -> dict:
     try:
-        from googleapiclient.discovery import build
         from google.oauth2 import service_account
+        from googleapiclient.discovery import build
         creds = service_account.Credentials.from_service_account_file(
             creds_file, scopes=["https://www.googleapis.com/auth/calendar"],
         )

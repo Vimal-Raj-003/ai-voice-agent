@@ -1,6 +1,6 @@
+import httpx
 import pytest
 import respx
-import httpx
 
 import calendar_tools
 
