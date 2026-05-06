@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import asyncpg
@@ -163,3 +165,268 @@ async def get_logs(level: Optional[str] = None, source: Optional[str] = None, li
 async def clear_errors() -> None:
     pool = await get_pool()
     await pool.execute("DELETE FROM error_logs")
+
+
+# ── Appointments ──────────────────────────────────────────────────────────────
+
+async def insert_appointment(name: str, phone: str, date: str, time: str, service: str) -> str:
+    booking_id = str(uuid.uuid4())[:8].upper()
+    full_id    = str(uuid.uuid4())
+    pool = await get_pool()
+    await pool.execute(
+        """INSERT INTO appointments (id, booking_id, name, phone_number, date, time, service, status, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'BOOKED'::"AppointmentStatus", now())""",
+        full_id, booking_id, name, phone, date, time, service,
+    )
+    return booking_id
+
+
+async def check_slot(date: str, time: str) -> bool:
+    pool = await get_pool()
+    existing = await pool.fetchval(
+        """SELECT id FROM appointments
+           WHERE date = $1 AND time = $2 AND status = 'BOOKED'::"AppointmentStatus" LIMIT 1""",
+        date, time,
+    )
+    return existing is None
+
+
+async def get_next_available(date: str, time: str) -> str:
+    try:
+        dt = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        dt = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    for _ in range(7 * 24):
+        dt += timedelta(hours=1)
+        if 9 <= dt.hour < 18:
+            if await check_slot(dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M")):
+                return f"{dt.strftime('%Y-%m-%d')} at {dt.strftime('%H:%M')}"
+    return "no open slots found in the next 7 days"
+
+
+async def get_all_appointments(date_filter: Optional[str] = None) -> list[dict]:
+    pool = await get_pool()
+    if date_filter:
+        rows = await pool.fetch(
+            "SELECT * FROM appointments WHERE date = $1 ORDER BY date, time", date_filter,
+        )
+    else:
+        rows = await pool.fetch("SELECT * FROM appointments ORDER BY date, time")
+    return [dict(r) for r in rows]
+
+
+async def cancel_appointment(appointment_id: str) -> bool:
+    pool = await get_pool()
+    result = await pool.execute(
+        """UPDATE appointments SET status = 'CANCELLED'::"AppointmentStatus"
+           WHERE id = $1 AND status = 'BOOKED'::"AppointmentStatus" """,
+        appointment_id,
+    )
+    return result.endswith(" 1")
+
+
+async def get_appointments_by_phone(phone: str) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT * FROM appointments WHERE phone_number = $1 ORDER BY date DESC", phone,
+    )
+    return [dict(r) for r in rows]
+
+
+# ── Calls ─────────────────────────────────────────────────────────────────────
+
+async def log_call(
+    phone_number: str, lead_name: Optional[str], outcome: str, reason: str,
+    duration_seconds: int, recording_url: Optional[str] = None, notes: Optional[str] = None,
+    sentiment: Optional[str] = None, cost_usd: Optional[float] = None,
+    interrupt_count: int = 0, was_booked: bool = False, transcript: Optional[str] = None,
+) -> str:
+    """Insert a row into calls. Returns the call id."""
+    pool = await get_pool()
+    call_id = str(uuid.uuid4())
+    await pool.execute(
+        """INSERT INTO calls (
+                id, phone_number, lead_name, outcome, reason, duration_seconds,
+                recording_url, notes, sentiment, cost_usd, interrupt_count, was_booked,
+                transcript, created_at, updated_at, status, direction
+           ) VALUES (
+                $1, $2, $3, $4::"CallOutcome", $5, $6, $7, $8, $9, $10, $11, $12,
+                $13, now(), now(), 'COMPLETED'::"CallStatus", 'OUTBOUND'::"CallDirection"
+           )""",
+        call_id, phone_number, lead_name, outcome.upper(), reason, duration_seconds,
+        recording_url, notes, sentiment, cost_usd, interrupt_count, was_booked, transcript,
+    )
+    # upsert contact
+    await pool.execute(
+        """INSERT INTO contacts (id, phone_number, name, total_calls, last_call_at, last_outcome, is_booked, created_at, updated_at)
+           VALUES ($1, $2, $3, 1, now(), $4, $5, now(), now())
+           ON CONFLICT (phone_number) DO UPDATE SET
+             total_calls = contacts.total_calls + 1,
+             last_call_at = now(),
+             last_outcome = EXCLUDED.last_outcome,
+             is_booked = contacts.is_booked OR EXCLUDED.is_booked,
+             name = COALESCE(contacts.name, EXCLUDED.name),
+             updated_at = now()""",
+        str(uuid.uuid4()), phone_number, lead_name, outcome.upper(), was_booked,
+    )
+    return call_id
+
+
+async def get_all_calls(page: int = 1, limit: int = 20) -> list[dict]:
+    pool = await get_pool()
+    offset = (page - 1) * limit
+    rows = await pool.fetch(
+        "SELECT * FROM calls ORDER BY created_at DESC LIMIT $1 OFFSET $2", limit, offset,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_calls_by_phone(phone: str) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT * FROM calls WHERE phone_number = $1 ORDER BY created_at DESC", phone,
+    )
+    return [dict(r) for r in rows]
+
+
+async def update_call_notes(call_id: str, notes: str) -> bool:
+    pool = await get_pool()
+    result = await pool.execute(
+        "UPDATE calls SET notes = $1, updated_at = now() WHERE id = $2", notes, call_id,
+    )
+    return result.endswith(" 1")
+
+
+# ── Contact Memory ────────────────────────────────────────────────────────────
+
+async def add_contact_memory(phone: str, insight: str) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        """INSERT INTO contact_memory (id, phone_number, insight, created_at)
+           VALUES ($1, $2, $3, now())""",
+        str(uuid.uuid4()), phone, insight[:1000],
+    )
+
+
+async def get_contact_memory(phone: str) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT insight, created_at FROM contact_memory
+           WHERE phone_number = $1 ORDER BY created_at DESC LIMIT 20""",
+        phone,
+    )
+    return [dict(r) for r in rows]
+
+
+async def compress_contact_memory(phone: str, compressed: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM contact_memory WHERE phone_number = $1", phone)
+            await conn.execute(
+                """INSERT INTO contact_memory (id, phone_number, insight, created_at)
+                   VALUES ($1, $2, $3, now())""",
+                str(uuid.uuid4()), phone, compressed[:2000],
+            )
+
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
+
+async def get_stats() -> dict:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT outcome, duration_seconds, was_booked, created_at FROM calls
+           WHERE created_at >= now() - interval '30 days'""",
+    )
+    rows = [dict(r) for r in rows]
+    total = len(rows)
+    booked = sum(1 for r in rows if r.get("was_booked"))
+    not_int = sum(1 for r in rows if r.get("outcome") == "NOT_INTERESTED")
+    durs = [r["duration_seconds"] for r in rows if r.get("duration_seconds")]
+    avg = round(sum(durs) / len(durs), 1) if durs else 0
+    rate = round((booked / total * 100), 1) if total else 0
+    outcomes: dict[str, int] = {}
+    for r in rows:
+        o = r.get("outcome") or "UNKNOWN"
+        outcomes[o] = outcomes.get(o, 0) + 1
+    daily: dict[str, int] = defaultdict(int)
+    for r in rows:
+        ts = r["created_at"].date().isoformat() if r.get("created_at") else None
+        if ts:
+            daily[ts] += 1
+    today = datetime.now(timezone.utc).date()
+    timeline = [
+        {"date": (today - timedelta(days=i)).isoformat(),
+         "count": daily.get((today - timedelta(days=i)).isoformat(), 0)}
+        for i in range(13, -1, -1)
+    ]
+    return {
+        "total_calls": total, "booked": booked, "not_interested": not_int,
+        "avg_duration_seconds": avg, "booking_rate_percent": rate,
+        "outcomes": outcomes, "timeline": timeline,
+    }
+
+
+# ── Active calls ──────────────────────────────────────────────────────────────
+
+async def upsert_active_call(room_id: str, phone: str, caller_name: str = "", status: str = "active") -> None:
+    pool = await get_pool()
+    await pool.execute(
+        """INSERT INTO active_calls (room_id, phone_number, caller_name, status, started_at, last_updated)
+           VALUES ($1, $2, $3, $4, now(), now())
+           ON CONFLICT (room_id) DO UPDATE SET
+             status = EXCLUDED.status, last_updated = now()""",
+        room_id, phone, caller_name, status,
+    )
+
+
+async def remove_active_call(room_id: str) -> None:
+    pool = await get_pool()
+    await pool.execute("DELETE FROM active_calls WHERE room_id = $1", room_id)
+
+
+async def get_active_calls() -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch("SELECT * FROM active_calls ORDER BY started_at DESC")
+    return [dict(r) for r in rows]
+
+
+# ── Real-time transcript ──────────────────────────────────────────────────────
+
+async def insert_transcript_message(call_id: str, room_name: str, role: str, content: str) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        """INSERT INTO transcript_messages (id, call_id, role, content, created_at)
+           VALUES ($1, $2, $3::"TranscriptRole", $4, now())""",
+        str(uuid.uuid4()), call_id, role.upper(), content,
+    )
+
+
+async def get_transcript(call_id: str) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT * FROM transcript_messages WHERE call_id = $1 ORDER BY created_at", call_id,
+    )
+    return [dict(r) for r in rows]
+
+
+# ── Agent profiles ────────────────────────────────────────────────────────────
+
+async def get_all_agent_profiles() -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch("SELECT * FROM agent_profiles ORDER BY is_default DESC, created_at")
+    return [dict(r) for r in rows]
+
+
+async def get_agent_profile(profile_id: str) -> Optional[dict]:
+    pool = await get_pool()
+    row = await pool.fetchrow("SELECT * FROM agent_profiles WHERE id = $1", profile_id)
+    return dict(row) if row else None
+
+
+async def get_default_agent_profile() -> Optional[dict]:
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT * FROM agent_profiles WHERE is_default = true LIMIT 1",
+    )
+    return dict(row) if row else None
