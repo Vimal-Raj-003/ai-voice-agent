@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 
@@ -109,7 +110,21 @@ class AppointmentTools(llm.ToolContext):
 
     @llm.function_tool
     async def send_sms_confirmation(self, phone: str, message: str) -> str:
-        raise NotImplementedError
+        """Twilio SMS confirmation. No-ops if Twilio not configured."""
+        sid   = os.getenv("TWILIO_ACCOUNT_SID", "")
+        token = os.getenv("TWILIO_AUTH_TOKEN", "")
+        frm   = os.getenv("TWILIO_FROM_NUMBER", "")
+        if not (sid and token and frm):
+            return "SMS skipped: Twilio not configured."
+        try:
+            from twilio.rest import Client
+            client = Client(sid, token)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: client.messages.create(body=message, from_=frm, to=phone))
+            return f"SMS sent to {phone}."
+        except Exception as exc:
+            logger.warning("sms_failed", error=str(exc))
+            return "SMS delivery failed, but booking is confirmed."
 
     @llm.function_tool
     async def lookup_contact(self, phone: str) -> str:

@@ -78,3 +78,13 @@ async def test_transfer_to_human_when_unconfigured(monkeypatch):
     t = AppointmentTools(ctx, "+91111", "Ravi")
     out = await t.transfer_to_human("complex query")
     assert "no fallback number" in out
+
+
+@pytest.mark.asyncio
+async def test_send_sms_skip_when_unconfigured(monkeypatch):
+    for v in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER"):
+        monkeypatch.delenv(v, raising=False)
+    ctx = MagicMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    out = await t.send_sms_confirmation("+91111", "test")
+    assert "Twilio not configured" in out
