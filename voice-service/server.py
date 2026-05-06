@@ -163,3 +163,47 @@ async def dispatch_bulk(request: Request) -> dict:
         return {"batch_id": batch_id, "total": len(contacts), "results": results}
     finally:
         await lk.aclose()
+
+
+# ── Demo + internal ───────────────────────────────────────────────────────────
+
+@app.post("/api/demo/token", dependencies=[Depends(require_token)])
+async def demo_token() -> dict:
+    """Mint a LiveKit JWT for browser-based demo + dispatch a demo agent into the room."""
+    from livekit.api import AccessToken, VideoGrants
+    api_key    = os.environ["LIVEKIT_API_KEY"]
+    api_secret = os.environ["LIVEKIT_API_SECRET"]
+    livekit_url = os.environ["LIVEKIT_URL"]
+    room_name = f"demo-{random.randint(10000, 99999)}"
+    token = (
+        AccessToken(api_key, api_secret)
+        .with_identity("demo-user")
+        .with_name("Demo Caller")
+        .with_grants(VideoGrants(room_join=True, room=room_name))
+        .with_ttl(3600)
+        .to_jwt()
+    )
+    lk = _lk_client()
+    try:
+        await lk.agent_dispatch.create_dispatch(
+            lkapi.CreateAgentDispatchRequest(
+                agent_name="voice-agent",
+                room=room_name,
+                metadata=json.dumps({"phone_number": "demo", "is_demo": True}),
+            ),
+        )
+    finally:
+        await lk.aclose()
+    return {"token": token, "room": room_name, "url": livekit_url}
+
+
+@app.post("/internal/record-call")
+async def record_call_metric(request: Request) -> dict:
+    """Called by agent.py at shutdown to update Prometheus counters."""
+    data = await request.json()
+    voice_calls_total.labels(outcome=(data.get("outcome") or "unknown").lower()).inc()
+    if data.get("booked"):
+        voice_calls_booked.inc()
+    if data.get("duration"):
+        voice_call_duration.observe(float(data["duration"]))
+    return {"ok": True}
