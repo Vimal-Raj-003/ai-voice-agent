@@ -25,3 +25,13 @@ yarn-error.log*
 # IDE settings
 .vscode/
 .idea/
+
+# Voice service runtime / lint caches
+voice-service/.pytest_cache/
+voice-service/.ruff_cache/
+voice-service/__pycache__/
+voice-service/google_creds.json
+
+# Dashboard
+dashboard/.next/
+dashboard/.turbo/
