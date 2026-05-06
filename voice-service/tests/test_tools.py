@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -57,3 +57,15 @@ async def test_book_appointment_returns_confirmation(monkeypatch):
     out = await t.book_appointment("Ravi", "+91111", "2026-06-01", "10:00", "consultation")
     assert "ABC12345" in out
     assert "2026-06-01" in out
+
+
+@pytest.mark.asyncio
+async def test_end_call_records_outcome():
+    ctx = MagicMock()
+    ctx.room.disconnect = AsyncMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    out = await t.end_call("booked", "appointment confirmed")
+    assert "Call ended" in out
+    assert t._closed_outcome == "booked"
+    assert t._closed_reason == "appointment confirmed"
+    ctx.room.disconnect.assert_awaited_once()

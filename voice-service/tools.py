@@ -63,7 +63,15 @@ class AppointmentTools(llm.ToolContext):
 
     @llm.function_tool
     async def end_call(self, outcome: str, reason: str = "") -> str:
-        raise NotImplementedError
+        """End the call and tag the outcome.
+        outcome ∈ {booked, not_interested, wrong_number, voicemail, no_answer, callback_requested}."""
+        self._closed_outcome = outcome
+        self._closed_reason  = reason
+        try:
+            await self.ctx.room.disconnect()
+        except Exception as exc:
+            logger.warning("disconnect_failed", error=str(exc))
+        return "Call ended."
 
     @llm.function_tool
     async def transfer_to_human(self, reason: str) -> str:
