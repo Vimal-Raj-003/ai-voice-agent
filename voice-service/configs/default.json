@@ -1,0 +1,10 @@
+{
+  "language_preset": "multilingual",
+  "stt_min_endpointing_delay": 0.05,
+  "llm_provider": "openai",
+  "llm_model": "gpt-4o-mini",
+  "tts_provider": "sarvam",
+  "tts_voice": "kavya",
+  "tts_language": "hi-IN",
+  "max_turns": 25
+}
