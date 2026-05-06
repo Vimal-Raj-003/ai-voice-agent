@@ -143,7 +143,7 @@ class AppointmentTools(llm.ToolContext):
             if calls:
                 lines.append(f"\nCALL HISTORY ({len(calls)}):")
                 for c in calls[:5]:
-                    ts = c.get("created_at") or ""
+                    ts = c.get("createdAt") or c.get("created_at") or ""
                     ts = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)[:16]
                     lines.append(f"  • {ts} — {c.get('outcome', '?')}: {c.get('reason', '')}")
             if appts:

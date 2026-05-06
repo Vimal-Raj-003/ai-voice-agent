@@ -250,23 +250,34 @@ async def log_call(
     duration_seconds: int, recording_url: str | None = None, notes: str | None = None,
     sentiment: str | None = None, cost_usd: float | None = None,
     interrupt_count: int = 0, was_booked: bool = False, transcript: str | None = None,
+    from_number: str | None = None, direction: str = "OUTBOUND",
 ) -> str:
-    """Insert a row into calls. Returns the call id."""
+    """Insert a row into calls (camelCase Prisma columns). Returns the call id.
+
+    Required NOT NULL columns: organizationId, fromNumber, toNumber, direction.
+    The transcript blob is stored in the `summary` column (calls.summary @db.Text)
+    because the schema has no dedicated transcript column.
+    """
     pool = await get_pool()
     call_id = str(uuid.uuid4())
+    org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
+    from_num = from_number or os.environ.get("OUTBOUND_CALLER_ID", "") or ""
     await pool.execute(
         """INSERT INTO calls (
-                id, phone_number, lead_name, outcome, reason, duration_seconds,
-                recording_url, notes, sentiment, cost_usd, interrupt_count, was_booked,
-                transcript, created_at, updated_at, status, direction
+                id, "organizationId", "fromNumber", "toNumber", direction, status,
+                outcome, reason, "durationSeconds", "recordingUrl", notes, sentiment,
+                "costUsd", interrupt_count, was_booked, summary,
+                "createdAt", "updatedAt"
            ) VALUES (
-                $1, $2, $3, $4::"CallOutcome", $5, $6, $7, $8, $9, $10, $11, $12,
-                $13, now(), now(), 'COMPLETED'::"CallStatus", 'OUTBOUND'::"CallDirection"
+                $1, $2, $3, $4, $5::"CallDirection", $6::"CallStatus",
+                $7::"CallOutcome", $8, $9, $10, $11, $12,
+                $13, $14, $15, $16, now(), now()
            )""",
-        call_id, phone_number, lead_name, outcome.upper(), reason, duration_seconds,
-        recording_url, notes, sentiment, cost_usd, interrupt_count, was_booked, transcript,
+        call_id, org_id, from_num, phone_number, direction.upper(), "COMPLETED",
+        outcome.upper(), reason, duration_seconds, recording_url, notes, sentiment,
+        cost_usd, interrupt_count, was_booked, transcript,
     )
-    # upsert contact
+    # upsert contact (contacts table is snake_case @mapped — unchanged)
     await pool.execute(
         """INSERT INTO contacts (id, phone_number, name, total_calls, last_call_at, last_outcome, is_booked, created_at, updated_at)
            VALUES ($1, $2, $3, 1, now(), $4, $5, now(), now())
@@ -286,7 +297,7 @@ async def get_all_calls(page: int = 1, limit: int = 20) -> list[dict]:
     pool = await get_pool()
     offset = (page - 1) * limit
     rows = await pool.fetch(
-        "SELECT * FROM calls ORDER BY created_at DESC LIMIT $1 OFFSET $2", limit, offset,
+        'SELECT * FROM calls ORDER BY "createdAt" DESC LIMIT $1 OFFSET $2', limit, offset,
     )
     return [dict(r) for r in rows]
 
@@ -294,7 +305,8 @@ async def get_all_calls(page: int = 1, limit: int = 20) -> list[dict]:
 async def get_calls_by_phone(phone: str) -> list[dict]:
     pool = await get_pool()
     rows = await pool.fetch(
-        "SELECT * FROM calls WHERE phone_number = $1 ORDER BY created_at DESC", phone,
+        'SELECT * FROM calls WHERE "toNumber" = $1 OR "fromNumber" = $1 ORDER BY "createdAt" DESC',
+        phone,
     )
     return [dict(r) for r in rows]
 
@@ -302,7 +314,7 @@ async def get_calls_by_phone(phone: str) -> list[dict]:
 async def update_call_notes(call_id: str, notes: str) -> bool:
     pool = await get_pool()
     result = await pool.execute(
-        "UPDATE calls SET notes = $1, updated_at = now() WHERE id = $2", notes, call_id,
+        'UPDATE calls SET notes = $1, "updatedAt" = now() WHERE id = $2', notes, call_id,
     )
     return result.endswith(" 1")
 
@@ -345,8 +357,10 @@ async def compress_contact_memory(phone: str, compressed: str) -> None:
 async def get_stats() -> dict:
     pool = await get_pool()
     rows = await pool.fetch(
-        """SELECT outcome, duration_seconds, was_booked, created_at FROM calls
-           WHERE created_at >= now() - interval '30 days'""",
+        """SELECT outcome, "durationSeconds" AS duration_seconds, was_booked,
+                  "createdAt" AS created_at
+             FROM calls
+            WHERE "createdAt" >= now() - interval '30 days'""",
     )
     rows = [dict(r) for r in rows]
     total = len(rows)
@@ -403,10 +417,10 @@ async def get_active_calls() -> list[dict]:
 
 # ── Real-time transcript ──────────────────────────────────────────────────────
 
-async def insert_transcript_message(call_id: str, room_name: str, role: str, content: str) -> None:
+async def insert_transcript_message(call_id: str, role: str, content: str) -> None:
     pool = await get_pool()
     await pool.execute(
-        """INSERT INTO transcript_messages (id, call_id, role, content, created_at)
+        """INSERT INTO transcript_messages (id, "callId", role, content, "timestamp")
            VALUES ($1, $2, $3::"TranscriptRole", $4, now())""",
         str(uuid.uuid4()), call_id, role.upper(), content,
     )
@@ -415,7 +429,7 @@ async def insert_transcript_message(call_id: str, room_name: str, role: str, con
 async def get_transcript(call_id: str) -> list[dict]:
     pool = await get_pool()
     rows = await pool.fetch(
-        "SELECT * FROM transcript_messages WHERE call_id = $1 ORDER BY created_at", call_id,
+        'SELECT * FROM transcript_messages WHERE "callId" = $1 ORDER BY "timestamp"', call_id,
     )
     return [dict(r) for r in rows]
 
