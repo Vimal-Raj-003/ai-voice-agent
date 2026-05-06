@@ -8,6 +8,7 @@ import time
 from livekit import agents
 from livekit.agents import llm
 
+import db
 from observability import get_logger
 
 logger = get_logger("tools")
@@ -39,11 +40,26 @@ class AppointmentTools(llm.ToolContext):
 
     @llm.function_tool
     async def check_availability(self, date: str, time: str) -> str:
-        raise NotImplementedError
+        """Check whether a date/time slot is available. date=YYYY-MM-DD, time=HH:MM (24h).
+        Returns 'available' or 'unavailable: next available slot is <slot>'."""
+        try:
+            if await db.check_slot(date, time):
+                return "available"
+            nxt = await db.get_next_available(date, time)
+            return f"unavailable: next available slot is {nxt}"
+        except Exception as exc:
+            logger.error("check_availability_failed", error=str(exc))
+            return "Unable to check availability right now — please suggest a date and I will confirm."
 
     @llm.function_tool
     async def book_appointment(self, name: str, phone: str, date: str, time: str, service: str) -> str:
-        raise NotImplementedError
+        """Book an appointment after the lead has verbally confirmed all details."""
+        try:
+            booking_id = await db.insert_appointment(name, phone, date, time, service)
+            return f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} for {service}."
+        except Exception as exc:
+            logger.error("book_appointment_failed", error=str(exc))
+            return "Technical issue saving the booking. Our team will confirm shortly."
 
     @llm.function_tool
     async def end_call(self, outcome: str, reason: str = "") -> str:
