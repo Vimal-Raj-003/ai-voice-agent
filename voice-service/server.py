@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import random
@@ -21,6 +23,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
+from sse_starlette.sse import EventSourceResponse
 
 import db
 from observability import get_logger, init_observability
@@ -346,3 +349,68 @@ async def campaign_status() -> dict:
             for j in _scheduler.get_jobs()
         ],
     }
+
+
+# ── SSE log stream ────────────────────────────────────────────────────────────
+
+@app.get("/api/logs/stream", dependencies=[Depends(require_token)])
+async def logs_stream(request: Request, level: str | None = None, source: str | None = None):
+    async def event_gen():
+        last_seen: str | None = None
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                rows = await db.get_logs(level=level, source=source, limit=20)
+                rows.reverse()
+                for r in rows:
+                    ts = r.get("timestamp")
+                    ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                    if last_seen is not None and ts_iso <= last_seen:
+                        continue
+                    last_seen = ts_iso
+                    yield {"event": "log", "data": json.dumps({
+                        "id": r.get("id"), "source": r.get("source"),
+                        "level": r.get("level"), "message": r.get("message"),
+                        "detail": r.get("detail"), "timestamp": ts_iso,
+                    })}
+            except Exception as exc:
+                yield {"event": "error", "data": str(exc)}
+            await asyncio.sleep(2)
+    return EventSourceResponse(event_gen())
+
+
+# ── LiveKit webhook receiver ──────────────────────────────────────────────────
+
+def _verify_livekit_sig(body: bytes, signature: str) -> bool:
+    secret = os.environ.get("LIVEKIT_WEBHOOK_SECRET", "")
+    if not secret:
+        return False
+    mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(mac, signature)
+
+
+@app.post("/api/webhook/livekit")
+async def livekit_webhook(request: Request) -> dict:
+    body = await request.body()
+    sig = request.headers.get("X-Signature", "")
+    if not _verify_livekit_sig(body, sig):
+        raise HTTPException(401, "invalid signature")
+    try:
+        data = json.loads(body)
+        evt = data.get("event")
+        logger.info("livekit_webhook", event=evt)
+        if evt == "egress_ended" and data.get("egressInfo", {}).get("status") == "EGRESS_COMPLETE":
+            file_url = data.get("egressInfo", {}).get("file", {}).get("location") or ""
+            room = data.get("egressInfo", {}).get("roomName", "")
+            if room and file_url:
+                pool = await db.get_pool()
+                await pool.execute(
+                    """UPDATE calls SET recording_url = $1, updated_at = now()
+                       WHERE livekit_room_name = $2""",
+                    file_url, room,
+                )
+        return {"ok": True}
+    except Exception as exc:
+        logger.error("webhook_error", error=str(exc))
+        raise HTTPException(500, str(exc)) from exc
