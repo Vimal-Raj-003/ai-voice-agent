@@ -69,3 +69,12 @@ async def test_end_call_records_outcome():
     assert t._closed_outcome == "booked"
     assert t._closed_reason == "appointment confirmed"
     ctx.room.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_human_when_unconfigured(monkeypatch):
+    monkeypatch.delenv("DEFAULT_TRANSFER_NUMBER", raising=False)
+    ctx = MagicMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    out = await t.transfer_to_human("complex query")
+    assert "no fallback number" in out

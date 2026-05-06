@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 
-from livekit import agents
+from livekit import agents, api
 from livekit.agents import llm
 
 import db
@@ -75,7 +75,37 @@ class AppointmentTools(llm.ToolContext):
 
     @llm.function_tool
     async def transfer_to_human(self, reason: str) -> str:
-        raise NotImplementedError
+        """SIP REFER the call to DEFAULT_TRANSFER_NUMBER."""
+        destination = os.getenv("DEFAULT_TRANSFER_NUMBER", "")
+        if not destination:
+            return "Transfer unavailable: no fallback number configured."
+        if "@" not in destination:
+            clean = destination.replace("tel:", "").replace("sip:", "")
+            destination = f"sip:{clean}@{self._sip_domain}" if self._sip_domain else f"tel:{clean}"
+        elif not destination.startswith("sip:"):
+            destination = f"sip:{destination}"
+
+        identity = f"sip_{self.phone_number}" if self.phone_number not in (None, "unknown") else None
+        if not identity:
+            for p in self.ctx.room.remote_participants.values():
+                identity = p.identity
+                break
+        if not identity:
+            return "Transfer failed: could not identify caller."
+
+        try:
+            await self.ctx.api.sip.transfer_sip_participant(
+                api.TransferSIPParticipantRequest(
+                    room_name=self.ctx.room.name,
+                    participant_identity=identity,
+                    transfer_to=destination,
+                    play_dialtone=False,
+                ),
+            )
+            return "Transferring you to a human agent now. Please hold."
+        except Exception as exc:
+            logger.error("transfer_failed", error=str(exc))
+            return "Transfer failed. Please call us back directly."
 
     @llm.function_tool
     async def send_sms_confirmation(self, phone: str, message: str) -> str:
