@@ -7,6 +7,9 @@ import json
 import os
 import random
 
+import pytz
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -207,3 +210,139 @@ async def record_call_metric(request: Request) -> dict:
     if data.get("duration"):
         voice_call_duration.observe(float(data["duration"]))
     return {"ok": True}
+
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+
+_scheduler: AsyncIOScheduler | None = None
+
+
+def _ist():
+    return pytz.timezone("Asia/Kolkata")
+
+
+async def _run_campaign_internal(campaign_id: str) -> None:
+    pool = await db.get_pool()
+    row = await pool.fetchrow("SELECT * FROM campaigns WHERE id = $1", campaign_id)
+    if not row or row["status"] not in ("active", "scheduled"):
+        return
+    targets = await pool.fetch(
+        """SELECT * FROM campaign_targets WHERE campaign_id = $1 AND status = 'PENDING'::"CampaignTargetStatus" """,
+        campaign_id,
+    )
+    delay = float(row.get("call_delay_seconds") or 3)
+    profile_id = row.get("agent_profile_id")
+    dispatched = 0
+    failed = 0
+    lk = _lk_client()
+    try:
+        for t in targets:
+            phone = (t.get("phone_number") or "").strip()
+            if not phone.startswith("+"):
+                failed += 1
+                continue
+            try:
+                room = f"call-{phone.replace('+', '')}-{random.randint(1000, 9999)}"
+                d = await lk.agent_dispatch.create_dispatch(
+                    lkapi.CreateAgentDispatchRequest(
+                        agent_name="voice-agent",
+                        room=room,
+                        metadata=json.dumps({
+                            "phone_number": phone, "lead_name": t.get("lead_name"),
+                            "agent_profile_id": profile_id, "campaign_id": campaign_id,
+                        }),
+                    ),
+                )
+                await pool.execute(
+                    """UPDATE campaign_targets
+                       SET status = 'DISPATCHED'::"CampaignTargetStatus",
+                           dispatched_at = now(), dispatch_id = $1
+                       WHERE id = $2""",
+                    d.id, t["id"],
+                )
+                dispatched += 1
+                await asyncio.sleep(delay)
+            except Exception as exc:
+                logger.warning("campaign_target_failed", error=str(exc), phone=phone)
+                await pool.execute(
+                    """UPDATE campaign_targets
+                       SET status = 'FAILED'::"CampaignTargetStatus", error_message = $1
+                       WHERE id = $2""",
+                    str(exc), t["id"],
+                )
+                failed += 1
+    finally:
+        await lk.aclose()
+
+    await pool.execute(
+        """UPDATE campaigns SET last_run_at = now(),
+                                total_dispatched = total_dispatched + $1,
+                                total_failed     = total_failed + $2,
+                                status = CASE WHEN schedule_type = 'ONCE'::"ScheduleType" THEN 'completed' ELSE 'active' END
+           WHERE id = $3""",
+        dispatched, failed, campaign_id,
+    )
+
+
+async def _reload_scheduled_campaigns() -> None:
+    global _scheduler
+    if _scheduler is None:
+        return
+    _scheduler.remove_all_jobs()
+    pool = await db.get_pool()
+    rows = await pool.fetch(
+        """SELECT id, schedule_type, schedule_time FROM campaigns
+           WHERE status = 'active' AND schedule_type IN ('DAILY'::"ScheduleType", 'WEEKDAYS'::"ScheduleType")""",
+    )
+    for r in rows:
+        try:
+            hh, mm = (r["schedule_time"] or "09:00").split(":")
+            day = "mon-fri" if r["schedule_type"] == "WEEKDAYS" else "*"
+            _scheduler.add_job(
+                _run_campaign_internal,
+                CronTrigger(day_of_week=day, hour=int(hh), minute=int(mm), timezone=_ist()),
+                args=[r["id"]],
+                id=f"campaign-{r['id']}",
+                replace_existing=True,
+            )
+        except Exception as exc:
+            logger.warning("scheduler_load_failed", id=r["id"], error=str(exc))
+
+
+@app.on_event("startup")
+async def _start_scheduler() -> None:
+    global _scheduler
+    _scheduler = AsyncIOScheduler(timezone=_ist())
+    _scheduler.start()
+    await _reload_scheduled_campaigns()
+
+
+@app.on_event("shutdown")
+async def _stop_scheduler() -> None:
+    if _scheduler:
+        _scheduler.shutdown()
+
+
+@app.post("/api/campaigns/{campaign_id}/run-now", dependencies=[Depends(require_token)])
+async def campaign_run_now(campaign_id: str) -> dict:
+    asyncio.create_task(_run_campaign_internal(campaign_id))
+    return {"status": "started", "campaign_id": campaign_id}
+
+
+@app.post("/api/campaigns/scheduler/reload", dependencies=[Depends(require_token)])
+async def campaign_reload() -> dict:
+    await _reload_scheduled_campaigns()
+    return {"status": "reloaded"}
+
+
+@app.get("/api/campaigns/scheduler/status", dependencies=[Depends(require_token)])
+async def campaign_status() -> dict:
+    if not _scheduler:
+        return {"running": False, "jobs": []}
+    return {
+        "running": _scheduler.running,
+        "jobs": [
+            {"id": j.id, "next_run": j.next_run_time.isoformat() if j.next_run_time else None}
+            for j in _scheduler.get_jobs()
+        ],
+    }
