@@ -27,6 +27,7 @@ class AppointmentTools(llm.ToolContext):
         self._closed_outcome: str | None = None
         self._closed_reason: str | None = None
         self.interrupt_count      = 0
+        self._bg_tasks: set = set()
 
     def build_tool_list(self, enabled: list[str]) -> list:
         all_methods = [
@@ -119,8 +120,7 @@ class AppointmentTools(llm.ToolContext):
         try:
             from twilio.rest import Client
             client = Client(sid, token)
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: client.messages.create(body=message, from_=frm, to=phone))
+            await asyncio.to_thread(client.messages.create, body=message, from_=frm, to=phone)
             return f"SMS sent to {phone}."
         except Exception as exc:
             logger.warning("sms_failed", error=str(exc))
@@ -164,7 +164,9 @@ class AppointmentTools(llm.ToolContext):
             await db.add_contact_memory(self.phone_number, insight)
             mems = await db.get_contact_memory(self.phone_number)
             if len(mems) >= 5:
-                asyncio.create_task(self._compress_memories())
+                task = asyncio.create_task(self._compress_memories())
+                self._bg_tasks.add(task)
+                task.add_done_callback(self._bg_tasks.discard)
             return f"Remembered: {insight}"
         except Exception as exc:
             logger.error("remember_details_failed", error=str(exc))
@@ -183,8 +185,7 @@ class AppointmentTools(llm.ToolContext):
             model = genai.GenerativeModel("gemini-2.0-flash")
             bullets = "\n".join(f"- {m['insight']}" for m in mems)
             prompt = f"Compress these notes about a sales contact into 3-5 concise bullets. Keep all key facts.\n\n{bullets}"
-            loop = asyncio.get_event_loop()
-            resp = await loop.run_in_executor(None, lambda: model.generate_content(prompt))
+            resp = await asyncio.to_thread(model.generate_content, prompt)
             txt = (resp.text or "").strip()
             if txt:
                 await db.compress_contact_memory(self.phone_number or "", txt)
@@ -201,8 +202,12 @@ class AppointmentTools(llm.ToolContext):
             return "Cal.com not configured — skipping."
         try:
             from datetime import datetime as _dt
-            start_dt = _dt.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
-            start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+            import pytz
+            naive = _dt.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
+            local_tz = pytz.timezone(tz)
+            local_dt = local_tz.localize(naive)
+            start_iso = local_dt.astimezone(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
             import httpx
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.post(

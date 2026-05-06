@@ -133,3 +133,38 @@ async def test_cancel_calcom_skip_when_unconfigured(monkeypatch):
     t = AppointmentTools(ctx, "+91111", "Ravi")
     out = await t.cancel_calcom("uid-123")
     assert "Cal.com not configured" in out
+
+
+@pytest.mark.asyncio
+async def test_book_calcom_converts_local_to_utc(monkeypatch):
+    """Cal.com booking time must be converted from local TZ to UTC, not labeled Z directly."""
+    monkeypatch.setenv("CALCOM_API_KEY", "test-key")
+    monkeypatch.setenv("CALCOM_EVENT_TYPE_ID", "1")
+    monkeypatch.setenv("CALCOM_TIMEZONE", "Asia/Kolkata")
+
+    captured: dict = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {"uid": "uid-test"}
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        async def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["json"] = json
+            return FakeResponse()
+
+    import httpx as _httpx
+    monkeypatch.setattr(_httpx, "AsyncClient", lambda *a, **kw: FakeClient())
+
+    ctx = MagicMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    out = await t.book_calcom("Ravi", "ravi@x.com", "2026-06-01", "10:00")
+
+    # IST 10:00 → UTC 04:30
+    assert "2026-06-01T04:30:00.000Z" in captured["json"]["start"], f"Expected UTC-converted time, got {captured['json']['start']}"
+    assert "Cal.com booked" in out
