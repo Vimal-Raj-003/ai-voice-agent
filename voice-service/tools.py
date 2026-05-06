@@ -193,8 +193,55 @@ class AppointmentTools(llm.ToolContext):
 
     @llm.function_tool
     async def book_calcom(self, name: str, email: str, date: str, start_time: str, notes: str = "") -> str:
-        raise NotImplementedError
+        """Mirror the in-DB appointment to Cal.com."""
+        api_key  = os.getenv("CALCOM_API_KEY", "")
+        event_id = os.getenv("CALCOM_EVENT_TYPE_ID", "")
+        tz       = os.getenv("CALCOM_TIMEZONE", "Asia/Kolkata")
+        if not api_key or not event_id:
+            return "Cal.com not configured — skipping."
+        try:
+            from datetime import datetime as _dt
+            start_dt = _dt.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
+            start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            import httpx
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    "https://api.cal.com/v1/bookings",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "eventTypeId": int(event_id),
+                        "start": start_iso,
+                        "timeZone": tz,
+                        "responses": {"name": name, "email": email, "notes": notes},
+                        "metadata": {"source": "OutboundAI"},
+                        "language": "en",
+                    },
+                )
+            data = resp.json()
+            if resp.status_code not in (200, 201):
+                return f"Cal.com booking failed: {data.get('message') or resp.text[:120]}"
+            return f"Cal.com booked. UID: {data.get('uid', '')}"
+        except Exception as exc:
+            logger.error("calcom_book_failed", error=str(exc))
+            return f"Cal.com booking failed: {exc}"
 
     @llm.function_tool
     async def cancel_calcom(self, booking_uid: str, reason: str = "") -> str:
-        raise NotImplementedError
+        """Cancel a Cal.com booking by UID."""
+        api_key = os.getenv("CALCOM_API_KEY", "")
+        if not api_key:
+            return "Cal.com not configured."
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.delete(
+                    f"https://api.cal.com/v1/bookings/{booking_uid}",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    params={"reason": reason} if reason else {},
+                )
+            if resp.status_code not in (200, 204):
+                return f"Cancellation failed: HTTP {resp.status_code}"
+            return f"Cancelled Cal.com booking {booking_uid}."
+        except Exception as exc:
+            logger.error("calcom_cancel_failed", error=str(exc))
+            return f"Cancellation failed: {exc}"

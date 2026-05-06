@@ -114,3 +114,22 @@ async def test_remember_details_inserts_memory(monkeypatch):
     out = await t.remember_details("Prefers morning")
     assert "Remembered: Prefers morning" in out
     assert inserted == ["Prefers morning"]
+
+
+@pytest.mark.asyncio
+async def test_book_calcom_skip_when_unconfigured(monkeypatch):
+    monkeypatch.delenv("CALCOM_API_KEY", raising=False)
+    monkeypatch.delenv("CALCOM_EVENT_TYPE_ID", raising=False)
+    ctx = MagicMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    out = await t.book_calcom("Ravi", "ravi@x.com", "2026-06-01", "10:00")
+    assert "Cal.com not configured" in out
+
+
+@pytest.mark.asyncio
+async def test_cancel_calcom_skip_when_unconfigured(monkeypatch):
+    monkeypatch.delenv("CALCOM_API_KEY", raising=False)
+    ctx = MagicMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    out = await t.cancel_calcom("uid-123")
+    assert "Cal.com not configured" in out
