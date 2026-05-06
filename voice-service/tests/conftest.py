@@ -1,7 +1,8 @@
 """Shared pytest fixtures."""
 
-import pytest_asyncio
 from unittest.mock import AsyncMock
+
+import pytest_asyncio
 
 import db
 

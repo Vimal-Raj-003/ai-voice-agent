@@ -18,6 +18,7 @@ def init_observability() -> None:
             integrations=[AsyncioIntegration()],
             environment=os.getenv("ENVIRONMENT", "production"),
             release=os.getenv("RELEASE_SHA", "unknown"),
+            send_default_pii=False,
         )
 
     timestamper = structlog.processors.TimeStamper(fmt="iso", utc=True)

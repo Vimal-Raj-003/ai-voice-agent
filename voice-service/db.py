@@ -2,31 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import asyncpg
 
 # ── Pool lifecycle ────────────────────────────────────────────────────────────
 
-_pool: Optional[asyncpg.Pool] = None
+_pool: asyncpg.Pool | None = None
+_pool_lock = asyncio.Lock()
 
 
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        dsn = os.environ["DATABASE_URL"]
-        _pool = await asyncpg.create_pool(
-            dsn=dsn,
-            min_size=2,
-            max_size=10,
-            command_timeout=30,
-            statement_cache_size=0,  # Neon pgbouncer doesn't support prepared statements
-        )
+        async with _pool_lock:
+            if _pool is None:
+                dsn = os.environ.get("DATABASE_URL")
+                if not dsn:
+                    raise RuntimeError("DATABASE_URL environment variable is not set")
+                _pool = await asyncpg.create_pool(
+                    dsn=dsn,
+                    min_size=2,
+                    max_size=10,
+                    command_timeout=30,
+                    statement_cache_size=0,  # Neon pgbouncer doesn't support prepared statements
+                )
     return _pool
 
 
@@ -78,9 +84,11 @@ async def get_all_settings() -> dict[str, dict[str, Any]]:
     for r in rows:
         k, v = r["key"], r["value"]
         if k in SENSITIVE_KEYS:
-            out[k] = {"value": "", "configured": bool(v)}
+            # Preserve env-detected configured state if present
+            prior_configured = out.get(k, {}).get("configured", False)
+            out[k] = {"value": "", "configured": bool(v) or prior_configured}
         else:
-            out[k] = {"value": v, "configured": bool(v)}
+            out[k] = {"value": v, "configured": bool(v) or bool(out.get(k, {}).get("configured", False))}
     return out
 
 
@@ -100,7 +108,9 @@ async def save_settings(data: dict[str, Any]) -> None:
 async def get_setting(key: str, default: str = "") -> str:
     pool = await get_pool()
     val = await pool.fetchval("SELECT value FROM settings WHERE key = $1", key)
-    return val or os.getenv(key, default)
+    if val is not None:
+        return val
+    return os.getenv(key, default)
 
 
 async def set_setting(key: str, value: str) -> None:
@@ -146,7 +156,7 @@ async def get_errors(limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def get_logs(level: Optional[str] = None, source: Optional[str] = None, limit: int = 200) -> list[dict]:
+async def get_logs(level: str | None = None, source: str | None = None, limit: int = 200) -> list[dict]:
     pool = await get_pool()
     clauses = ["1 = 1"]
     args: list[Any] = []
@@ -204,7 +214,7 @@ async def get_next_available(date: str, time: str) -> str:
     return "no open slots found in the next 7 days"
 
 
-async def get_all_appointments(date_filter: Optional[str] = None) -> list[dict]:
+async def get_all_appointments(date_filter: str | None = None) -> list[dict]:
     pool = await get_pool()
     if date_filter:
         rows = await pool.fetch(
@@ -236,10 +246,10 @@ async def get_appointments_by_phone(phone: str) -> list[dict]:
 # ── Calls ─────────────────────────────────────────────────────────────────────
 
 async def log_call(
-    phone_number: str, lead_name: Optional[str], outcome: str, reason: str,
-    duration_seconds: int, recording_url: Optional[str] = None, notes: Optional[str] = None,
-    sentiment: Optional[str] = None, cost_usd: Optional[float] = None,
-    interrupt_count: int = 0, was_booked: bool = False, transcript: Optional[str] = None,
+    phone_number: str, lead_name: str | None, outcome: str, reason: str,
+    duration_seconds: int, recording_url: str | None = None, notes: str | None = None,
+    sentiment: str | None = None, cost_usd: float | None = None,
+    interrupt_count: int = 0, was_booked: bool = False, transcript: str | None = None,
 ) -> str:
     """Insert a row into calls. Returns the call id."""
     pool = await get_pool()
@@ -354,7 +364,7 @@ async def get_stats() -> dict:
         ts = r["created_at"].date().isoformat() if r.get("created_at") else None
         if ts:
             daily[ts] += 1
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     timeline = [
         {"date": (today - timedelta(days=i)).isoformat(),
          "count": daily.get((today - timedelta(days=i)).isoformat(), 0)}
@@ -418,13 +428,13 @@ async def get_all_agent_profiles() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def get_agent_profile(profile_id: str) -> Optional[dict]:
+async def get_agent_profile(profile_id: str) -> dict | None:
     pool = await get_pool()
     row = await pool.fetchrow("SELECT * FROM agent_profiles WHERE id = $1", profile_id)
     return dict(row) if row else None
 
 
-async def get_default_agent_profile() -> Optional[dict]:
+async def get_default_agent_profile() -> dict | None:
     pool = await get_pool()
     row = await pool.fetchrow(
         "SELECT * FROM agent_profiles WHERE is_default = true LIMIT 1",
