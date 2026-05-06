@@ -2,7 +2,10 @@
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short -m 'not integration'"
+markers = [
+  "integration: hits a real Postgres at TEST_DATABASE_URL — run with `pytest -m integration`",
+]
 filterwarnings = [
   "ignore::DeprecationWarning:livekit.*",
   "ignore::DeprecationWarning:google.*",

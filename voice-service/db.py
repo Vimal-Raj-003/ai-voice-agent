@@ -180,14 +180,29 @@ async def clear_errors() -> None:
 # ── Appointments ──────────────────────────────────────────────────────────────
 
 async def insert_appointment(name: str, phone: str, date: str, time: str, service: str) -> str:
+    """Book an appointment; ensures a contacts row exists first since
+    appointments.phone_number FK-references contacts.phone_number."""
     booking_id = str(uuid.uuid4())[:8].upper()
     full_id    = str(uuid.uuid4())
     pool = await get_pool()
-    await pool.execute(
-        """INSERT INTO appointments (id, booking_id, name, phone_number, date, time, service, status, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'BOOKED'::"AppointmentStatus", now())""",
-        full_id, booking_id, name, phone, date, time, service,
-    )
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Upsert contact so the FK on appointments.phone_number is satisfied.
+            # The agent typically calls book_appointment mid-call, BEFORE log_call's
+            # contact upsert runs at shutdown.
+            await conn.execute(
+                """INSERT INTO contacts (id, phone_number, name, total_calls, created_at, updated_at)
+                   VALUES ($1, $2, $3, 0, now(), now())
+                   ON CONFLICT (phone_number) DO UPDATE SET
+                     name = COALESCE(contacts.name, EXCLUDED.name),
+                     updated_at = now()""",
+                str(uuid.uuid4()), phone, name,
+            )
+            await conn.execute(
+                """INSERT INTO appointments (id, booking_id, name, phone_number, date, time, service, status, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, 'BOOKED'::"AppointmentStatus", now())""",
+                full_id, booking_id, name, phone, date, time, service,
+            )
     return booking_id
 
 

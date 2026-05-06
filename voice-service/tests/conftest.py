@@ -19,5 +19,9 @@ async def mock_pool(monkeypatch):
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def isolate_db(monkeypatch):
+async def isolate_db(monkeypatch, request):
+    # Integration tests manage their own pool against a real DB — skip the
+    # mock-pool reset for them so the session-scoped real pool stays alive.
+    if request.node.get_closest_marker("integration"):
+        return
     monkeypatch.setattr(db, "_pool", None)

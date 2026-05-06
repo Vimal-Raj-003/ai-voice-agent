@@ -143,16 +143,19 @@ LiveKit Egress writes to R2 directly via S3-compatible credentials. Set `R2_*` v
 ## Testing
 
 ```bash
-# voice-service
+# voice-service — unit (mocked pool)
 cd voice-service && pytest -q
 cd voice-service && python -m ruff check .
+
+# voice-service — integration (real Postgres; opt-in)
+cd voice-service && TEST_DATABASE_URL="postgres://..." pytest -m integration
 
 # dashboard
 cd dashboard && npx tsc --noEmit
 cd dashboard && npm run build
 ```
 
-Voice-service tests use a mocked asyncpg pool. Integration tests against a real Neon test branch are a Plan-3 follow-up; for now schema correctness is verified by the migrations themselves and the dashboard's strict TypeScript types against the generated Prisma client.
+Unit tests mock the asyncpg pool — fast, no network. Integration tests hit a real Postgres at `TEST_DATABASE_URL` (use a dedicated [Neon branch](https://neon.tech/docs/guides/branching)). They isolate themselves with a per-session test Organization and `+9999000…` phone-prefix cleanup, so they're safe to run against any DB you own. The integration suite is opt-in (registered as a marker and excluded from the default `pytest` invocation); `pytest -m integration` runs it explicitly.
 
 ## Key features
 
