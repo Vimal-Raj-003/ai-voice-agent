@@ -1,5 +1,6 @@
 import { CalendarCheck, Clock } from "lucide-react";
 import { Badge } from "@/components/Badge";
+import BookingRowActions from "./BookingRowActions";
 
 type Appt = {
   id: string;
@@ -62,12 +63,18 @@ export default function DayDrawer({
               key={a.id}
               className="rounded-xl border border-white/5 bg-white/[0.02] p-3"
             >
-              <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center justify-between mb-1 gap-2">
                 <span className="font-medium tabular-nums flex items-center gap-1.5">
                   <Clock size={12} className="text-cyan-300" />
                   {a.time}
                 </span>
-                <Badge tone={statusTone(a.status)}>{a.status}</Badge>
+                <div className="flex items-center gap-1.5">
+                  <Badge tone={statusTone(a.status)}>{a.status}</Badge>
+                  <BookingRowActions
+                    appointmentId={a.id}
+                    status={a.status}
+                  />
+                </div>
               </div>
               <div className="text-sm">{a.name}</div>
               <div className="text-xs text-gray-500 font-mono">
