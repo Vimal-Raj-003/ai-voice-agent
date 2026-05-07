@@ -256,3 +256,19 @@ body::after {
 [data-theme="light"] .divide-white\/5 > :not(:last-child) {
   border-color: rgba(15, 23, 42, 0.08);
 }
+
+/* Select popover — explicit opaque background per theme so the dropdown
+ * always reads as a solid card, never bleeds through to the section below.
+ * The Select.tsx inline style hardcodes the dark colour; this overrides
+ * it in light mode. */
+[data-theme="light"] [role="listbox"] {
+  background-color: rgba(255, 255, 255, 0.98) !important;
+  color: rgb(15, 23, 42);
+  border-color: rgba(15, 23, 42, 0.12) !important;
+}
+[data-theme="light"] [role="listbox"] [role="option"] {
+  color: rgb(15, 23, 42);
+}
+[data-theme="light"] [role="listbox"] [role="option"]:hover {
+  background-color: rgba(167, 139, 250, 0.1);
+}

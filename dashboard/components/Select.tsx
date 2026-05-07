@@ -87,9 +87,14 @@ export default function Select({
         />
       </button>
       {open && (
+        // Solid background — `glass-strong` was too translucent, content from
+        // sections below showed through the dropdown panel. We keep the
+        // gradient ring / blur effect on cards, but for popovers opacity must
+        // be near-100% so option text is the only thing the eye reads.
         <div
           role="listbox"
-          className="glass-strong absolute z-50 mt-1 w-full rounded-xl py-1 max-h-60 overflow-y-auto shadow-2xl"
+          className="absolute z-50 mt-1 w-full rounded-xl border border-white/10 bg-[#0b0d20] py-1 max-h-60 overflow-y-auto shadow-[0_24px_48px_-12px_rgba(0,0,0,0.7),0_0_0_1px_rgba(167,139,250,0.15)] backdrop-blur-xl"
+          style={{ backgroundColor: "rgba(11, 13, 32, 0.97)" }}
         >
           {options.length === 0 && (
             <div className="px-3 py-2 text-xs text-gray-500">No options</div>
