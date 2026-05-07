@@ -2,6 +2,10 @@
 .env
 .env.local
 
+# Local-only Docker Compose overrides
+docker-compose.override.yml
+docker-compose.override.yaml
+
 # Python
 .venv/
 venv/
