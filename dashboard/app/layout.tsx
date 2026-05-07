@@ -18,9 +18,12 @@ export const metadata: Metadata = {
     "Inbound + outbound + bulk voice calling powered by LiveKit and a multi-LLM agent.",
 };
 
-// Inline boot script — runs before body renders so the correct theme attribute
-// is on <html> on the very first paint, avoiding FOUC. Reads localStorage if
-// the user has explicitly toggled, otherwise honours the OS preference.
+// Inline boot script — runs before body renders so the correct theme
+// attribute is on <html> on the very first paint, avoiding FOUC. Reads
+// localStorage if the user has explicitly toggled, otherwise honours the OS
+// preference. Storage key is intentionally inlined here (matches
+// THEME_STORAGE_KEY in lib/theme.ts) because the script ships ahead of any
+// JS module — keep them in sync.
 const themeBootScript = `(function () {
   try {
     var stored = localStorage.getItem('jjv_theme');

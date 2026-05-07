@@ -40,6 +40,13 @@ export default function Select({
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
+  // Re-sync local state if the parent re-renders with a different defaultValue
+  // (e.g. router navigation, controlled-style usage). Without this the Select
+  // silently keeps its first value forever even though the prop says otherwise.
+  useEffect(() => {
+    setValue(defaultValue ?? "");
+  }, [defaultValue]);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {

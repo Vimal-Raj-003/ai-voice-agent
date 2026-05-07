@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { auth } from "@/lib/auth";
 
 // Streams every contact row out as a CSV download.
 // Header columns are stable so the same file can be re-imported via the
 // importContactsCsv server action without manual editing.
+//
+// Auth: middleware excludes /api/* from session checks (so the SSE / LiveKit
+// proxies keep working without a cookie). This route therefore enforces auth
+// inline — anyone hitting the URL without a NextAuth session gets a 401.
 
 function escapeCell(v: string | null | undefined): string {
   if (v == null) return "";
@@ -15,6 +20,10 @@ function escapeCell(v: string | null | undefined): string {
 }
 
 export async function GET() {
+  const session = await auth();
+  if (!session?.user) {
+    return new NextResponse("unauthorized", { status: 401 });
+  }
   const rows = await prisma.contact.findMany({
     orderBy: { lastCallAt: "desc" },
   });

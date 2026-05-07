@@ -10,10 +10,27 @@ import {
   Phone,
   CalendarCheck,
   TrendingUp,
-  HeadphonesIcon,
+  Headphones,
   Megaphone,
   Sparkles,
 } from "lucide-react";
+import type { Assistant } from "@prisma/client";
+
+// Seed shape is a structural Partial<Assistant> over the form-bound subset.
+// Typing it this way means the gallery → form flow doesn't need a cast.
+export type TemplateSeed = Partial<
+  Pick<
+    Assistant,
+    | "name"
+    | "firstMessage"
+    | "systemPrompt"
+    | "llmProvider"
+    | "llmModel"
+    | "ttsProvider"
+    | "voiceId"
+    | "sttProvider"
+  >
+>;
 
 export type AssistantTemplate = {
   id: string;
@@ -21,16 +38,7 @@ export type AssistantTemplate = {
   description: string;
   icon: LucideIcon;
   bestFor: "inbound" | "outbound" | "both";
-  seed: {
-    name: string;
-    firstMessage: string;
-    systemPrompt: string;
-    llmProvider: string;
-    llmModel: string;
-    ttsProvider: string;
-    voiceId: string;
-    sttProvider: string;
-  };
+  seed: TemplateSeed;
 };
 
 export const TEMPLATES: AssistantTemplate[] = [
@@ -152,7 +160,7 @@ If they ask to be removed from calls, mark them via remember_details with insigh
     label: "Customer Support + Survey",
     description:
       "Triages issues, attempts simple troubleshooting, escalates to a human or ticket. Optional NPS at the end.",
-    icon: HeadphonesIcon,
+    icon: Headphones,
     bestFor: "both",
     seed: {
       name: "Customer Support",

@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { ArrowRight, Sparkles } from "lucide-react";
-import type { Assistant } from "@prisma/client";
 import { createAssistant } from "../actions";
 import AssistantForm from "@/components/AssistantForm";
 import {
@@ -104,10 +103,7 @@ export default async function NewAssistantPage({
           </Badge>
         )}
       </div>
-      <AssistantForm
-        action={createAssistant}
-        initial={tpl?.seed as Partial<Assistant> | undefined}
-      />
+      <AssistantForm action={createAssistant} initial={tpl?.seed} />
     </div>
   );
 }

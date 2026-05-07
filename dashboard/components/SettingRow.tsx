@@ -73,8 +73,12 @@ export default function SettingRow({ def, storedValue, configuredViaEnv }: Props
       <div className="mt-3 flex items-stretch gap-2">
         {isBoolean ? (
           <div className="flex-1">
+            {/* The parent rebuilds FormData manually in onSubmit, so the
+              * Select's hidden-input name doesn't matter for submit. We
+              * keep a unique name per key to avoid any DOM id collisions
+              * if multiple booleans appear in the same form. */}
             <Select
-              name={`hidden-${def.key}`}
+              name={`bool_${def.key}`}
               defaultValue={value || "false"}
               options={[
                 { value: "true", label: "true" },

@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { Monitor, Moon, Sun } from "lucide-react";
+import { THEME_STORAGE_KEY, type Theme } from "@/lib/theme";
 
-type Theme = "light" | "dark" | "system";
-const STORAGE_KEY = "jjv_theme";
+const STORAGE_KEY = THEME_STORAGE_KEY;
 
 function applyTheme(t: Theme) {
   const resolved: "light" | "dark" =

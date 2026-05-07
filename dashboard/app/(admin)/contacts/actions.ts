@@ -3,6 +3,11 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 
+// Hard limits to bound the import workload — anyone authenticated could
+// otherwise upload a 500MB blob and exhaust memory + Prisma connections.
+const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_ROWS = 10_000;
+
 // Lightweight CSV parser tolerant of:
 //   - quoted values containing commas
 //   - escaped double-quotes (""), CRLF / LF line endings
@@ -72,7 +77,37 @@ export async function importContactsCsv(formData: FormData): Promise<ImportResul
       errors: [{ row: 0, message: "No file provided." }],
     };
   }
-  const text = await file.text();
+  if (file.size > MAX_BYTES) {
+    return {
+      imported: 0,
+      updated: 0,
+      skipped: 0,
+      errors: [
+        {
+          row: 0,
+          message: `File exceeds ${MAX_BYTES / 1024 / 1024} MB limit.`,
+        },
+      ],
+    };
+  }
+  const lowerName = file.name.toLowerCase();
+  if (
+    file.type &&
+    !file.type.includes("csv") &&
+    !file.type.includes("text/plain") &&
+    !lowerName.endsWith(".csv")
+  ) {
+    return {
+      imported: 0,
+      updated: 0,
+      skipped: 0,
+      errors: [{ row: 0, message: "Only .csv files are supported." }],
+    };
+  }
+  // Strip the optional UTF-8 BOM Excel prepends — without this every Excel-
+  // saved CSV would fail header validation because the first column reads
+  // as "﻿phone" instead of "phone".
+  const text = (await file.text()).replace(/^﻿/, "");
   const rows = parseCsv(text).filter((r) => r.some((c) => c.trim() !== ""));
   if (rows.length === 0) {
     return {
@@ -80,6 +115,19 @@ export async function importContactsCsv(formData: FormData): Promise<ImportResul
       updated: 0,
       skipped: 0,
       errors: [{ row: 0, message: "CSV is empty." }],
+    };
+  }
+  if (rows.length - 1 > MAX_ROWS) {
+    return {
+      imported: 0,
+      updated: 0,
+      skipped: 0,
+      errors: [
+        {
+          row: 0,
+          message: `Too many rows (${rows.length - 1}); the per-import cap is ${MAX_ROWS}.`,
+        },
+      ],
     };
   }
   const header = rows[0].map((h) => h.trim().toLowerCase());
@@ -129,7 +177,12 @@ export async function importContactsCsv(formData: FormData): Promise<ImportResul
     const name = nameIdx >= 0 ? r[nameIdx]?.trim() || null : null;
     const email = emailIdx >= 0 ? r[emailIdx]?.trim() || null : null;
     const notes = notesIdx >= 0 ? r[notesIdx]?.trim() || null : null;
-    let tagsJson: string = "[]";
+
+    // Tags are intentional: if the CSV has a "tags" column for this row we
+    // overwrite (even with empty array) so the user can explicitly clear them.
+    // If the column is absent from the file entirely, we leave existing tags
+    // alone on update.
+    let tagsJson: string | undefined;
     if (tagsIdx >= 0) {
       const raw = (r[tagsIdx] ?? "").trim();
       if (raw) {
@@ -144,6 +197,8 @@ export async function importContactsCsv(formData: FormData): Promise<ImportResul
               .filter(Boolean),
           );
         }
+      } else {
+        tagsJson = "[]";
       }
     }
 
@@ -154,17 +209,17 @@ export async function importContactsCsv(formData: FormData): Promise<ImportResul
       await prisma.contact.upsert({
         where: { phoneNumber: phone },
         update: {
-          name: name ?? undefined,
-          email: email ?? undefined,
-          notes: notes ?? undefined,
-          tags: tagsJson === "[]" ? undefined : tagsJson,
+          ...(name != null ? { name } : {}),
+          ...(email != null ? { email } : {}),
+          ...(notes != null ? { notes } : {}),
+          ...(tagsJson != null ? { tags: tagsJson } : {}),
         },
         create: {
           phoneNumber: phone,
           name,
           email,
           notes,
-          tags: tagsJson,
+          tags: tagsJson ?? "[]",
         },
       });
       if (existed) result.updated++;
