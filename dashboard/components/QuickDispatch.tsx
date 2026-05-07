@@ -6,6 +6,7 @@ import {
   quickDispatchAction,
   type QuickDispatchResult,
 } from "@/app/(admin)/_actions/quick-dispatch";
+import { LANGUAGE_PRESETS } from "@/lib/language-presets";
 
 export default function QuickDispatch() {
   const [expanded, setExpanded] = useState(false);
@@ -40,6 +41,17 @@ export default function QuickDispatch() {
             placeholder="Lead name (optional)"
             className="w-full rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-xs placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
           />
+          <select
+            name="language_preset"
+            defaultValue="hinglish"
+            className="w-full rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-purple-500/40"
+          >
+            {LANGUAGE_PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
           <button
             type="submit"
             disabled={pending}

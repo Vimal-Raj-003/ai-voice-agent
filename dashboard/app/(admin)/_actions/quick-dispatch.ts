@@ -12,6 +12,8 @@ export async function quickDispatchAction(
 ): Promise<QuickDispatchResult> {
   const rawPhone = String(formData.get("phone") || "").trim();
   const leadName = String(formData.get("lead_name") || "").trim() || undefined;
+  const languagePreset =
+    String(formData.get("language_preset") || "").trim() || undefined;
   if (!rawPhone) {
     return { ok: false, error: "Phone number is required." };
   }
@@ -26,6 +28,7 @@ export async function quickDispatchAction(
     const r = await voiceService.dispatchSingle({
       phone,
       lead_name: leadName,
+      language_preset: languagePreset,
     });
     return {
       ok: true,
