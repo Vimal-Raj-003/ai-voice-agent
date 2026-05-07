@@ -6,6 +6,10 @@ import type { ProviderRate, RateKind } from "@prisma/client";
 import { Badge } from "./Badge";
 import { refreshRatesAction } from "@/app/(admin)/costs/actions";
 
+// Same shape as Prisma's ProviderRate but with rateUsd flattened to a string
+// — Decimal objects can't cross the server→client serialization boundary.
+type RateRow = Omit<ProviderRate, "rateUsd"> & { rateUsd: string };
+
 const KIND_LABEL: Record<RateKind, string> = {
   LLM_INPUT_MTOK: "LLM input ($/Mtok)",
   LLM_OUTPUT_MTOK: "LLM output ($/Mtok)",
@@ -30,7 +34,7 @@ function formatAge(when: Date): string {
   return `${days}d ${hours % 24}h ago`;
 }
 
-export default function RatesPanel({ rates }: { rates: ProviderRate[] }) {
+export default function RatesPanel({ rates }: { rates: RateRow[] }) {
   const [pending, start] = useTransition();
   type Result = { kind: "ok" | "warn" | "error"; msg: string };
   const [result, setResult] = useState<Result | null>(null);

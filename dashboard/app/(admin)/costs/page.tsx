@@ -158,7 +158,12 @@ export default async function CostsPage() {
         </section>
       </div>
 
-      <RatesPanel rates={rates} />
+      {/* Prisma's Decimal type is not serialisable across the server→client
+          boundary, so flatten rateUsd to a string before passing. RatesPanel
+          calls Number() on it for display, which is fine. */}
+      <RatesPanel
+        rates={rates.map((r) => ({ ...r, rateUsd: r.rateUsd.toString() }))}
+      />
 
       {ageMinutes != null && ageMinutes > RATES_STALE_THRESHOLD_MIN && (
         <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.08] p-3 text-xs text-amber-200">
