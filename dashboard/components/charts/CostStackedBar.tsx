@@ -10,20 +10,9 @@ import {
   YAxis,
   Legend,
 } from "recharts";
+import { providerColor } from "@/lib/provider-colors";
 
 type Row = { date: string } & Record<string, number | string>;
-
-const PROVIDER_COLORS: Record<string, string> = {
-  openai: "#22d3ee",
-  google: "#a78bfa",
-  groq: "#34d399",
-  anthropic: "#f472b6",
-  deepgram: "#60a5fa",
-  sarvam: "#fbbf24",
-  elevenlabs: "#f87171",
-  cartesia: "#c084fc",
-  vobiz: "#94a3b8",
-};
 
 export default function CostStackedBar({
   data,
@@ -72,7 +61,7 @@ export default function CostStackedBar({
             dataKey={p}
             name={p}
             stackId="a"
-            fill={PROVIDER_COLORS[p] ?? "#94a3b8"}
+            fill={providerColor(p)}
             radius={[3, 3, 0, 0]}
           />
         ))}

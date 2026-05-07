@@ -1,18 +1,7 @@
 "use client";
 
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
-
-const PROVIDER_COLORS: Record<string, string> = {
-  openai: "#22d3ee",
-  google: "#a78bfa",
-  groq: "#34d399",
-  anthropic: "#f472b6",
-  deepgram: "#60a5fa",
-  sarvam: "#fbbf24",
-  elevenlabs: "#f87171",
-  cartesia: "#c084fc",
-  vobiz: "#94a3b8",
-};
+import { providerColor } from "@/lib/provider-colors";
 
 export default function CostByProvider({
   data,
@@ -35,10 +24,7 @@ export default function CostByProvider({
             strokeWidth={2}
           >
             {data.map((d) => (
-              <Cell
-                key={d.provider}
-                fill={PROVIDER_COLORS[d.provider] ?? "#94a3b8"}
-              />
+              <Cell key={d.provider} fill={providerColor(d.provider)} />
             ))}
           </Pie>
           <Tooltip

@@ -1,5 +1,6 @@
 import type { Assistant } from "@prisma/client";
 import Select from "./Select";
+import BooleanSelect from "./BooleanSelect";
 
 type Props = {
   action: (formData: FormData) => Promise<void>;
@@ -55,23 +56,18 @@ const SENSITIVITY = [
   {
     value: "LOW",
     label: "Low — patient",
-    description: "Wait longer before responding. Fewer interruptions.",
+    description: "2.0s silence required before agent speaks. Fewest interruptions.",
   },
   {
     value: "MEDIUM",
     label: "Medium — balanced",
-    description: "Moderate threshold (~1s silence).",
+    description: "1.0s silence threshold. Best for most outbound flows.",
   },
   {
     value: "HIGH",
     label: "High — snappy",
-    description: "React fast (~400ms). Risk of cutting the user off.",
+    description: "0.4s silence. Risk of cutting the user off mid-thought.",
   },
-];
-
-const BOOL_OPTIONS = [
-  { value: "true", label: "Enabled" },
-  { value: "false", label: "Disabled" },
 ];
 
 export default function AssistantForm({ action, initial }: Props) {
@@ -247,40 +243,36 @@ export default function AssistantForm({ action, initial }: Props) {
             label="Background denoising"
             hint="LiveKit BVCTelephony noise cancellation."
           >
-            <Select
+            <BooleanSelect
               name="backgroundDenoising"
-              options={BOOL_OPTIONS}
-              defaultValue={(initial?.backgroundDenoising ?? true) ? "true" : "false"}
+              defaultValue={initial?.backgroundDenoising ?? true}
             />
           </Field>
           <Field
             label="Voicemail detection"
-            hint="Detect answering-machine tone & leave a short message."
+            hint="Detect answering-machine tone & leave a short message. (Schema only — agent integration pending.)"
           >
-            <Select
+            <BooleanSelect
               name="voicemailDetection"
-              options={BOOL_OPTIONS}
-              defaultValue={(initial?.voicemailDetection ?? false) ? "true" : "false"}
+              defaultValue={initial?.voicemailDetection ?? false}
             />
           </Field>
           <Field
             label="Hallucination guard"
             hint='Auto-append "do not invent information" to the system prompt.'
           >
-            <Select
+            <BooleanSelect
               name="hallucinationGuard"
-              options={BOOL_OPTIONS}
-              defaultValue={(initial?.hallucinationGuard ?? true) ? "true" : "false"}
+              defaultValue={initial?.hallucinationGuard ?? true}
             />
           </Field>
           <Field
             label="Recording"
             hint="Save call audio to your storage backend."
           >
-            <Select
+            <BooleanSelect
               name="recordingEnabled"
-              options={BOOL_OPTIONS}
-              defaultValue={(initial?.recordingEnabled ?? true) ? "true" : "false"}
+              defaultValue={initial?.recordingEnabled ?? true}
             />
           </Field>
         </div>

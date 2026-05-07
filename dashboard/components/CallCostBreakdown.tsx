@@ -66,10 +66,16 @@ export default function CallCostBreakdown({
           </table>
         </div>
       )}
-      <p className="mt-3 text-[10px] text-gray-600">
-        Cost computed live from current ProviderRate × call usage. Token
-        counts are estimated (~4 chars / token); STT seconds are call
-        duration; TTS chars are assistant transcript length.
+      <p className="mt-3 text-[10px] text-gray-600 leading-relaxed">
+        Cost computed live from current ProviderRate × call usage.
+        <br />
+        <span className="text-amber-300/70">Estimator caveats:</span> token
+        counts are derived at ~4 chars / token from the surviving chat
+        context. For calls long enough to trigger context-window
+        compression, older messages may be dropped before this snapshot —
+        actual input tokens billed by the provider can be higher. STT
+        seconds = total call duration; TTS chars = assistant transcript
+        length only.
       </p>
     </section>
   );

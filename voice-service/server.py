@@ -355,13 +355,22 @@ async def _start_scheduler() -> None:
     await _reload_scheduled_campaigns()
     # 3-hourly LLM rate refresh from OpenRouter. Run once at startup so the
     # rates table is fresh from boot — then every 3 hours on the wall clock.
+    # coalesce=True collapses missed runs into one (e.g. if the boot run is
+    # still going when the cron fires, only one runs). max_instances=1
+    # prevents two concurrent refreshes racing the same UPDATE.
     _scheduler.add_job(
         _refresh_rates_safely,
         CronTrigger(hour="*/3", minute=0, timezone=_ist()),
         id="provider-rates-refresh",
         replace_existing=True,
+        coalesce=True,
+        max_instances=1,
     )
-    asyncio.create_task(_refresh_rates_safely())
+    # Retain the boot task in _bg_tasks so it isn't GC'd before completing
+    # (Python 3.11+ otherwise drops the reference and may cancel mid-fetch).
+    boot_task = asyncio.create_task(_refresh_rates_safely())
+    _bg_tasks.add(boot_task)
+    boot_task.add_done_callback(_bg_tasks.discard)
 
 
 @app.on_event("shutdown")

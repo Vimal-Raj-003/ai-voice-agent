@@ -32,19 +32,36 @@ function formatAge(when: Date): string {
 
 export default function RatesPanel({ rates }: { rates: ProviderRate[] }) {
   const [pending, start] = useTransition();
-  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  type Result = { kind: "ok" | "warn" | "error"; msg: string };
+  const [result, setResult] = useState<Result | null>(null);
 
   const onRefresh = () =>
     start(async () => {
       try {
         const r = await refreshRatesAction();
-        setResult({
-          ok: true,
-          msg: `Refreshed ${r.input + r.output} LLM rate rows from OpenRouter.`,
-        });
+        if (r.errors > 0) {
+          // Voice-service reached OpenRouter but at least one row failed —
+          // partial success deserves an amber warning, not a green checkmark.
+          setResult({
+            kind: "warn",
+            msg: `Refreshed ${r.input + r.output} rows but ${r.errors} fetch error(s) — check voice-service logs.`,
+          });
+        } else if (r.input + r.output === 0) {
+          // Zero rows touched usually means OpenRouter returned an empty
+          // body or none of our SKUs were found — surface as warning.
+          setResult({
+            kind: "warn",
+            msg: "OpenRouter returned 0 matching rate rows — none of our SKU lookups matched.",
+          });
+        } else {
+          setResult({
+            kind: "ok",
+            msg: `Refreshed ${r.input + r.output} LLM rate rows from OpenRouter.`,
+          });
+        }
       } catch (err) {
         setResult({
-          ok: false,
+          kind: "error",
           msg: err instanceof Error ? err.message : "Refresh failed",
         });
       }
@@ -79,12 +96,14 @@ export default function RatesPanel({ rates }: { rates: ProviderRate[] }) {
       {result && (
         <div
           className={`flex items-start gap-2 rounded-lg border px-3 py-2 mb-3 text-xs ${
-            result.ok
+            result.kind === "ok"
               ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+              : result.kind === "warn"
+              ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
               : "border-red-500/30 bg-red-500/10 text-red-300"
           }`}
         >
-          {result.ok ? (
+          {result.kind === "ok" ? (
             <Check size={14} className="shrink-0 mt-0.5" />
           ) : (
             <AlertCircle size={14} className="shrink-0 mt-0.5" />

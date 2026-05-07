@@ -24,6 +24,7 @@ export default async function CostsPage() {
       select: {
         id: true,
         createdAt: true,
+        direction: true,
         durationSeconds: true,
         llmInputTokens: true,
         llmOutputTokens: true,
@@ -55,7 +56,12 @@ export default async function CostsPage() {
     .map((p) => p.provider);
 
   // Find the freshest "last verified" — surface as a footer so the user can
-  // see how stale the rates are.
+  // see how stale the rates are. Threshold = cron interval + slack.
+  const RATES_CRON_INTERVAL_MIN = 180; // matches cron */3 hours
+  const RATES_STALE_SLACK_MIN = 20; // allow a run to take its time
+  const RATES_STALE_THRESHOLD_MIN =
+    RATES_CRON_INTERVAL_MIN + RATES_STALE_SLACK_MIN;
+
   const lastVerified = rates.reduce<Date | null>((acc, r) => {
     const d = r.lastVerifiedAt;
     return acc && acc > d ? acc : d;
@@ -154,7 +160,7 @@ export default async function CostsPage() {
 
       <RatesPanel rates={rates} />
 
-      {ageMinutes != null && ageMinutes > 200 && (
+      {ageMinutes != null && ageMinutes > RATES_STALE_THRESHOLD_MIN && (
         <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.08] p-3 text-xs text-amber-200">
           <AlertTriangle size={14} className="shrink-0 mt-0.5" />
           <span>

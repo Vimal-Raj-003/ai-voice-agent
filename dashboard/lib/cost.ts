@@ -3,7 +3,12 @@
 // When OpenAI cuts gpt-4o-mini prices tomorrow, every historical row's
 // reported cost moves with the rate.
 
-import type { Call, ProviderRate, RateKind } from "@prisma/client";
+import type {
+  Call,
+  CallDirection,
+  ProviderRate,
+  RateKind,
+} from "@prisma/client";
 
 export type CostLine = {
   label: string;       // "OpenAI gpt-4o-mini input"
@@ -51,22 +56,25 @@ const SECONDS_PER_MINUTE = 60;
 // only added when the corresponding usage column is non-null AND a matching
 // rate row exists. Missing rates get flagged via hasUnknownRates so the UI
 // can warn — better than silently underreporting.
+export type CallCostInput = Pick<
+  Call,
+  | "direction"
+  | "llmInputTokens"
+  | "llmOutputTokens"
+  | "llmProviderUsed"
+  | "llmSkuUsed"
+  | "sttSeconds"
+  | "sttProviderUsed"
+  | "sttSkuUsed"
+  | "ttsChars"
+  | "ttsProviderUsed"
+  | "ttsSkuUsed"
+  | "telephonyProvider"
+  | "durationSeconds"
+>;
+
 export function computeCallCost(
-  call: Pick<
-    Call,
-    | "llmInputTokens"
-    | "llmOutputTokens"
-    | "llmProviderUsed"
-    | "llmSkuUsed"
-    | "sttSeconds"
-    | "sttProviderUsed"
-    | "sttSkuUsed"
-    | "ttsChars"
-    | "ttsProviderUsed"
-    | "ttsSkuUsed"
-    | "telephonyProvider"
-    | "durationSeconds"
-  >,
+  call: CallCostInput,
   rateMap: Map<string, number>,
 ): CostBreakdown {
   const lines: CostLine[] = [];
@@ -144,10 +152,11 @@ export function computeCallCost(
       });
     }
   }
-  // — Telephony — best-effort: assume "outbound" sku for OUTBOUND calls,
-  // "inbound" for inbound. Caller code can refine if needed.
+  // — Telephony — pick the right SKU based on call direction so inbound
+  // calls aren't billed at the outbound rate. Inbound is typically zero
+  // (rolled into trunk rental) but it's still a real lookup.
   if (call.telephonyProvider && call.durationSeconds && call.durationSeconds > 0) {
-    const sku = "outbound"; // safe default — inbound is typically free anyway
+    const sku = call.direction === "INBOUND" ? "inbound" : "outbound";
     const r = lookup(rateMap, call.telephonyProvider, sku, "TELEPHONY_MINUTE");
     if (r == null) unknown = true;
     else {
@@ -181,7 +190,7 @@ export type CostAggregate = {
 };
 
 export function aggregateCalls(
-  calls: Array<{ id: string; createdAt: Date } & Parameters<typeof computeCallCost>[0]>,
+  calls: Array<{ id: string; createdAt: Date } & CallCostInput>,
   rateMap: Map<string, number>,
   daysBack = 14,
 ): CostAggregate {
