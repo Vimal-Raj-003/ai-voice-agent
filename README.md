@@ -157,6 +157,15 @@ cd dashboard && npm run build
 
 Unit tests mock the asyncpg pool — fast, no network. Integration tests hit a real Postgres at `TEST_DATABASE_URL` (use a dedicated [Neon branch](https://neon.tech/docs/guides/branching)). They isolate themselves with a per-session test Organization and `+9999000…` phone-prefix cleanup, so they're safe to run against any DB you own. The integration suite is opt-in (registered as a marker and excluded from the default `pytest` invocation); `pytest -m integration` runs it explicitly.
 
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and every PR:
+
+- **voice-service** — `ruff check`, unit tests (mocked), and integration tests (real Neon DB)
+- **dashboard** — `tsc --noEmit` and `npm run build`
+
+To enable the integration leg, add a repo secret named `TEST_DATABASE_URL` (Settings → Secrets and variables → Actions) pointing at a dedicated Neon test branch — branching off `main` in the Neon console takes seconds and is free. Without the secret, the unit/lint/build legs still run and the integration step posts a skip warning. External-fork PRs never see secrets, so they skip cleanly too.
+
 ## Key features
 
 - **Inbound + outbound** — single agent process handles both directions; trunk type drives the metadata.
