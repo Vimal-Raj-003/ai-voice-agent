@@ -450,6 +450,68 @@ async def logs_stream(request: Request, level: str | None = None, source: str | 
     return EventSourceResponse(event_gen())
 
 
+# ── AI prompt generator ───────────────────────────────────────────────────────
+# Generates a complete system prompt from a 1-3 sentence description so users
+# don't have to write voice-AI prompts from scratch. We use the same OpenAI
+# key the agent already uses; falls back to Groq if OPENAI_API_KEY is missing.
+_PROMPT_GENERATOR_META = """You are an expert prompt engineer specialising in voice AI agents for telephony — sales, support, booking, surveys. Given a 1-3 sentence description of what an assistant should do, write a complete production-quality system prompt that includes:
+
+1. Role + persona name + business context. Use placeholders {lead_name}, {business_name}, {service_type} where appropriate so the prompt is reusable across campaigns.
+2. The primary goal of the call.
+3. Step-by-step conversation flow as a numbered list (4-7 steps). Include explicit branches (e.g. "If wrong person, end_call('WRONG_NUMBER')").
+4. Objection handling for the 2-3 most likely objections.
+5. Style rules: short sentences, one question at a time, no monologuing, never invent information you don't have.
+6. Tool usage rules if applicable: book_appointment, check_availability, transfer_to_human, send_sms_confirmation, end_call, lookup_contact, remember_details.
+
+Output ONLY the system prompt body. No preamble, no markdown headings, no quotes around it. Plain text the agent will read verbatim."""
+
+
+@app.post("/api/assistants/generate-prompt", dependencies=[Depends(require_token)])
+async def generate_prompt(request: Request) -> dict:
+    body = await request.json()
+    description = (body.get("description") or "").strip()
+    if not description:
+        raise HTTPException(400, "description is required")
+    if len(description) > 2000:
+        raise HTTPException(400, "description too long (max 2000 chars)")
+
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            503,
+            "Neither OPENAI_API_KEY nor GROQ_API_KEY is configured — the AI "
+            "generator needs at least one.",
+        )
+    use_groq = not os.environ.get("OPENAI_API_KEY")
+
+    try:
+        import openai
+        client = openai.AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1" if use_groq else None,
+        )
+        model = "llama-3.3-70b-versatile" if use_groq else "gpt-4o-mini"
+        resp = await client.chat.completions.create(
+            model=model,
+            max_tokens=1500,
+            temperature=0.4,
+            messages=[
+                {"role": "system", "content": _PROMPT_GENERATOR_META},
+                {"role": "user", "content": description},
+            ],
+        )
+        prompt = (resp.choices[0].message.content or "").strip()
+        # Strip any leading/trailing quotes the model occasionally adds.
+        for q in ('"""', "'''", '"', "'"):
+            if prompt.startswith(q) and prompt.endswith(q):
+                prompt = prompt[len(q):-len(q)].strip()
+                break
+        return {"prompt": prompt, "model": model}
+    except Exception as exc:
+        logger.error("generate_prompt_failed", error=str(exc))
+        raise HTTPException(500, f"prompt generation failed: {exc}") from exc
+
+
 # ── LiveKit webhook receiver ──────────────────────────────────────────────────
 
 def _verify_livekit_sig(body: bytes, signature: str) -> bool:

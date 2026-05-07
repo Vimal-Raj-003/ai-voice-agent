@@ -2,6 +2,7 @@ import type { Assistant } from "@prisma/client";
 import Select from "./Select";
 import BooleanSelect from "./BooleanSelect";
 import FormField from "./FormField";
+import SystemPromptField from "./SystemPromptField";
 
 type Props = {
   action: (formData: FormData) => Promise<void>;
@@ -97,15 +98,10 @@ export default function AssistantForm({ action, initial }: Props) {
               className={inputCls}
             />
           </Field>
-          <Field label="System prompt">
-            <textarea
-              name="systemPrompt"
-              rows={14}
-              defaultValue={initial?.systemPrompt ?? ""}
-              placeholder="You are Priya, a friendly receptionist who…"
-              className={inputCls + " font-mono resize-y"}
-            />
-          </Field>
+          <SystemPromptField
+            defaultValue={initial?.systemPrompt ?? ""}
+            rows={14}
+          />
         </section>
 
         {/* ── Call accuracy (right column) — definition stays below; we move

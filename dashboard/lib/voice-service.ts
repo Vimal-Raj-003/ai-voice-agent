@@ -54,4 +54,9 @@ export const voiceService = {
     call<Record<string, { value: string; configured: boolean }>>(
       `/api/settings`,
     ),
+  generatePrompt: (description: string) =>
+    call<{ prompt: string; model: string }>(
+      `/api/assistants/generate-prompt`,
+      { method: "POST", body: { description } },
+    ),
 };
