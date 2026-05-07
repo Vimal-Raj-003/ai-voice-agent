@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Bot, Users, Megaphone, PhoneCall, Activity, Settings, Sparkles,
 } from "lucide-react";
+import QuickDispatch from "./QuickDispatch";
 
 const links = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
@@ -19,26 +20,29 @@ const links = [
 export default function Sidebar() {
   const path = usePathname();
   return (
-    <aside className="w-60 shrink-0 border-r border-white/5 bg-black/40 backdrop-blur p-4 flex flex-col gap-1">
-      <div className="px-3 py-4">
+    <aside className="w-60 shrink-0 border-r border-white/5 bg-black/40 backdrop-blur p-4 flex flex-col gap-3">
+      <div className="px-3 pt-2 pb-1">
         <div className="text-xs uppercase tracking-widest text-purple-300/70">Rapid X AI</div>
         <div className="text-lg font-bold">OutboundAI</div>
       </div>
-      {links.map(({ href, label, icon: Icon }) => {
-        const active = path === href || (href !== "/" && path.startsWith(href));
-        return (
-          <Link
-            key={href}
-            href={href}
-            className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition ${
-              active ? "bg-white/10 text-white" : "text-gray-400 hover:bg-white/5 hover:text-white"
-            }`}
-          >
-            <Icon size={16} />
-            {label}
-          </Link>
-        );
-      })}
+      <QuickDispatch />
+      <nav className="flex flex-col gap-1">
+        {links.map(({ href, label, icon: Icon }) => {
+          const active = path === href || (href !== "/" && path.startsWith(href));
+          return (
+            <Link
+              key={href}
+              href={href}
+              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition ${
+                active ? "bg-white/10 text-white" : "text-gray-400 hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              <Icon size={16} />
+              {label}
+            </Link>
+          );
+        })}
+      </nav>
     </aside>
   );
 }
