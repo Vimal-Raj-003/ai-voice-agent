@@ -1,26 +1,198 @@
 @import "tailwindcss";
 
 @theme {
-  --color-glass: rgba(255, 255, 255, 0.05);
-  --color-glassBorder: rgba(255, 255, 255, 0.1);
+  /* Brand accents — cyan → violet → magenta gradient powers most highlights. */
+  --color-accent-cyan: #22d3ee;
+  --color-accent-violet: #a78bfa;
+  --color-accent-magenta: #f472b6;
+  --color-accent-emerald: #34d399;
 
-  /* Retain gradient extensions if needed, or rely on standard utilities */
+  /* Surface tokens — used by .glass + .glass-strong utilities. */
+  --color-surface: rgba(255, 255, 255, 0.03);
+  --color-surface-strong: rgba(255, 255, 255, 0.06);
+  --color-surface-border: rgba(255, 255, 255, 0.08);
 }
 
 :root {
-  --foreground-rgb: 255, 255, 255;
-  --background-start-rgb: 0, 0, 0;
-  --background-end-rgb: 0, 0, 0;
+  --foreground-rgb: 240, 244, 255;
+  --bg-base: #050614;
 }
 
+html,
 body {
   color: rgb(var(--foreground-rgb));
-  background: black;
-  /* Simplified background */
+  background: var(--bg-base);
+  min-height: 100vh;
+}
+
+/* Aurora mesh background — three radial gradients animated slowly so the
+ * dashboard feels alive without being distracting. Kept on a fixed
+ * pseudo-element so scrolling content layers cleanly above. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -10%;
+  z-index: -2;
+  background:
+    radial-gradient(ellipse 80% 60% at 15% 10%, rgba(167, 139, 250, 0.22), transparent 60%),
+    radial-gradient(ellipse 70% 50% at 85% 30%, rgba(34, 211, 238, 0.18), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 50% 100%, rgba(244, 114, 182, 0.14), transparent 60%);
+  filter: blur(40px);
+  animation: aurora 24s ease-in-out infinite alternate;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    /* subtle scan line for the futuristic feel */
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 2px,
+      rgba(255, 255, 255, 0.012) 3px,
+      transparent 4px
+    ),
+    /* darken the centre a touch so chrome reads cleanly */
+    radial-gradient(ellipse 120% 100% at 50% 50%, transparent 30%, rgba(5, 6, 20, 0.6) 100%);
+  pointer-events: none;
+}
+
+@keyframes aurora {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(2%, -2%, 0) scale(1.05);
+  }
+  100% {
+    transform: translate3d(-3%, 3%, 0) scale(1);
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 16px rgba(34, 211, 238, 0.25), 0 0 32px rgba(34, 211, 238, 0.08);
+  }
+  50% {
+    box-shadow: 0 0 24px rgba(34, 211, 238, 0.45), 0 0 64px rgba(167, 139, 250, 0.18);
+  }
 }
 
 @layer utilities {
   .text-balance {
     text-wrap: balance;
   }
+
+  /* Glass card — primary surface treatment for panels, cards, headers. */
+  .glass {
+    background: var(--color-surface);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border: 1px solid var(--color-surface-border);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.05),
+      0 8px 32px -16px rgba(0, 0, 0, 0.4);
+  }
+
+  .glass-strong {
+    background: var(--color-surface-strong);
+    backdrop-filter: blur(28px);
+    -webkit-backdrop-filter: blur(28px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+      0 16px 48px -24px rgba(0, 0, 0, 0.5);
+  }
+
+  .glow-cyan {
+    box-shadow:
+      0 0 20px rgba(34, 211, 238, 0.25),
+      0 0 60px rgba(34, 211, 238, 0.08);
+  }
+
+  .glow-violet {
+    box-shadow:
+      0 0 20px rgba(167, 139, 250, 0.3),
+      0 0 60px rgba(167, 139, 250, 0.1);
+  }
+
+  .glow-pulse {
+    animation: pulse-glow 3s ease-in-out infinite;
+  }
+
+  /* Gradient borders done with mask trickery so the inside stays transparent. */
+  .ring-gradient {
+    position: relative;
+  }
+  .ring-gradient::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    background: linear-gradient(
+      135deg,
+      rgba(34, 211, 238, 0.5),
+      rgba(167, 139, 250, 0.5),
+      rgba(244, 114, 182, 0.5)
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+            mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  .text-gradient {
+    background: linear-gradient(
+      90deg,
+      var(--color-accent-cyan),
+      var(--color-accent-violet),
+      var(--color-accent-magenta)
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
+/* Custom scrollbar — thin, gradient accent thumb on dark track. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(167, 139, 250, 0.4) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    rgba(34, 211, 238, 0.45),
+    rgba(167, 139, 250, 0.45)
+  );
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(34, 211, 238, 0.7),
+    rgba(167, 139, 250, 0.7)
+  );
+  background-clip: padding-box;
+}
+
+/* Selection colour matches the brand. */
+::selection {
+  background: rgba(167, 139, 250, 0.35);
+  color: white;
 }

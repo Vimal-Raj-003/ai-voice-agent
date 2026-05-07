@@ -15,7 +15,7 @@ export default function QuickDispatch() {
   >(quickDispatchAction, null);
 
   return (
-    <div className="rounded-xl border border-purple-500/20 bg-gradient-to-br from-purple-500/10 to-blue-500/10 p-3">
+    <div className="ring-gradient rounded-xl bg-gradient-to-br from-violet-500/[0.08] via-fuchsia-500/[0.04] to-cyan-500/[0.08] p-3">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -43,7 +43,7 @@ export default function QuickDispatch() {
           <button
             type="submit"
             disabled={pending}
-            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-white px-2 py-1.5 text-xs font-medium text-black hover:opacity-90 disabled:opacity-50"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-gradient-to-r from-cyan-300 via-violet-300 to-pink-300 px-2 py-1.5 text-xs font-semibold text-black hover:from-cyan-200 hover:via-violet-200 hover:to-pink-200 disabled:opacity-50 transition shadow-[0_0_20px_rgba(167,139,250,0.3)]"
           >
             {pending && <Loader2 size={12} className="animate-spin" />}
             {pending ? "Dispatching…" : "Place call"}
