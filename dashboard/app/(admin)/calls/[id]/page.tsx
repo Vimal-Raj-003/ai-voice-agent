@@ -9,6 +9,8 @@ import {
 } from "@/components/Badge";
 import CallRecording from "@/components/CallRecording";
 import CallNotesEditor from "@/components/CallNotesEditor";
+import CallCostBreakdown from "@/components/CallCostBreakdown";
+import { buildRateMap, computeCallCost } from "@/lib/cost";
 
 export default async function CallDetail({
   params,
@@ -16,14 +18,19 @@ export default async function CallDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const c = await prisma.call.findUnique({ where: { id } });
+  const [c, transcript, rates] = await Promise.all([
+    prisma.call.findUnique({ where: { id } }),
+    prisma.transcriptMessage.findMany({
+      where: { callId: id },
+      orderBy: { timestamp: "asc" },
+    }),
+    prisma.providerRate.findMany(),
+  ]);
   if (!c) notFound();
-  const transcript = await prisma.transcriptMessage.findMany({
-    where: { callId: id },
-    orderBy: { timestamp: "asc" },
-  });
 
-  const cost = Number(c.costUsd ?? 0);
+  // Live cost recomputed from usage × current rates.
+  const breakdown = computeCallCost(c, buildRateMap(rates));
+  const cost = breakdown.totalUsd;
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -57,6 +64,8 @@ export default async function CallDetail({
       </div>
 
       <CallRecording url={c.recordingUrl} durationSeconds={c.durationSeconds} />
+
+      <CallCostBreakdown breakdown={breakdown} />
 
       <CallNotesEditor callId={c.id} initial={c.notes} />
 

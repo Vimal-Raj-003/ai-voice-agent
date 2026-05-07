@@ -12,6 +12,7 @@ import {
   Sparkles,
   Calendar,
   Webhook,
+  CircleDollarSign,
 } from "lucide-react";
 
 const links = [
@@ -20,6 +21,7 @@ const links = [
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/calls", label: "Calls", icon: PhoneCall },
+  { href: "/costs", label: "Costs", icon: CircleDollarSign },
   { href: "/calendar", label: "Calendar", icon: Calendar },
   { href: "/live-logs", label: "Live Logs", icon: Activity },
   { href: "/webhooks", label: "Webhooks", icon: Webhook },
