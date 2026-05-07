@@ -11,6 +11,7 @@ import {
   Settings,
   Sparkles,
   Calendar,
+  Webhook,
 } from "lucide-react";
 import QuickDispatch from "./QuickDispatch";
 
@@ -22,6 +23,7 @@ const links = [
   { href: "/calls", label: "Calls", icon: PhoneCall },
   { href: "/calendar", label: "Calendar", icon: Calendar },
   { href: "/live-logs", label: "Live Logs", icon: Activity },
+  { href: "/webhooks", label: "Webhooks", icon: Webhook },
   { href: "/demo", label: "Demo", icon: Sparkles },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
