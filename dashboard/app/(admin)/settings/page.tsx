@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import { voiceService } from "@/lib/voice-service";
 import {
   KNOWN_SETTINGS,
   SETTING_CATEGORIES,
@@ -9,6 +10,21 @@ import {
 import SettingRow from "@/components/SettingRow";
 
 const KNOWN_KEYS = new Set(KNOWN_SETTINGS.map((s) => s.key));
+
+// Best-effort: ask the running voice-service which keys are populated via env.
+// The endpoint requires the bearer token (server-only) so it's safe to call
+// here. If the voice-service is offline (local dev with only the dashboard
+// running) we degrade gracefully — every row simply shows "no env" instead.
+async function fetchEnvOrigin(): Promise<
+  Map<string, { configured: boolean }>
+> {
+  try {
+    const data = await voiceService.settings();
+    return new Map(Object.entries(data));
+  } catch {
+    return new Map();
+  }
+}
 
 export default async function SettingsPage({
   searchParams,
@@ -20,8 +36,14 @@ export default async function SettingsPage({
     (sp.tab as SettingCategory) || "credentials";
 
   // Pull every stored row at once and look up by key — cheaper than N queries.
-  const stored = await prisma.setting.findMany({ orderBy: { key: "asc" } });
+  // Run the env-origin probe in parallel so a slow voice-service doesn't gate
+  // the whole page render.
+  const [stored, envMap] = await Promise.all([
+    prisma.setting.findMany({ orderBy: { key: "asc" } }),
+    fetchEnvOrigin(),
+  ]);
   const storedMap = new Map(stored.map((s) => [s.key, s]));
+  const voiceServiceReachable = envMap.size > 0;
 
   const defs = settingsByCategory(active);
   const meta = SETTING_CATEGORIES.find((c) => c.id === active);
@@ -63,15 +85,24 @@ export default async function SettingsPage({
         <p className="text-xs text-gray-500 -mt-2">{meta.description}</p>
       )}
 
+      {!voiceServiceReachable && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          Voice-service is offline — the &quot;env&quot; column reflects
+          whatever was last stored in the DB; live env-origin information is
+          unavailable until the voice-service is back up.
+        </div>
+      )}
+
       <div className="space-y-3">
         {defs.map((def) => {
           const row = storedMap.get(def.key);
+          const envInfo = envMap.get(def.key);
           return (
             <SettingRow
               key={def.key}
               def={def}
               storedValue={row?.value ?? null}
-              configuredViaEnv={false}
+              configuredViaEnv={envInfo?.configured ?? false}
             />
           );
         })}

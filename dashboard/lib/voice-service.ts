@@ -50,4 +50,8 @@ export const voiceService = {
   ),
   campaignSchedulerReload: () => call<{ status: string }>(`/api/campaigns/scheduler/reload`, { method: "POST" }),
   campaignSchedulerStatus: () => call<{ running: boolean; jobs: Array<{ id: string; next_run: string | null }> }>(`/api/campaigns/scheduler/status`),
+  settings: () =>
+    call<Record<string, { value: string; configured: boolean }>>(
+      `/api/settings`,
+    ),
 };

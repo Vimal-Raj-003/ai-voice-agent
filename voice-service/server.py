@@ -82,6 +82,15 @@ async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+# ── Settings inspection (admin) ───────────────────────────────────────────────
+# Surface the merged env + DB-stored settings to the dashboard so the admin
+# Settings page can show "configured via env" vs "stored in DB" vs "unset"
+# per known key. Sensitive values are masked by db.get_all_settings().
+@app.get("/api/settings", dependencies=[Depends(require_token)])
+async def get_settings() -> dict:
+    return await db.get_all_settings()
+
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
 def _lk_client() -> lkapi.LiveKitAPI:
