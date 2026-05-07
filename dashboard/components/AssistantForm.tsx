@@ -1,12 +1,16 @@
 import type { Assistant } from "@prisma/client";
 import Select from "./Select";
 import BooleanSelect from "./BooleanSelect";
+import FormField from "./FormField";
 
 type Props = {
   action: (formData: FormData) => Promise<void>;
   initial?: Partial<Assistant>;
 };
 
+// Adapter for legacy `hint` prop usage in this file — every existing call
+// site uses `hint`, FormField uses `tooltip`. Map them so we can do the
+// conversion in one place.
 const Field = ({
   label,
   hint,
@@ -16,15 +20,9 @@ const Field = ({
   hint?: string;
   children: React.ReactNode;
 }) => (
-  <label className="block">
-    <span className="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">
-      {label}
-    </span>
+  <FormField label={label} tooltip={hint}>
     {children}
-    {hint && (
-      <span className="block text-[10px] text-gray-500 mt-1">{hint}</span>
-    )}
-  </label>
+  </FormField>
 );
 
 const inputCls =

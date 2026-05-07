@@ -1,22 +1,23 @@
 import type { Campaign, Assistant } from "@prisma/client";
 import Select from "./Select";
+import FormField from "./FormField";
 
 const inputCls =
   "w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-violet-500/40";
 
+// Adapter: keep the `Field`/`tooltip` names that the rest of this file uses.
 const Field = ({
   label,
+  tooltip,
   children,
 }: {
   label: string;
+  tooltip?: React.ReactNode;
   children: React.ReactNode;
 }) => (
-  <label className="block">
-    <span className="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">
-      {label}
-    </span>
+  <FormField label={label} tooltip={tooltip}>
     {children}
-  </label>
+  </FormField>
 );
 
 const STATUS_OPTIONS = [
@@ -63,14 +64,20 @@ export default function CampaignForm({
           className={inputCls}
         />
       </Field>
-      <Field label="Assistant">
+      <Field
+        label="Assistant"
+        tooltip="The pre-configured agent that will dispatch each call. Manage these on /assistants."
+      >
         <Select
           name="assistantId"
           options={assistantOptions}
           defaultValue={initial?.assistantId ?? ""}
         />
       </Field>
-      <Field label="Prompt override">
+      <Field
+        label="Prompt override"
+        tooltip="Replaces the assistant's system prompt only for calls in this campaign. Leave blank to inherit."
+      >
         <textarea
           name="prompt"
           rows={4}
@@ -80,21 +87,30 @@ export default function CampaignForm({
         />
       </Field>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Field label="Status">
+        <Field
+          label="Status"
+          tooltip="DRAFT = not active. RUNNING = agent dispatches now. PAUSED = temporarily halted, schedule won't fire."
+        >
           <Select
             name="status"
             options={STATUS_OPTIONS}
             defaultValue={initial?.status ?? "DRAFT"}
           />
         </Field>
-        <Field label="Schedule">
+        <Field
+          label="Schedule"
+          tooltip="ONCE = run when manually started. DAILY = at scheduled time IST. WEEKDAYS = Mon–Fri at scheduled time IST."
+        >
           <Select
             name="scheduleType"
             options={SCHEDULE_OPTIONS}
             defaultValue={initial?.scheduleType ?? ""}
           />
         </Field>
-        <Field label="Schedule time (HH:MM IST)">
+        <Field
+          label="Schedule time (HH:MM IST)"
+          tooltip="24-hour clock in IST. Only used when Schedule = DAILY or WEEKDAYS. Example 10:00 = 10am, 17:30 = 5:30pm."
+        >
           <input
             name="scheduleTime"
             defaultValue={initial?.scheduleTime ?? ""}
@@ -102,7 +118,10 @@ export default function CampaignForm({
             placeholder="10:00"
           />
         </Field>
-        <Field label="Call delay (seconds between dials)">
+        <Field
+          label="Call delay (seconds between dials)"
+          tooltip="Stagger between each outbound dial when running through the target list. 3s avoids overloading the SIP trunk."
+        >
           <input
             type="number"
             min={0}
@@ -111,7 +130,10 @@ export default function CampaignForm({
             className={inputCls}
           />
         </Field>
-        <Field label="Agent profile id (optional)">
+        <Field
+          label="Agent profile id (optional)"
+          tooltip="Override the agent's voice / model / tools by pointing at an AgentProfile row. Blank = use the default profile."
+        >
           <input
             name="agentProfileId"
             defaultValue={initial?.agentProfileId ?? ""}
