@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { Users } from "lucide-react";
 import { Badge, outcomeTone } from "@/components/Badge";
 import EmptyState from "@/components/EmptyState";
+import ContactsCsv from "@/components/ContactsCsv";
 
 export default async function ContactsPage() {
   const rows = await prisma.contact.findMany({
@@ -11,7 +12,16 @@ export default async function ContactsPage() {
   });
   return (
     <div className="space-y-6">
-      <h1 className="text-3xl font-bold">Contacts</h1>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-3xl font-bold">Contacts</h1>
+          <p className="text-sm text-gray-400 mt-1">
+            CSV header expected: <code className="text-[10px] font-mono">phone,name,email,notes,tags</code>{" "}
+            — only <code className="text-[10px] font-mono">phone</code> is required.
+          </p>
+        </div>
+        <ContactsCsv />
+      </div>
       {rows.length === 0 ? (
         <EmptyState
           icon={Users}
