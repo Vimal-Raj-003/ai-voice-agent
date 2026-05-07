@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
-import { Plus } from "lucide-react";
+import { Bot, Plus } from "lucide-react";
+import EmptyState from "@/components/EmptyState";
 
 export default async function AssistantsPage() {
   const { id: orgId } = await getDefaultOrg();
@@ -20,10 +21,15 @@ export default async function AssistantsPage() {
           <Plus size={14} /> New
         </Link>
       </div>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] divide-y divide-white/5">
-        {rows.length === 0 && (
-          <div className="p-6 text-gray-500">No assistants yet.</div>
-        )}
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={Bot}
+          title="No assistants yet"
+          description="Assistants define the personality, voice, and tools your AI agent uses on a call. Create one to get started."
+          action={{ href: "/assistants/new", label: "Create your first assistant" }}
+        />
+      ) : (
+      <div className="glass rounded-2xl divide-y divide-white/5">
         {rows.map((a) => (
           <Link
             key={a.id}
@@ -43,6 +49,7 @@ export default async function AssistantsPage() {
           </Link>
         ))}
       </div>
+      )}
     </div>
   );
 }

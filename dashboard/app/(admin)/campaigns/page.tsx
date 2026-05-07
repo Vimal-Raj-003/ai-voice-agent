@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
-import { Plus } from "lucide-react";
+import { Megaphone, Plus } from "lucide-react";
 import { Badge, campaignStatusTone } from "@/components/Badge";
+import EmptyState from "@/components/EmptyState";
 
 export default async function CampaignsPage() {
   const { id: orgId } = await getDefaultOrg();
@@ -22,10 +23,15 @@ export default async function CampaignsPage() {
           <Plus size={14} /> New
         </Link>
       </div>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] divide-y divide-white/5">
-        {rows.length === 0 && (
-          <div className="p-6 text-gray-500">No campaigns yet.</div>
-        )}
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={Megaphone}
+          title="No campaigns yet"
+          description="Campaigns batch-dial a list of contacts on a schedule. Upload a CSV, pick an assistant, and let the agent take care of the rest."
+          action={{ href: "/campaigns/new", label: "Create your first campaign" }}
+        />
+      ) : (
+      <div className="glass rounded-2xl divide-y divide-white/5">
         {rows.map((c) => {
           const dispatched = c.dispatchedTargets ?? 0;
           const total = c.totalTargets ?? c._count.targets;
@@ -63,6 +69,7 @@ export default async function CampaignsPage() {
           );
         })}
       </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
+import { PhoneCall } from "lucide-react";
 import {
   Badge,
   directionTone,
@@ -8,6 +9,7 @@ import {
   sentimentTone,
   statusTone,
 } from "@/components/Badge";
+import EmptyState from "@/components/EmptyState";
 
 type Search = {
   outcome?: string;
@@ -100,10 +102,19 @@ export default async function CallsPage({
           Filter
         </button>
       </form>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] divide-y divide-white/5">
-        {rows.length === 0 && (
-          <div className="p-6 text-gray-500">No calls found.</div>
-        )}
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={PhoneCall}
+          title="No calls found"
+          description={
+            sp.phone || sp.outcome || sp.status
+              ? "No calls match your current filters — try clearing them."
+              : "When calls come in or go out, they appear here with transcripts, recordings, sentiment, and cost."
+          }
+          action={{ href: "/demo", label: "Try the demo widget" }}
+        />
+      ) : (
+      <div className="glass rounded-2xl divide-y divide-white/5">
         {rows.map((c) => {
           const cost = Number(c.costUsd ?? 0);
           return (
@@ -146,6 +157,7 @@ export default async function CallsPage({
           );
         })}
       </div>
+      )}
       <div className="text-xs text-gray-500">
         Page {page} · {total} total
       </div>

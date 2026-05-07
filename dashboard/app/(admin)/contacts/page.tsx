@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import { Users } from "lucide-react";
 import { Badge, outcomeTone } from "@/components/Badge";
+import EmptyState from "@/components/EmptyState";
 
 export default async function ContactsPage() {
   const rows = await prisma.contact.findMany({
@@ -10,10 +12,14 @@ export default async function ContactsPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold">Contacts</h1>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] divide-y divide-white/5">
-        {rows.length === 0 && (
-          <div className="p-6 text-gray-500">No contacts yet.</div>
-        )}
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={Users}
+          title="No contacts yet"
+          description="Contacts are populated automatically when calls happen — once your first call completes, the contact row appears here with full history and memory."
+        />
+      ) : (
+      <div className="glass rounded-2xl divide-y divide-white/5">
         {rows.map((c) => (
           <Link
             key={c.phoneNumber}
@@ -45,6 +51,7 @@ export default async function ContactsPage() {
           </Link>
         ))}
       </div>
+      )}
     </div>
   );
 }
