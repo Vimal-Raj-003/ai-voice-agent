@@ -1,6 +1,13 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
+import {
+  Badge,
+  directionTone,
+  outcomeTone,
+  sentimentTone,
+  statusTone,
+} from "@/components/Badge";
 
 type Search = {
   outcome?: string;
@@ -97,24 +104,47 @@ export default async function CallsPage({
         {rows.length === 0 && (
           <div className="p-6 text-gray-500">No calls found.</div>
         )}
-        {rows.map((c) => (
-          <Link
-            key={c.id}
-            href={`/calls/${c.id}`}
-            className="flex items-center justify-between p-4 hover:bg-white/[0.02]"
-          >
-            <div>
-              <div className="font-medium">{c.toNumber}</div>
-              <div className="text-xs text-gray-500">
-                {c.direction} · {c.status} · {c.outcome ?? "—"} ·{" "}
-                {c.durationSeconds ?? 0}s
+        {rows.map((c) => {
+          const cost = Number(c.costUsd ?? 0);
+          return (
+            <Link
+              key={c.id}
+              href={`/calls/${c.id}`}
+              className="flex items-center justify-between gap-4 p-4 hover:bg-white/[0.02]"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{c.toNumber}</span>
+                  <Badge tone={directionTone(c.direction)}>
+                    {c.direction.toLowerCase()}
+                  </Badge>
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  <Badge tone={statusTone(c.status)}>{c.status}</Badge>
+                  {c.outcome && (
+                    <Badge tone={outcomeTone(c.outcome)}>{c.outcome}</Badge>
+                  )}
+                  {c.sentiment && (
+                    <Badge tone={sentimentTone(c.sentiment)}>
+                      {c.sentiment}
+                    </Badge>
+                  )}
+                  <span className="text-xs text-gray-500">
+                    {c.durationSeconds ?? 0}s
+                  </span>
+                  {cost > 0 && (
+                    <span className="text-xs text-gray-500">
+                      · ${cost.toFixed(4)}
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
-            <span className="text-xs text-gray-500">
-              {c.createdAt.toLocaleString()}
-            </span>
-          </Link>
-        ))}
+              <span className="shrink-0 text-xs text-gray-500">
+                {c.createdAt.toLocaleString()}
+              </span>
+            </Link>
+          );
+        })}
       </div>
       <div className="text-xs text-gray-500">
         Page {page} · {total} total

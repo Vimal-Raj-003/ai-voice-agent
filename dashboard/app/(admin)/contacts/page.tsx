@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import { Badge, outcomeTone } from "@/components/Badge";
 
 export default async function ContactsPage() {
   const rows = await prisma.contact.findMany({
@@ -17,18 +18,30 @@ export default async function ContactsPage() {
           <Link
             key={c.phoneNumber}
             href={`/contacts/${encodeURIComponent(c.phoneNumber)}`}
-            className="flex items-center justify-between p-4 hover:bg-white/[0.02]"
+            className="flex items-center justify-between gap-4 p-4 hover:bg-white/[0.02]"
           >
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="font-medium">{c.name || c.phoneNumber}</div>
-              <div className="text-xs text-gray-500">
-                {c.phoneNumber} · {c.totalCalls} calls ·{" "}
-                {c.lastOutcome ?? "—"}
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-gray-500">{c.phoneNumber}</span>
+                <span className="text-xs text-gray-500">
+                  · {c.totalCalls} call{c.totalCalls === 1 ? "" : "s"}
+                </span>
+                {c.lastOutcome && (
+                  <Badge tone={outcomeTone(c.lastOutcome)}>
+                    {c.lastOutcome}
+                  </Badge>
+                )}
               </div>
             </div>
-            {c.isBooked && (
-              <span className="text-xs text-green-400">Booked</span>
-            )}
+            <div className="shrink-0 flex items-center gap-2">
+              {c.isBooked && <Badge tone="success">Booked</Badge>}
+              <span className="text-xs text-gray-500">
+                {c.lastCallAt
+                  ? new Date(c.lastCallAt).toLocaleDateString()
+                  : "—"}
+              </span>
+            </div>
           </Link>
         ))}
       </div>
