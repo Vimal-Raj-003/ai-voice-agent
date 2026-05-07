@@ -24,7 +24,26 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const password = String(credentials?.password ?? "");
         const adminEmail = process.env.ADMIN_EMAIL ?? "";
         const adminHash = process.env.ADMIN_PASSWORD_HASH ?? "";
-        if (!adminEmail || !adminHash) return null;
+        if (!adminEmail || !adminHash) {
+          console.error(
+            "[auth] ADMIN_EMAIL or ADMIN_PASSWORD_HASH is not set",
+          );
+          return null;
+        }
+        // bcrypt hashes are exactly 60 chars and start with $2a/$2b/$2y. If
+        // the env loader expanded the $-prefixed segments (a known
+        // @next/env pitfall), the hash will be shorter and unparseable —
+        // surface that loudly so it doesn't look like a wrong-password.
+        if (adminHash.length !== 60 || !/^\$2[abxy]\$/.test(adminHash)) {
+          console.error(
+            "[auth] ADMIN_PASSWORD_HASH looks malformed (length=%d). " +
+              "Escape each $ in the env file as \\$ — e.g. " +
+              "ADMIN_PASSWORD_HASH=\\$2b\\$10\\$… — otherwise Next.js's " +
+              "env loader strips the $-prefixed segments.",
+            adminHash.length,
+          );
+          return null;
+        }
         if (email.toLowerCase() !== adminEmail.toLowerCase()) return null;
         const ok = await bcrypt.compare(password, adminHash);
         return ok
