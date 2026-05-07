@@ -328,8 +328,71 @@ async def entrypoint(ctx: JobContext) -> None:
     await session.start(room=ctx.room, agent=agent, room_input_options=room_input)
     await db.upsert_active_call(ctx.room.name, phone, name, "active")
 
-    # Outbound dial-out branch
     user_in_room = any("sip_" in p.identity for p in ctx.room.remote_participants.values())
+    direction = "INBOUND" if user_in_room else "OUTBOUND"
+
+    # Insert a placeholder call row so transcript_messages can FK against it during the call.
+    # complete_call() in the shutdown hook fills in outcome / duration / recording / etc.
+    call_id = await db.create_call_row(
+        phone_number=phone,
+        lead_name=meta.get("lead_name") or name or None,
+        direction=direction,
+        livekit_room_name=ctx.room.name,
+    )
+    agent_tools._call_id = call_id
+
+    # Stream transcript turns into transcript_messages so the dashboard /calls/[id] view is
+    # populated live. Hook the conversation_item_added event emitted by livekit-agents 1.x.
+    def _stream_turn(role: str, content: Any) -> None:
+        if not role:
+            return
+        if isinstance(content, list):
+            content = " ".join(str(c) for c in content if isinstance(c, str))
+        text = str(content or "").strip()
+        if not text:
+            return
+        asyncio.create_task(
+            db.insert_transcript_message(call_id, role.upper(), text)
+        )
+
+    @session.on("conversation_item_added")
+    def _on_item(event: Any) -> None:  # noqa: ANN401 — runtime event from livekit
+        item = getattr(event, "item", None) or event
+        role = getattr(item, "role", None)
+        content = getattr(item, "text_content", None)
+        if content is None:
+            content = getattr(item, "content", None)
+        _stream_turn(role, content)
+
+    # Start LiveKit Egress to R2 if creds are configured. The /api/webhook/livekit handler
+    # writes the resulting public URL onto calls.recordingUrl by livekitRoomName.
+    if os.getenv("R2_ACCESS_KEY_ID") and os.getenv("R2_BUCKET") and os.getenv("R2_ENDPOINT"):
+        try:
+            recording_filepath = f"{ctx.room.name}.ogg"
+            egress_req = api.RoomCompositeEgressRequest(
+                room_name=ctx.room.name,
+                audio_only=True,
+                file_outputs=[api.EncodedFileOutput(
+                    filepath=recording_filepath,
+                    s3=api.S3Upload(
+                        access_key=os.getenv("R2_ACCESS_KEY_ID", ""),
+                        secret=os.getenv("R2_SECRET_ACCESS_KEY", ""),
+                        bucket=os.getenv("R2_BUCKET", ""),
+                        endpoint=os.getenv("R2_ENDPOINT", ""),
+                        region="auto",
+                        force_path_style=True,
+                    ),
+                )],
+            )
+            egress_info = await ctx.api.egress.start_room_composite_egress(egress_req)
+            agent_tools._egress_id = getattr(egress_info, "egress_id", "")
+            logger.info("egress_started", egress_id=agent_tools._egress_id, room=ctx.room.name)
+        except Exception as exc:
+            logger.warning("egress_start_failed", error=str(exc))
+    else:
+        logger.info("egress_skipped_no_r2_config")
+
+    # Outbound dial-out branch
     if phone not in ("unknown", "demo") and not user_in_room:
         logger.info("dialing_out", phone=phone, trunk=config.OUTBOUND_TRUNK_ID)
         try:
@@ -422,20 +485,41 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
     was_booked = outcome == "BOOKED"
 
     log_call_ok = False
+    call_id = getattr(agent_tools, "_call_id", None)
     try:
-        call_id = await db.log_call(
-            phone_number=phone, lead_name=name or agent_tools.lead_name,
-            outcome=outcome, reason=reason, duration_seconds=duration,
-            recording_url=getattr(agent_tools, "recording_url", None),
-            sentiment=sentiment, cost_usd=cost_usd,
-            interrupt_count=getattr(agent_tools, "interrupt_count", 0),
-            was_booked=was_booked, transcript=transcript,
-        )
+        if call_id:
+            await db.complete_call(
+                call_id=call_id,
+                outcome=outcome, reason=reason, duration_seconds=duration,
+                phone_number=phone, lead_name=name or agent_tools.lead_name,
+                recording_url=getattr(agent_tools, "recording_url", None),
+                sentiment=sentiment, cost_usd=cost_usd,
+                interrupt_count=getattr(agent_tools, "interrupt_count", 0),
+                was_booked=was_booked, transcript=transcript,
+            )
+        else:
+            # Fallback: row was never inserted (e.g. early exit before session.start).
+            call_id = await db.log_call(
+                phone_number=phone, lead_name=name or agent_tools.lead_name,
+                outcome=outcome, reason=reason, duration_seconds=duration,
+                recording_url=getattr(agent_tools, "recording_url", None),
+                sentiment=sentiment, cost_usd=cost_usd,
+                interrupt_count=getattr(agent_tools, "interrupt_count", 0),
+                was_booked=was_booked, transcript=transcript,
+            )
         log_call_ok = True
         logger.info("call_logged", call_id=call_id, duration=duration, outcome=outcome)
     except Exception as exc:
         logger.error("log_call_failed", error=str(exc))
         await db.log_error("agent", "log_call failed", str(exc))
+
+    # Stop the egress so the file is finalized and the egress_ended webhook fires.
+    egress_id = getattr(agent_tools, "_egress_id", "")
+    if egress_id:
+        try:
+            await ctx.api.egress.stop_egress(api.StopEgressRequest(egress_id=egress_id))
+        except Exception as exc:
+            logger.warning("egress_stop_failed", error=str(exc), egress_id=egress_id)
 
     await db.remove_active_call(ctx.room.name)
 

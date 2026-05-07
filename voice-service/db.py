@@ -260,6 +260,90 @@ async def get_appointments_by_phone(phone: str) -> list[dict]:
 
 # ── Calls ─────────────────────────────────────────────────────────────────────
 
+async def create_call_row(
+    phone_number: str,
+    lead_name: str | None,
+    direction: str = "OUTBOUND",
+    livekit_room_name: str | None = None,
+    from_number: str | None = None,
+) -> str:
+    """Insert a placeholder call row at session start so transcript_messages can FK against it.
+
+    Returns the new call id. The row is updated to its final state by ``complete_call`` when
+    the session ends. The status is set to ``IN_PROGRESS`` immediately so the dashboard can
+    surface live calls without waiting for shutdown.
+    """
+    pool = await get_pool()
+    call_id = str(uuid.uuid4())
+    org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
+    from_num = from_number or os.environ.get("OUTBOUND_CALLER_ID", "") or ""
+    await pool.execute(
+        """INSERT INTO calls (
+                id, "organizationId", "fromNumber", "toNumber", direction, status,
+                "livekitRoomName", "createdAt", "updatedAt"
+           ) VALUES (
+                $1, $2, $3, $4, $5::"CallDirection", 'IN_PROGRESS'::"CallStatus",
+                $6, now(), now()
+           )""",
+        call_id, org_id, from_num, phone_number, direction.upper(), livekit_room_name,
+    )
+    return call_id
+
+
+async def complete_call(
+    call_id: str,
+    outcome: str,
+    reason: str,
+    duration_seconds: int,
+    phone_number: str | None = None,
+    lead_name: str | None = None,
+    recording_url: str | None = None,
+    sentiment: str | None = None,
+    cost_usd: float | None = None,
+    interrupt_count: int = 0,
+    was_booked: bool = False,
+    transcript: str | None = None,
+    notes: str | None = None,
+) -> None:
+    """Update an in-progress call to its final state and upsert the contact CRM row.
+
+    Counterpart to ``create_call_row``. The transcript blob lives in ``calls.summary``
+    because the schema has no dedicated transcript column.
+    """
+    pool = await get_pool()
+    await pool.execute(
+        """UPDATE calls SET
+             status            = 'COMPLETED'::"CallStatus",
+             outcome           = $1::"CallOutcome",
+             reason            = $2,
+             "durationSeconds" = $3,
+             "recordingUrl"    = COALESCE($4, "recordingUrl"),
+             notes             = COALESCE($5, notes),
+             sentiment         = $6,
+             "costUsd"         = $7,
+             interrupt_count   = $8,
+             was_booked        = $9,
+             summary           = $10,
+             "updatedAt"       = now()
+           WHERE id = $11""",
+        outcome.upper(), reason, duration_seconds, recording_url, notes,
+        sentiment, cost_usd, interrupt_count, was_booked, transcript, call_id,
+    )
+    if phone_number:
+        await pool.execute(
+            """INSERT INTO contacts (id, phone_number, name, total_calls, last_call_at, last_outcome, is_booked, created_at, updated_at)
+               VALUES ($1, $2, $3, 1, now(), $4, $5, now(), now())
+               ON CONFLICT (phone_number) DO UPDATE SET
+                 total_calls   = contacts.total_calls + 1,
+                 last_call_at  = now(),
+                 last_outcome  = EXCLUDED.last_outcome,
+                 is_booked     = contacts.is_booked OR EXCLUDED.is_booked,
+                 name          = COALESCE(contacts.name, EXCLUDED.name),
+                 updated_at    = now()""",
+            str(uuid.uuid4()), phone_number, lead_name, outcome.upper(), was_booked,
+        )
+
+
 async def log_call(
     phone_number: str, lead_name: str | None, outcome: str, reason: str,
     duration_seconds: int, recording_url: str | None = None, notes: str | None = None,
