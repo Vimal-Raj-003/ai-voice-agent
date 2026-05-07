@@ -144,6 +144,12 @@ enum RateSource {
   DEFAULT // seeded by code on first run
 }
 
+enum SpeechSensitivity {
+  LOW    // long silence threshold — patient agent, fewer interruptions
+  MEDIUM // balanced (default)
+  HIGH   // shorter threshold — quicker agent, may interrupt
+}
+
 enum ErrorLevel {
   INFO
   WARNING
@@ -247,6 +253,29 @@ model Assistant {
   // Recording / Privacy
   recordingEnabled Boolean @default(true)
   hipaaEnabled     Boolean @default(false)
+
+  // ── Call accuracy & speech tuning (industry-standard knobs) ──────────────
+  // endOfSpeechSensitivity: how aggressively VAD declares the user has
+  //   stopped speaking. LOW = wait longer (avoids interrupting), HIGH = react
+  //   faster (snappier turn-taking, more interruptions risk).
+  // interruptionThresholdMs: minimum continuous user speech (ms) required to
+  //   stop the agent mid-utterance. Higher = ignores coughs, "yeah"s.
+  // backgroundDenoising: enable LiveKit BVCTelephony noise cancellation.
+  // voicemailDetection: detect answering-machine tone and leave a short
+  //   message instead of treating the silence as an awkward pause.
+  // confidenceThresholdPct: if STT confidence < this %, agent asks the user
+  //   to repeat. 0 = never ask. Industry sweet spot is ~55-65.
+  // hallucinationGuard: auto-append a "do not invent information" clause to
+  //   the system prompt. Reduces fabricated facts noticeably with LLMs.
+  // minPauseMs: floor on how soon the agent can respond after the user
+  //   stops talking — prevents "trampling" the customer.
+  endOfSpeechSensitivity SpeechSensitivity @default(LOW)
+  interruptionThresholdMs Int              @default(150)
+  backgroundDenoising     Boolean          @default(true)
+  voicemailDetection      Boolean          @default(false)
+  confidenceThresholdPct  Int              @default(0)
+  hallucinationGuard      Boolean          @default(true)
+  minPauseMs              Int              @default(200)
 
   // Misc
   metadata Json?

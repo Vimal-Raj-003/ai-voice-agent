@@ -131,15 +131,34 @@ def _build_session(tools: list, system_prompt: str, profile: dict | None = None)
 
     RealtimeClass = _google_realtime or (_google_beta_realtime if use_realtime else None)
 
+    # Per-assistant call-accuracy knobs (see Assistant model). Each profile
+    # passed to _build_session is a dict that may include these — read with
+    # safe defaults so legacy assistants (no fields populated) still work.
+    sensitivity = (profile.get("end_of_speech_sensitivity") or "LOW").upper()
+    silence_ms_map = {"LOW": 2000, "MEDIUM": 1000, "HIGH": 400}
+    silence_ms = silence_ms_map.get(sensitivity, 2000)
+    prefix_padding_ms = int(profile.get("min_pause_ms") or 200)
+
     if use_realtime and RealtimeClass is not None:
-        logger.info("session_mode_realtime", model=gemini_model, voice=gemini_voice)
+        logger.info(
+            "session_mode_realtime",
+            model=gemini_model,
+            voice=gemini_voice,
+            sensitivity=sensitivity,
+            silence_ms=silence_ms,
+        )
         try:
             from google.genai import types as _gt
+            sensitivity_enum = {
+                "LOW": _gt.EndSensitivity.END_SENSITIVITY_LOW,
+                "MEDIUM": _gt.EndSensitivity.END_SENSITIVITY_LOW,  # SDK only exposes LOW/HIGH
+                "HIGH": _gt.EndSensitivity.END_SENSITIVITY_HIGH,
+            }.get(sensitivity, _gt.EndSensitivity.END_SENSITIVITY_LOW)
             realtime_input_cfg = _gt.RealtimeInputConfig(
                 automatic_activity_detection=_gt.AutomaticActivityDetection(
-                    end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_LOW,
-                    silence_duration_ms=2000,
-                    prefix_padding_ms=200,
+                    end_of_speech_sensitivity=sensitivity_enum,
+                    silence_duration_ms=silence_ms,
+                    prefix_padding_ms=prefix_padding_ms,
                 ),
             )
             session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
@@ -307,6 +326,17 @@ async def entrypoint(ctx: JobContext) -> None:
         language_preset=meta.get("language_preset") or "multilingual",
         caller_history=history,
     )
+    # Hallucination guard — auto-append a "do not invent information" clause
+    # when the assistant has it enabled (default true). One short paragraph;
+    # studies show this measurably reduces fabricated answers across all
+    # current LLMs without hurting legitimate domain knowledge.
+    if profile.get("hallucination_guard", True):
+        system_prompt += (
+            "\n\nIMPORTANT: Never invent information you don't have. "
+            "If the caller asks something you don't know — pricing, "
+            "policies, schedules, names — say plainly that you don't have "
+            "that detail and offer to take a message or transfer the call."
+        )
     tokens = count_tokens(system_prompt)
     logger.info("prompt_built", tokens=tokens)
 
@@ -320,10 +350,17 @@ async def entrypoint(ctx: JobContext) -> None:
     session = _build_session(tools=tool_list, system_prompt=system_prompt, profile=profile)
 
     room_input = RoomInputOptions(close_on_disconnect=False)
-    try:
-        room_input = RoomInputOptions(close_on_disconnect=False, noise_cancellation=noise_cancellation.BVCTelephony())
-    except Exception:
-        pass
+    # Per-assistant background denoising toggle. BVCTelephony is the
+    # broadband-voice cancellation tuned for telephony; turning it off saves
+    # ~5% CPU per call but lets in line noise.
+    if profile.get("background_denoising", True):
+        try:
+            room_input = RoomInputOptions(
+                close_on_disconnect=False,
+                noise_cancellation=noise_cancellation.BVCTelephony(),
+            )
+        except Exception:
+            pass
 
     await session.start(room=ctx.room, agent=agent, room_input_options=room_input)
     await db.upsert_active_call(ctx.room.name, phone, name, "active")
