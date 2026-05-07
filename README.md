@@ -5,27 +5,40 @@ Production-grade outbound + inbound voice calling platform built on **LiveKit Ag
 ## Architecture
 
 ```
-┌──────────────────────────────────────┐        ┌────────────────────────────────────┐
-│  Dashboard (Next.js 16)              │        │  voice-service (Python 3.11)        │
-│  Vercel deploy                       │        │  Hostinger Coolify (Docker)         │
-│                                      │        │                                    │
-│  • App Router + Server Actions       │        │  • LiveKit worker  (agent.py)      │
-│  • Prisma 6 → Neon Postgres          │ HTTPS  │  • FastAPI server  (server.py)     │
-│  • livekit-client demo widget        │ ─────▶ │      ├─ /api/dispatch/single|bulk  │
-│  • SSE log viewer                    │ Bearer │      ├─ /api/demo/token            │
-│  • Assistants/Campaigns/Calls/etc CRUD│        │      ├─ /api/campaigns/*          │
-└──────────────────────────────────────┘        │      ├─ /api/logs/stream  (SSE)   │
-                  │                              │      ├─ /api/webhook/livekit (HMAC)│
-                  ▼                              │      └─ /metrics  (Prometheus)    │
-        Neon DB (Postgres)  ◀────── asyncpg ─────┤                                    │
-        22 tables                                │  • supervisord runs both procs    │
-                                                 └────────────────────────────────────┘
-                                                           │
-                                                           ▼
-                                                   LiveKit Cloud + Vobiz SIP
+                    Internet (HTTPS)
+                          │
+                          ▼
+        ┌───────────────────────────────────┐
+        │  VPS (KVM, self-hosted via Docker) │
+        │                                    │
+        │   Caddy ── auto-HTTPS reverse proxy│
+        │     ├─ ${APP_HOSTNAME}   →┐        │
+        │     └─ ${VOICE_HOSTNAME}  →┤        │
+        │                            │        │
+        │   ┌──────────────────┐  ┌──▼──────────────────┐
+        │   │ dashboard         │  │ voice-service        │
+        │   │ Next.js 16        │  │ Python 3.11          │
+        │   │ • App Router      │  │ • LiveKit worker     │
+        │   │ • Prisma 6        │  │ • FastAPI server     │
+        │   │ • Demo widget     │  │   ├─ /api/dispatch/* │
+        │   │ • SSE log viewer  │  │   ├─ /api/demo/token │
+        │   └────────┬──────────┘  │   ├─ /api/campaigns/*│
+        │            │              │   ├─ /api/logs/stream│
+        │            │ HTTP+Bearer  │   ├─ /api/webhook/livekit
+        │            └─────────────▶│   └─ /metrics        │
+        │                            └──────────────────────┘
+        └────────────┬─────────────────────────┘
+                     │ asyncpg + Prisma
+                     ▼
+              Neon Postgres (managed, off-VPS)
+                     │
+                     ▼
+           LiveKit Cloud + Vobiz SIP
+
+DNS: Vercel (or any registrar) — A records → VPS IP. Vercel is NOT used for hosting.
 ```
 
-The dashboard reads NeonDB directly via Prisma. **All call dispatches go through the voice-service REST API** with `Authorization: Bearer ${VOICE_SERVICE_TOKEN}`. The browser never holds the LiveKit API secret — JWTs are minted by the voice-service and proxied by the Next API route.
+The dashboard reads NeonDB directly via Prisma. **All call dispatches go through the voice-service REST API** with `Authorization: Bearer ${VOICE_SERVICE_TOKEN}`. The browser never holds the LiveKit API secret — JWTs are minted by the voice-service and proxied by the Next API route. Inter-service traffic on the VPS uses the internal `web` Docker network; Caddy is the only container with public ports.
 
 ## Repo layout
 
@@ -100,45 +113,47 @@ npm run dev                      # http://localhost:3000
 
 The seed prints the default organization id; the same value is mirrored into the `settings.DEFAULT_ORG_ID` row so the voice-service can read it without a hardcoded constant.
 
-## Deploying
+## Deploying — single VPS via Docker Compose
 
-### Dashboard → Vercel
+The full stack runs on **one VPS** as three containers (`caddy`, `dashboard`, `voice-service`) orchestrated by `docker-compose.yml` at the repo root. Caddy terminates TLS with auto-issued Let's Encrypt certificates and reverse-proxies both subdomains. Vercel (or any other registrar) is used **only for DNS**.
 
-1. **Import** the repo into Vercel; set the project **root directory** to `dashboard`.
-2. Set environment variables (under *Project Settings → Environment Variables*):
-   - `DATABASE_URL` — pooled Neon DSN (`?sslmode=require`)
-   - `DATABASE_URL_UNPOOLED` — direct DSN for migrations
-   - `VOICE_SERVICE_URL` — the public Hostinger URL (e.g. `https://voice.example.com`)
-   - `VOICE_SERVICE_TOKEN` — same value as the voice-service container holds
-   - `NEXT_PUBLIC_LIVEKIT_URL` — LiveKit Cloud WSS URL (used by the demo widget)
-3. Vercel detects Next.js automatically; the `package.json` `build` script runs `prisma generate && next build`.
-4. Run `npx prisma migrate deploy` from your laptop (or a CI job) before each deploy that includes new migrations — Vercel does not run migrations during build.
+**Step-by-step VPS deployment guide:** see [`deploy/README.md`](deploy/README.md).
 
-### voice-service → Hostinger Coolify (Docker)
+In short:
 
-1. Create a new Coolify resource → *Application* → *Dockerfile* → point to the `voice-service/` subfolder.
-2. Set environment variables from `voice-service/.env.example`. Required:
-   - `DATABASE_URL` (NeonDB pooled), `DATABASE_URL_UNPOOLED`
-   - `VOICE_SERVICE_TOKEN` (same as Vercel side)
-   - `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_WEBHOOK_SECRET`
-   - `GOOGLE_API_KEY` for Gemini Live
-   - At least one fallback `OPENAI_API_KEY` / `GROQ_API_KEY` / `ANTHROPIC_API_KEY`
-   - At least one TTS key: `DEEPGRAM_API_KEY` / `SARVAM_API_KEY` / `ELEVENLABS_API_KEY`
-   - SIP: `VOBIZ_SIP_DOMAIN`, `VOBIZ_USERNAME`, `VOBIZ_PASSWORD`, `VOBIZ_OUTBOUND_NUMBER`, `OUTBOUND_TRUNK_ID`
-3. Expose port `8000`; configure Coolify's Traefik to terminate TLS and forward to it. Set the public hostname (e.g. `voice.example.com`) and copy that into the dashboard's `VOICE_SERVICE_URL`.
-4. Healthcheck: `GET /health` (Coolify auto-detects the Dockerfile `HEALTHCHECK` directive).
-5. After first deploy, configure the **LiveKit webhook**:
-   - LiveKit dashboard → *Settings → Webhooks* → add `${VOICE_SERVICE_URL}/api/webhook/livekit`
-   - Copy the LiveKit-issued secret into `LIVEKIT_WEBHOOK_SECRET`
-6. Configure SIP trunks (one-time per LiveKit project):
-   ```bash
-   docker exec -it voice-service python sip/create_trunk.py
-   docker exec -it voice-service python sip/setup_trunk.py
-   ```
+```bash
+# 1. SSH to your VPS (Ubuntu 22.04+)
+curl -fsSL https://get.docker.com | sh
+apt-get install -y docker-compose-plugin git
+
+# 2. Clone + configure
+git clone https://github.com/Vimal-Raj-003/ai-voice-agent.git /opt/outboundai
+cd /opt/outboundai
+cp .env.example .env       # fill in DATABASE_URL, LIVEKIT_*, GOOGLE_API_KEY, hostnames…
+
+# 3. Point DNS A records ${APP_HOSTNAME} and ${VOICE_HOSTNAME} → VPS IP
+
+# 4. Migrate + seed Neon (one-time)
+docker compose run --rm --entrypoint sh dashboard \
+  -c "npx prisma migrate deploy && npx prisma db seed"
+
+# 5. Boot the stack
+docker compose up -d --build
+```
+
+Caddy gets HTTPS certs automatically once DNS resolves. Verify with `curl https://voice.yourdomain.com/health`.
+
+### Updates
+
+```bash
+cd /opt/outboundai && ./deploy/update.sh
+```
+
+Pulls latest `main`, rebuilds changed images, applies new Prisma migrations, rolls containers.
 
 ### Recordings (Cloudflare R2)
 
-LiveKit Egress writes to R2 directly via S3-compatible credentials. Set `R2_*` vars on the voice-service. The webhook receiver at `/api/webhook/livekit` updates `calls.recordingUrl` when an `egress_ended` event arrives. The dashboard's *Calls → detail* page renders an `<audio>` player from that URL.
+LiveKit Egress writes to R2 directly via S3-compatible credentials. Set `R2_*` vars in the root `.env`. The webhook receiver at `/api/webhook/livekit` updates `calls.recordingUrl` when an `egress_ended` event arrives. The dashboard's *Calls → detail* page renders an `<audio>` player from that URL.
 
 ## Testing
 

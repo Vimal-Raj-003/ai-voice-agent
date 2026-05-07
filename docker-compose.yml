@@ -1,0 +1,81 @@
+# Production self-hosted stack for OutboundAI on a VPS.
+# Reads all secrets from a single .env file at the repo root (see .env.example).
+# Vercel only manages DNS — A records for ${APP_HOSTNAME} and ${VOICE_HOSTNAME} must
+# point to this VPS's public IP before `docker compose up`.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_HOSTNAME: ${APP_HOSTNAME}
+      VOICE_HOSTNAME: ${VOICE_HOSTNAME}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - dashboard
+      - voice-service
+    networks:
+      - web
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    image: outboundai/dashboard:latest
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL_UNPOOLED: ${DATABASE_URL_UNPOOLED}
+      VOICE_SERVICE_URL: http://voice-service:8000
+      VOICE_SERVICE_TOKEN: ${VOICE_SERVICE_TOKEN}
+      NEXT_PUBLIC_LIVEKIT_URL: ${NEXT_PUBLIC_LIVEKIT_URL}
+    depends_on:
+      voice-service:
+        condition: service_healthy
+    networks:
+      - web
+
+  voice-service:
+    build:
+      context: ./voice-service
+      dockerfile: Dockerfile
+    image: outboundai/voice-service:latest
+    restart: unless-stopped
+    expose:
+      - "8000"
+    env_file:
+      - .env
+    environment:
+      # The dashboard reaches the voice service via the internal Docker network,
+      # but the LiveKit webhook must hit the public URL (set in voice-service .env via VOICE_PUBLIC_URL if needed)
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - web
+    volumes:
+      # Optional: mount per-client config overrides without rebuilding
+      - ./voice-service/configs:/app/configs:ro
+
+networks:
+  web:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

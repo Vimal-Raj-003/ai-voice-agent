@@ -1,0 +1,38 @@
+# Caddy config — replace placeholders with your actual hostnames in .env (see APP_HOSTNAME / VOICE_HOSTNAME).
+# Caddy auto-provisions Let's Encrypt certificates on first run.
+# Both subdomains must have A records pointing to this VPS's public IP before Caddy starts.
+
+{
+	# Email used by Let's Encrypt for renewal/expiry notifications
+	email {$ACME_EMAIL}
+	# Uncomment for the LE staging endpoint while testing (avoids rate limits):
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# Dashboard (Next.js)
+{$APP_HOSTNAME} {
+	encode zstd gzip
+	reverse_proxy dashboard:3000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+	}
+}
+
+# Voice service (FastAPI + LiveKit agent)
+{$VOICE_HOSTNAME} {
+	encode zstd gzip
+
+	# SSE log stream needs flushing + long timeout
+	@sse path /api/logs/stream
+	reverse_proxy @sse voice-service:8000 {
+		flush_interval -1
+		transport http {
+			read_timeout 24h
+		}
+	}
+
+	reverse_proxy voice-service:8000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+	}
+}
