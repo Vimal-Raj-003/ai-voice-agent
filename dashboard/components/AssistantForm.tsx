@@ -1,4 +1,5 @@
 import type { Assistant } from "@prisma/client";
+import Select from "./Select";
 
 type Props = {
   action: (formData: FormData) => Promise<void>;
@@ -13,7 +14,7 @@ const Field = ({
   children: React.ReactNode;
 }) => (
   <label className="block">
-    <span className="block text-xs uppercase tracking-wide text-gray-400 mb-1">
+    <span className="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">
       {label}
     </span>
     {children}
@@ -21,16 +22,39 @@ const Field = ({
 );
 
 const inputCls =
-  "w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/40";
+  "w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-violet-500/40";
+
+const LLM_PROVIDERS = [
+  { value: "OPENAI", label: "OpenAI" },
+  { value: "GROQ", label: "Groq" },
+  { value: "OPENROUTER", label: "OpenRouter" },
+  { value: "ANTHROPIC", label: "Anthropic" },
+  { value: "CUSTOM", label: "Custom" },
+];
+
+const TTS_PROVIDERS = [
+  { value: "DEEPGRAM", label: "Deepgram" },
+  { value: "OPENAI", label: "OpenAI" },
+  { value: "SARVAM", label: "Sarvam" },
+  { value: "CARTESIA", label: "Cartesia" },
+  { value: "ELEVENLABS", label: "ElevenLabs" },
+];
+
+const STT_PROVIDERS = [
+  { value: "DEEPGRAM", label: "Deepgram" },
+  { value: "OPENAI", label: "OpenAI" },
+  { value: "SARVAM", label: "Sarvam" },
+];
 
 export default function AssistantForm({ action, initial }: Props) {
   return (
-    <form action={action} className="space-y-4 max-w-2xl">
+    <form action={action} className="glass rounded-2xl p-5 space-y-5 max-w-2xl">
       <Field label="Name">
         <input
           name="name"
           required
           defaultValue={initial?.name}
+          placeholder="My Assistant"
           className={inputCls}
         />
       </Field>
@@ -38,6 +62,7 @@ export default function AssistantForm({ action, initial }: Props) {
         <input
           name="firstMessage"
           defaultValue={initial?.firstMessage ?? ""}
+          placeholder="Hi! Thanks for calling Acme Dental, this is Priya. How can I help?"
           className={inputCls}
         />
       </Field>
@@ -46,22 +71,17 @@ export default function AssistantForm({ action, initial }: Props) {
           name="systemPrompt"
           rows={10}
           defaultValue={initial?.systemPrompt ?? ""}
-          className={inputCls + " font-mono"}
+          placeholder="You are Priya, a friendly receptionist who…"
+          className={inputCls + " font-mono resize-y"}
         />
       </Field>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="LLM provider">
-          <select
+          <Select
             name="llmProvider"
+            options={LLM_PROVIDERS}
             defaultValue={initial?.llmProvider ?? "OPENAI"}
-            className={inputCls}
-          >
-            {["OPENAI", "GROQ", "OPENROUTER", "ANTHROPIC", "CUSTOM"].map(
-              (v) => (
-                <option key={v}>{v}</option>
-              )
-            )}
-          </select>
+          />
         </Field>
         <Field label="LLM model">
           <input
@@ -71,17 +91,11 @@ export default function AssistantForm({ action, initial }: Props) {
           />
         </Field>
         <Field label="TTS provider">
-          <select
+          <Select
             name="ttsProvider"
+            options={TTS_PROVIDERS}
             defaultValue={initial?.ttsProvider ?? "DEEPGRAM"}
-            className={inputCls}
-          >
-            {["OPENAI", "DEEPGRAM", "SARVAM", "CARTESIA", "ELEVENLABS"].map(
-              (v) => (
-                <option key={v}>{v}</option>
-              )
-            )}
-          </select>
+          />
         </Field>
         <Field label="Voice ID">
           <input
@@ -92,19 +106,15 @@ export default function AssistantForm({ action, initial }: Props) {
           />
         </Field>
         <Field label="STT provider">
-          <select
+          <Select
             name="sttProvider"
+            options={STT_PROVIDERS}
             defaultValue={initial?.sttProvider ?? "DEEPGRAM"}
-            className={inputCls}
-          >
-            {["DEEPGRAM", "OPENAI", "SARVAM"].map((v) => (
-              <option key={v}>{v}</option>
-            ))}
-          </select>
+          />
         </Field>
       </div>
-      <button className="rounded-lg bg-white text-black px-4 py-2 text-sm font-medium hover:opacity-90">
-        Save
+      <button className="rounded-lg bg-gradient-to-r from-cyan-300 via-violet-300 to-pink-300 px-4 py-2 text-sm font-semibold text-black hover:from-cyan-200 hover:via-violet-200 hover:to-pink-200 shadow-[0_0_20px_rgba(167,139,250,0.25)] transition">
+        Save assistant
       </button>
     </form>
   );

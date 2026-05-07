@@ -13,9 +13,24 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "OutboundAI — Rapid X AI",
-  description: "AI Voice Agent Orchestration Platform",
+  title: "Jilljill Voice — Voice AI Platform",
+  description:
+    "Inbound + outbound + bulk voice calling powered by LiveKit and a multi-LLM agent.",
 };
+
+// Inline boot script — runs before body renders so the correct theme attribute
+// is on <html> on the very first paint, avoiding FOUC. Reads localStorage if
+// the user has explicitly toggled, otherwise honours the OS preference.
+const themeBootScript = `(function () {
+  try {
+    var stored = localStorage.getItem('jjv_theme');
+    var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+    var theme = stored && stored !== 'system' ? stored : (prefersLight ? 'light' : 'dark');
+    document.documentElement.dataset.theme = theme;
+  } catch (e) {
+    document.documentElement.dataset.theme = 'dark';
+  }
+})();`;
 
 export default function RootLayout({
   children,
@@ -23,7 +38,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+      </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         {children}
       </body>

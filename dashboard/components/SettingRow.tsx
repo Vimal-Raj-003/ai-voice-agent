@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Eye, EyeOff, Check, Loader2 } from "lucide-react";
 import type { SettingDef } from "@/lib/known-settings";
 import { upsertSetting } from "@/app/(admin)/settings/actions";
+import Select from "./Select";
 
 type Props = {
   def: SettingDef;
@@ -71,15 +72,17 @@ export default function SettingRow({ def, storedValue, configuredViaEnv }: Props
 
       <div className="mt-3 flex items-stretch gap-2">
         {isBoolean ? (
-          <select
-            id={`set-${def.key}`}
-            value={value || "false"}
-            onChange={(e) => setValue(e.target.value)}
-            className="flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/40"
-          >
-            <option value="true">true</option>
-            <option value="false">false</option>
-          </select>
+          <div className="flex-1">
+            <Select
+              name={`hidden-${def.key}`}
+              defaultValue={value || "false"}
+              options={[
+                { value: "true", label: "true" },
+                { value: "false", label: "false" },
+              ]}
+              onChange={(v) => setValue(v)}
+            />
+          </div>
         ) : (
           <input
             id={`set-${def.key}`}

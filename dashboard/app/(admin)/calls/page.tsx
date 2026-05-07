@@ -10,6 +10,7 @@ import {
   statusTone,
 } from "@/components/Badge";
 import EmptyState from "@/components/EmptyState";
+import Select from "@/components/Select";
 
 type Search = {
   outcome?: string;
@@ -52,53 +53,45 @@ export default async function CallsPage({
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold">Calls</h1>
-      <form className="flex gap-2 text-sm flex-wrap">
+      <form className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-sm">
         <input
           name="phone"
           placeholder="phone…"
           defaultValue={sp.phone ?? ""}
-          className="rounded-lg bg-white/5 border border-white/10 px-3 py-1.5"
+          className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
         />
-        <select
+        <Select
           name="outcome"
           defaultValue={sp.outcome ?? ""}
-          className="rounded-lg bg-white/5 border border-white/10 px-3 py-1.5"
-        >
-          <option value="">All outcomes</option>
-          {[
-            "BOOKED",
-            "NOT_INTERESTED",
-            "WRONG_NUMBER",
-            "VOICEMAIL",
-            "NO_ANSWER",
-            "CALLBACK_REQUESTED",
-            "TRANSFERRED",
-            "FAILED",
-            "COMPLETED",
-          ].map((v) => (
-            <option key={v}>{v}</option>
-          ))}
-        </select>
-        <select
+          options={[
+            { value: "", label: "All outcomes" },
+            { value: "BOOKED", label: "Booked" },
+            { value: "NOT_INTERESTED", label: "Not interested" },
+            { value: "WRONG_NUMBER", label: "Wrong number" },
+            { value: "VOICEMAIL", label: "Voicemail" },
+            { value: "NO_ANSWER", label: "No answer" },
+            { value: "CALLBACK_REQUESTED", label: "Callback requested" },
+            { value: "TRANSFERRED", label: "Transferred" },
+            { value: "FAILED", label: "Failed" },
+            { value: "COMPLETED", label: "Completed" },
+          ]}
+        />
+        <Select
           name="status"
           defaultValue={sp.status ?? ""}
-          className="rounded-lg bg-white/5 border border-white/10 px-3 py-1.5"
-        >
-          <option value="">All statuses</option>
-          {[
-            "QUEUED",
-            "RINGING",
-            "IN_PROGRESS",
-            "COMPLETED",
-            "FAILED",
-            "NO_ANSWER",
-            "BUSY",
-            "CANCELED",
-          ].map((v) => (
-            <option key={v}>{v}</option>
-          ))}
-        </select>
-        <button className="rounded-lg bg-white text-black px-3 py-1.5 font-medium">
+          options={[
+            { value: "", label: "All statuses" },
+            { value: "QUEUED", label: "Queued" },
+            { value: "RINGING", label: "Ringing" },
+            { value: "IN_PROGRESS", label: "In progress" },
+            { value: "COMPLETED", label: "Completed" },
+            { value: "FAILED", label: "Failed" },
+            { value: "NO_ANSWER", label: "No answer" },
+            { value: "BUSY", label: "Busy" },
+            { value: "CANCELED", label: "Canceled" },
+          ]}
+        />
+        <button className="rounded-lg bg-gradient-to-r from-cyan-300 via-violet-300 to-pink-300 px-3 py-2 text-sm font-semibold text-black hover:from-cyan-200 hover:via-violet-200 hover:to-pink-200 transition shadow-[0_0_20px_rgba(167,139,250,0.2)]">
           Filter
         </button>
       </form>

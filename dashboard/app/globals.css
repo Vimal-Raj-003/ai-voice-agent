@@ -6,37 +6,63 @@
   --color-accent-violet: #a78bfa;
   --color-accent-magenta: #f472b6;
   --color-accent-emerald: #34d399;
-
-  /* Surface tokens — used by .glass + .glass-strong utilities. */
-  --color-surface: rgba(255, 255, 255, 0.03);
-  --color-surface-strong: rgba(255, 255, 255, 0.06);
-  --color-surface-border: rgba(255, 255, 255, 0.08);
 }
 
-:root {
-  --foreground-rgb: 240, 244, 255;
+/* ── Theme tokens ────────────────────────────────────────────────────────────
+ * Components reference these via var() instead of hardcoded colors so the
+ * inline boot script in app/layout.tsx can flip them by setting
+ * data-theme on <html>. Tailwind utility classes that use white/5,
+ * text-gray-400 etc still hardcode dark-leaning colors; the .glass surface
+ * + body bg do most of the visual heavy lifting and they DO theme.
+ */
+:root,
+[data-theme="dark"] {
   --bg-base: #050614;
+  --fg-base: 240, 244, 255;
+  --surface: rgba(255, 255, 255, 0.03);
+  --surface-strong: rgba(255, 255, 255, 0.06);
+  --surface-border: rgba(255, 255, 255, 0.08);
+  --surface-shadow: 0 8px 32px -16px rgba(0, 0, 0, 0.4);
+  --aurora-1: rgba(167, 139, 250, 0.22);
+  --aurora-2: rgba(34, 211, 238, 0.18);
+  --aurora-3: rgba(244, 114, 182, 0.14);
+  --scanline-alpha: 0.012;
+  --vignette: rgba(5, 6, 20, 0.6);
+  --scrollbar-thumb: rgba(167, 139, 250, 0.4);
+}
+
+[data-theme="light"] {
+  --bg-base: #f5f6fb;
+  --fg-base: 17, 24, 39;
+  --surface: rgba(255, 255, 255, 0.7);
+  --surface-strong: rgba(255, 255, 255, 0.85);
+  --surface-border: rgba(15, 23, 42, 0.08);
+  --surface-shadow: 0 8px 32px -16px rgba(15, 23, 42, 0.08);
+  --aurora-1: rgba(167, 139, 250, 0.32);
+  --aurora-2: rgba(34, 211, 238, 0.28);
+  --aurora-3: rgba(244, 114, 182, 0.24);
+  --scanline-alpha: 0.02;
+  --vignette: rgba(15, 23, 42, 0.04);
+  --scrollbar-thumb: rgba(99, 102, 241, 0.4);
 }
 
 html,
 body {
-  color: rgb(var(--foreground-rgb));
+  color: rgb(var(--fg-base));
   background: var(--bg-base);
   min-height: 100vh;
 }
 
-/* Aurora mesh background — three radial gradients animated slowly so the
- * dashboard feels alive without being distracting. Kept on a fixed
- * pseudo-element so scrolling content layers cleanly above. */
+/* Aurora mesh — fixed pseudo-element so scrolling content layers cleanly. */
 body::before {
   content: "";
   position: fixed;
   inset: -10%;
   z-index: -2;
   background:
-    radial-gradient(ellipse 80% 60% at 15% 10%, rgba(167, 139, 250, 0.22), transparent 60%),
-    radial-gradient(ellipse 70% 50% at 85% 30%, rgba(34, 211, 238, 0.18), transparent 60%),
-    radial-gradient(ellipse 60% 40% at 50% 100%, rgba(244, 114, 182, 0.14), transparent 60%);
+    radial-gradient(ellipse 80% 60% at 15% 10%, var(--aurora-1), transparent 60%),
+    radial-gradient(ellipse 70% 50% at 85% 30%, var(--aurora-2), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 50% 100%, var(--aurora-3), transparent 60%);
   filter: blur(40px);
   animation: aurora 24s ease-in-out infinite alternate;
 }
@@ -47,16 +73,14 @@ body::after {
   inset: 0;
   z-index: -1;
   background:
-    /* subtle scan line for the futuristic feel */
     repeating-linear-gradient(
       to bottom,
       transparent 0px,
       transparent 2px,
-      rgba(255, 255, 255, 0.012) 3px,
+      rgba(255, 255, 255, var(--scanline-alpha)) 3px,
       transparent 4px
     ),
-    /* darken the centre a touch so chrome reads cleanly */
-    radial-gradient(ellipse 120% 100% at 50% 50%, transparent 30%, rgba(5, 6, 20, 0.6) 100%);
+    radial-gradient(ellipse 120% 100% at 50% 50%, transparent 30%, var(--vignette) 100%);
   pointer-events: none;
 }
 
@@ -86,25 +110,24 @@ body::after {
     text-wrap: balance;
   }
 
-  /* Glass card — primary surface treatment for panels, cards, headers. */
   .glass {
-    background: var(--color-surface);
+    background: var(--surface);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
-    border: 1px solid var(--color-surface-border);
+    border: 1px solid var(--surface-border);
     box-shadow:
       inset 0 1px 0 0 rgba(255, 255, 255, 0.05),
-      0 8px 32px -16px rgba(0, 0, 0, 0.4);
+      var(--surface-shadow);
   }
 
   .glass-strong {
-    background: var(--color-surface-strong);
+    background: var(--surface-strong);
     backdrop-filter: blur(28px);
     -webkit-backdrop-filter: blur(28px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid var(--surface-border);
     box-shadow:
       inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
-      0 16px 48px -24px rgba(0, 0, 0, 0.5);
+      var(--surface-shadow);
   }
 
   .glow-cyan {
@@ -123,7 +146,6 @@ body::after {
     animation: pulse-glow 3s ease-in-out infinite;
   }
 
-  /* Gradient borders done with mask trickery so the inside stays transparent. */
   .ring-gradient {
     position: relative;
   }
@@ -160,10 +182,10 @@ body::after {
   }
 }
 
-/* Custom scrollbar — thin, gradient accent thumb on dark track. */
+/* Custom scrollbar — thin, gradient accent thumb. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(167, 139, 250, 0.4) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
@@ -191,8 +213,46 @@ body::after {
   background-clip: padding-box;
 }
 
-/* Selection colour matches the brand. */
 ::selection {
   background: rgba(167, 139, 250, 0.35);
   color: white;
+}
+
+/* Light-mode tweaks for components that use raw white/dark utilities ───────
+ * Tailwind utility classes (text-gray-400, bg-black/30, etc.) hardcode
+ * dark-leaning colors. We override the most painful ones in light mode here
+ * so the dashboard stays readable without a full theme rewrite. Components
+ * that need finer control can opt into [data-theme="light"] selectors.
+ */
+[data-theme="light"] body {
+  color-scheme: light;
+}
+[data-theme="light"] .bg-black\/30,
+[data-theme="light"] .bg-black\/40,
+[data-theme="light"] .bg-white\/5,
+[data-theme="light"] .bg-white\/\[0\.02\],
+[data-theme="light"] .bg-white\/\[0\.03\],
+[data-theme="light"] .bg-white\/\[0\.04\],
+[data-theme="light"] .bg-white\/\[0\.06\],
+[data-theme="light"] .bg-white\/\[0\.08\] {
+  background: rgba(15, 23, 42, 0.04);
+}
+[data-theme="light"] .text-gray-300,
+[data-theme="light"] .text-gray-400,
+[data-theme="light"] .text-gray-500,
+[data-theme="light"] .text-gray-600 {
+  color: rgb(71, 85, 105);
+}
+[data-theme="light"] .text-gray-200,
+[data-theme="light"] .text-white {
+  color: rgb(15, 23, 42);
+}
+[data-theme="light"] .border-white\/5,
+[data-theme="light"] .border-white\/10,
+[data-theme="light"] .border-white\/15,
+[data-theme="light"] .border-white\/20 {
+  border-color: rgba(15, 23, 42, 0.1);
+}
+[data-theme="light"] .divide-white\/5 > :not(:last-child) {
+  border-color: rgba(15, 23, 42, 0.08);
 }

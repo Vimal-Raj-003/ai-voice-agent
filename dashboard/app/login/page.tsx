@@ -40,15 +40,17 @@ export default async function LoginPage({
         }}
         className="glass rounded-3xl p-8 w-full max-w-sm space-y-4"
       >
-        <div className="flex items-center gap-2">
-          <div className="size-9 rounded-xl bg-gradient-to-br from-cyan-400 via-violet-400 to-pink-400 flex items-center justify-center glow-violet">
-            <Sparkles size={16} className="text-black" />
+        <div className="flex items-center gap-2.5">
+          <div className="size-10 rounded-xl bg-gradient-to-br from-cyan-400 via-violet-400 to-pink-400 flex items-center justify-center glow-violet">
+            <Sparkles size={18} className="text-black" />
           </div>
           <div>
-            <div className="text-[10px] uppercase tracking-[0.2em] text-violet-300/80">
-              Rapid X AI
+            <div className="text-xl font-bold text-gradient leading-tight">
+              Jilljill Voice
             </div>
-            <div className="text-lg font-bold text-gradient">OutboundAI</div>
+            <div className="text-[10px] uppercase tracking-[0.18em] text-gray-500">
+              Voice AI platform
+            </div>
           </div>
         </div>
         <div>
