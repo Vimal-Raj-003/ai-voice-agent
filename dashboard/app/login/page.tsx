@@ -1,4 +1,6 @@
 import { signIn } from "@/lib/auth";
+import { AuthError } from "next-auth";
+import { redirect } from "next/navigation";
 import { Sparkles, AlertCircle } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -14,11 +16,27 @@ export default async function LoginPage({
       <form
         action={async (formData) => {
           "use server";
-          await signIn("credentials", {
-            email: formData.get("email"),
-            password: formData.get("password"),
-            redirectTo: sp.callbackUrl || "/",
-          });
+          try {
+            await signIn("credentials", {
+              email: formData.get("email"),
+              password: formData.get("password"),
+              redirectTo: sp.callbackUrl || "/",
+            });
+          } catch (error) {
+            // signIn() throws AuthError on bad creds AND throws NEXT_REDIRECT
+            // on success. Catch only AuthError; re-throw the redirect so
+            // Next.js's framework code handles it (otherwise success → 500).
+            if (error instanceof AuthError) {
+              redirect(
+                `/login?error=${error.type}${
+                  sp.callbackUrl
+                    ? `&callbackUrl=${encodeURIComponent(sp.callbackUrl)}`
+                    : ""
+                }`,
+              );
+            }
+            throw error;
+          }
         }}
         className="glass rounded-3xl p-8 w-full max-w-sm space-y-4"
       >
@@ -42,7 +60,11 @@ export default async function LoginPage({
         {sp.error && (
           <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
             <AlertCircle size={14} className="shrink-0 mt-0.5" />
-            <span>Sign-in failed. Check email and password and try again.</span>
+            <span>
+              {sp.error === "CredentialsSignin"
+                ? "Wrong email or password."
+                : "Sign-in failed. Please try again."}
+            </span>
           </div>
         )}
         <label className="block">
@@ -53,7 +75,8 @@ export default async function LoginPage({
             name="email"
             type="email"
             required
-            placeholder="admin@example.com"
+            autoComplete="email"
+            placeholder="admin@local"
             className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
           />
         </label>
@@ -65,6 +88,7 @@ export default async function LoginPage({
             name="password"
             type="password"
             required
+            autoComplete="current-password"
             placeholder="••••••••"
             className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
           />
