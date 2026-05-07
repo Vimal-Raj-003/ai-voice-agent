@@ -10,6 +10,7 @@ import {
   Activity,
   Settings,
   Sparkles,
+  Calendar,
 } from "lucide-react";
 import QuickDispatch from "./QuickDispatch";
 
@@ -19,6 +20,7 @@ const links = [
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/calls", label: "Calls", icon: PhoneCall },
+  { href: "/calendar", label: "Calendar", icon: Calendar },
   { href: "/live-logs", label: "Live Logs", icon: Activity },
   { href: "/demo", label: "Demo", icon: Sparkles },
   { href: "/settings", label: "Settings", icon: Settings },
