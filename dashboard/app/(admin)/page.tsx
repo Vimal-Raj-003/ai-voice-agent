@@ -1,11 +1,21 @@
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
-import { PhoneCall, CalendarCheck, Bot, Megaphone } from "lucide-react";
+import {
+  PhoneCall,
+  CalendarCheck,
+  Bot,
+  Megaphone,
+  CircleDollarSign,
+  Coins,
+} from "lucide-react";
 import StatCard from "@/components/StatCard";
 import ActiveCallsPanel from "@/components/ActiveCallsPanel";
 import CallsTimeline from "@/components/charts/CallsTimeline";
 import OutcomeDonut from "@/components/charts/OutcomeDonut";
 import BookingGauge from "@/components/charts/BookingGauge";
+import TokensTimeline from "@/components/charts/TokensTimeline";
+import CostStackedBar from "@/components/charts/CostStackedBar";
+import { aggregateCalls, buildRateMap, computeCallCost } from "@/lib/cost";
 
 export default async function Overview() {
   const { id: orgId } = await getDefaultOrg();
@@ -18,6 +28,8 @@ export default async function Overview() {
     activeCampaigns,
     recentCalls,
     activeCallsRaw,
+    rates,
+    costCalls,
   ] = await Promise.all([
     prisma.call.count({ where: { organizationId: orgId } }),
     prisma.call.count({ where: { organizationId: orgId, wasBooked: true } }),
@@ -27,19 +39,52 @@ export default async function Overview() {
     }),
     prisma.call.findMany({
       where: { organizationId: orgId, createdAt: { gte: since } },
-      select: { createdAt: true, outcome: true, wasBooked: true },
+      select: {
+        createdAt: true,
+        outcome: true,
+        wasBooked: true,
+        llmInputTokens: true,
+        llmOutputTokens: true,
+      },
       orderBy: { createdAt: "asc" },
     }),
     prisma.activeCall.findMany({ orderBy: { startedAt: "desc" }, take: 8 }),
+    prisma.providerRate.findMany(),
+    // Pull every column the cost lib needs for the spend infograph.
+    prisma.call.findMany({
+      where: { organizationId: orgId, createdAt: { gte: since } },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        createdAt: true,
+        direction: true,
+        durationSeconds: true,
+        llmInputTokens: true,
+        llmOutputTokens: true,
+        llmProviderUsed: true,
+        llmSkuUsed: true,
+        sttSeconds: true,
+        sttProviderUsed: true,
+        sttSkuUsed: true,
+        ttsChars: true,
+        ttsProviderUsed: true,
+        ttsSkuUsed: true,
+        telephonyProvider: true,
+      },
+    }),
   ]);
 
-  // Build the last-14-days timeline by binning recentCalls by ISO date.
+  // Build the last-14-days timelines by binning recentCalls by ISO date.
+  // Same shape used by both the calls chart and the tokens chart.
   const timeline: { date: string; calls: number; booked: number }[] = [];
+  const tokenTimeline: { date: string; input: number; output: number }[] = [];
   const today = new Date();
   for (let i = 13; i >= 0; i--) {
     const d = new Date(today);
     d.setUTCDate(d.getUTCDate() - i);
-    timeline.push({ date: d.toISOString().slice(0, 10), calls: 0, booked: 0 });
+    const key = d.toISOString().slice(0, 10);
+    timeline.push({ date: key, calls: 0, booked: 0 });
+    tokenTimeline.push({ date: key, input: 0, output: 0 });
   }
   const idx = new Map(timeline.map((p, i) => [p.date, i]));
   for (const c of recentCalls) {
@@ -48,8 +93,28 @@ export default async function Overview() {
     if (i !== undefined) {
       timeline[i].calls += 1;
       if (c.wasBooked) timeline[i].booked += 1;
+      tokenTimeline[i].input += c.llmInputTokens ?? 0;
+      tokenTimeline[i].output += c.llmOutputTokens ?? 0;
     }
   }
+  const totalInputTokens = tokenTimeline.reduce((s, p) => s + p.input, 0);
+  const totalOutputTokens = tokenTimeline.reduce((s, p) => s + p.output, 0);
+
+  // Cost aggregation for the spend infograph + tile.
+  const rateMap = buildRateMap(rates);
+  const costAgg = aggregateCalls(costCalls, rateMap, 14);
+  const activeCostProviders = costAgg.byProvider
+    .filter((p) => p.costUsd > 0)
+    .map((p) => p.provider);
+  // Today-only spend for the spotlight tile.
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const todaysCalls = costCalls.filter(
+    (c) => c.createdAt.toISOString().slice(0, 10) === todayKey,
+  );
+  const todaysSpend = todaysCalls.reduce(
+    (s, c) => s + computeCallCost(c, rateMap).totalUsd,
+    0,
+  );
 
   // Outcome distribution for the donut.
   const outcomeMap = new Map<string, number>();
@@ -82,7 +147,7 @@ export default async function Overview() {
         </p>
       </div>
 
-      {/* Top stat tiles */}
+      {/* Top stat tiles — calls + bookings + spend + tokens */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
           label="Total calls"
@@ -98,16 +163,37 @@ export default async function Overview() {
           tone="emerald"
         />
         <StatCard
+          label="Spend (14d)"
+          value={`$${costAgg.totalUsd.toFixed(2)}`}
+          hint={`Today $${todaysSpend.toFixed(4)}`}
+          icon={CircleDollarSign}
+          tone="violet"
+        />
+        <StatCard
+          label="Tokens (14d)"
+          value={
+            totalInputTokens + totalOutputTokens > 1_000_000
+              ? `${((totalInputTokens + totalOutputTokens) / 1_000_000).toFixed(2)}M`
+              : `${Math.round((totalInputTokens + totalOutputTokens) / 1000)}K`
+          }
+          hint={`${(totalInputTokens / 1000).toFixed(0)}K in · ${(totalOutputTokens / 1000).toFixed(0)}K out`}
+          icon={Coins}
+          tone="magenta"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-2 gap-4">
+        <StatCard
           label="Assistants"
           value={assistantCount}
           icon={Bot}
-          tone="violet"
+          tone="cyan"
         />
         <StatCard
           label="Running campaigns"
           value={activeCampaigns}
           icon={Megaphone}
-          tone="magenta"
+          tone="emerald"
         />
       </div>
 
@@ -138,6 +224,52 @@ export default async function Overview() {
         </section>
 
         <ActiveCallsPanel calls={activeCalls} />
+      </div>
+
+      {/* Token + spend infographs row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <section className="glass rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
+              Token usage
+            </h2>
+            <span className="text-[10px] text-gray-500 font-mono">14 days</span>
+          </div>
+          {totalInputTokens + totalOutputTokens === 0 ? (
+            <div className="h-[220px] flex flex-col items-center justify-center text-center">
+              <Coins size={28} className="text-gray-600 mb-2" />
+              <div className="text-sm text-gray-500">No token usage yet.</div>
+              <div className="text-[11px] text-gray-600 mt-1">
+                Once a call completes, LLM tokens land here.
+              </div>
+            </div>
+          ) : (
+            <TokensTimeline data={tokenTimeline} />
+          )}
+        </section>
+
+        <section className="glass rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
+              Spend by provider
+            </h2>
+            <span className="text-[10px] text-gray-500 font-mono">14 days</span>
+          </div>
+          {costAgg.totalUsd === 0 ? (
+            <div className="h-[220px] flex flex-col items-center justify-center text-center">
+              <CircleDollarSign size={28} className="text-gray-600 mb-2" />
+              <div className="text-sm text-gray-500">No spend yet.</div>
+              <div className="text-[11px] text-gray-600 mt-1">
+                See the full breakdown on /costs once calls happen.
+              </div>
+            </div>
+          ) : (
+            <CostStackedBar
+              data={costAgg.byDay}
+              providers={activeCostProviders}
+            />
+          )}
+        </section>
       </div>
 
       {/* Bottom row: outcome donut + booking-rate gauge */}
