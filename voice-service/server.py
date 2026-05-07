@@ -336,12 +336,32 @@ async def _reload_scheduled_campaigns() -> None:
             logger.warning("scheduler_load_failed", id=r["id"], error=str(exc))
 
 
+async def _refresh_rates_safely() -> None:
+    """Wrap provider_rates.refresh_llm_rates in a try/except so a transient
+    OpenRouter outage can't crash the scheduler."""
+    import provider_rates  # local import keeps the module out of the cold path
+    try:
+        result = await provider_rates.refresh_llm_rates()
+        logger.info("provider_rates_refresh_done", **result)
+    except Exception as exc:
+        logger.error("provider_rates_refresh_failed", error=str(exc))
+
+
 @app.on_event("startup")
 async def _start_scheduler() -> None:
     global _scheduler
     _scheduler = AsyncIOScheduler(timezone=_ist())
     _scheduler.start()
     await _reload_scheduled_campaigns()
+    # 3-hourly LLM rate refresh from OpenRouter. Run once at startup so the
+    # rates table is fresh from boot — then every 3 hours on the wall clock.
+    _scheduler.add_job(
+        _refresh_rates_safely,
+        CronTrigger(hour="*/3", minute=0, timezone=_ist()),
+        id="provider-rates-refresh",
+        replace_existing=True,
+    )
+    asyncio.create_task(_refresh_rates_safely())
 
 
 @app.on_event("shutdown")
@@ -362,6 +382,21 @@ async def campaign_run_now(campaign_id: str) -> dict:
 async def campaign_reload() -> dict:
     await _reload_scheduled_campaigns()
     return {"status": "reloaded"}
+
+
+@app.get("/api/rates", dependencies=[Depends(require_token)])
+async def list_rates() -> list[dict]:
+    """Read all provider rates for the dashboard — costs are computed
+    client-side as Call.usage × these rates."""
+    import provider_rates
+    return await provider_rates.get_all_rates()
+
+
+@app.post("/api/rates/refresh", dependencies=[Depends(require_token)])
+async def refresh_rates() -> dict:
+    """Manual refresh — same OpenRouter fetch the cron runs every 3 hours."""
+    import provider_rates
+    return await provider_rates.refresh_llm_rates()
 
 
 @app.get("/api/campaigns/scheduler/status", dependencies=[Depends(require_token)])

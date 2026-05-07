@@ -130,6 +130,20 @@ enum ScheduleType {
   WEEKDAYS
 }
 
+enum RateKind {
+  LLM_INPUT_MTOK // USD per 1,000,000 input tokens
+  LLM_OUTPUT_MTOK // USD per 1,000,000 output tokens
+  STT_MINUTE // USD per minute of audio transcribed
+  TTS_KCHARS // USD per 1,000 characters synthesized
+  TELEPHONY_MINUTE // USD per minute of telephony egress
+}
+
+enum RateSource {
+  OPENROUTER // auto-fetched from openrouter.ai/api/v1/models
+  MANUAL // edited by an admin in the dashboard
+  DEFAULT // seeded by code on first run
+}
+
 enum ErrorLevel {
   INFO
   WARNING
@@ -184,7 +198,7 @@ model ApiKey {
   keyHash        String    @unique
   prefix         String // first 8 chars for display ("rk_xxxxxx...")
   lastUsedAt     DateTime?
-  revokedAt     DateTime?
+  revokedAt      DateTime?
   createdAt      DateTime  @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -225,14 +239,14 @@ model Assistant {
   voiceId     String?
 
   // Behavior
-  silenceTimeoutSeconds Int     @default(30)
-  maxDurationSeconds    Int     @default(1800)
+  silenceTimeoutSeconds Int      @default(30)
+  maxDurationSeconds    Int      @default(1800)
   endCallPhrases        String[] @default([])
   backgroundSound       String?
 
   // Recording / Privacy
-  recordingEnabled  Boolean @default(true)
-  hipaaEnabled      Boolean @default(false)
+  recordingEnabled Boolean @default(true)
+  hipaaEnabled     Boolean @default(false)
 
   // Misc
   metadata Json?
@@ -241,11 +255,11 @@ model Assistant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  phoneNumbers  PhoneNumber[]
-  calls         Call[]
-  campaigns     Campaign[]
-  tools         AssistantTool[]
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  phoneNumbers PhoneNumber[]
+  calls        Call[]
+  campaigns    Campaign[]
+  tools        AssistantTool[]
 
   @@index([organizationId])
   @@map("assistants")
@@ -277,16 +291,16 @@ model SipTrunk {
 }
 
 model PhoneNumber {
-  id             String    @id @default(cuid())
+  id             String   @id @default(cuid())
   organizationId String
-  number         String    @unique // E.164 format e.g. +918065480036
-  provider       String    @default("vobiz")
+  number         String   @unique // E.164 format e.g. +918065480036
+  provider       String   @default("vobiz")
   trunkId        String?
   assistantId    String? // assistant that picks up inbound calls on this number
   label          String?
-  isActive       Boolean   @default(true)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   trunk        SipTrunk?    @relation(fields: [trunkId], references: [id], onDelete: SetNull)
@@ -303,7 +317,7 @@ model PhoneNumber {
 // =============================================================================
 
 model Call {
-  id             String        @id @default(cuid())
+  id             String  @id @default(cuid())
   organizationId String
   assistantId    String?
   phoneNumberId  String? // owned phone number this call routed through
@@ -316,20 +330,36 @@ model Call {
   dispatchId      String?
 
   // Parties
-  fromNumber String
-  toNumber   String
-  direction  CallDirection
-  status     CallStatus    @default(QUEUED)
+  fromNumber  String
+  toNumber    String
+  direction   CallDirection
+  status      CallStatus    @default(QUEUED)
   endedReason EndedReason?
 
   // Timing
-  startedAt  DateTime?
-  answeredAt DateTime?
-  endedAt    DateTime?
+  startedAt       DateTime?
+  answeredAt      DateTime?
+  endedAt         DateTime?
   durationSeconds Int?
 
-  // Cost ($ — six decimals)
+  // Cost ($ — six decimals). Snapshot computed at the time of the call using
+  // the rates current then; the dashboard recomputes a live cost from the
+  // usage columns below + the ProviderRate table on every render.
   costUsd Decimal? @db.Decimal(10, 6)
+
+  // Usage breakdown — captured on shutdown so cost can be (re)computed
+  // against current rates. Nullable because legacy rows predate this fields.
+  llmInputTokens    Int?    @map("llm_input_tokens")
+  llmOutputTokens   Int?    @map("llm_output_tokens")
+  llmProviderUsed   String? @map("llm_provider_used") // "openai" | "groq" | "anthropic" | "google"
+  llmSkuUsed        String? @map("llm_sku_used") // "gpt-4o-mini" | …
+  sttSeconds        Int?    @map("stt_seconds")
+  sttProviderUsed   String? @map("stt_provider_used") // "deepgram" | "sarvam"
+  sttSkuUsed        String? @map("stt_sku_used") // "nova-3" | …
+  ttsChars          Int?    @map("tts_chars")
+  ttsProviderUsed   String? @map("tts_provider_used") // "elevenlabs" | "cartesia" | …
+  ttsSkuUsed        String? @map("tts_sku_used")
+  telephonyProvider String? @map("telephony_provider") // "vobiz" | "twilio"
 
   // Recording / artifacts
   recordingUrl String?
@@ -353,12 +383,12 @@ model Call {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  assistant    Assistant?   @relation(fields: [assistantId], references: [id], onDelete: SetNull)
-  phoneNumber  PhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
-  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  transcript   TranscriptMessage[]
-  toolInvocations ToolInvocation[]
+  organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistant         Assistant?          @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+  phoneNumber       PhoneNumber?        @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  campaign          Campaign?           @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  transcript        TranscriptMessage[]
+  toolInvocations   ToolInvocation[]
   webhookDeliveries WebhookDelivery[]
 
   @@index([organizationId, createdAt])
@@ -397,16 +427,16 @@ model Campaign {
   prompt         String?        @db.Text
   status         CampaignStatus @default(DRAFT)
 
-  totalTargets       Int @default(0)
-  dispatchedTargets  Int @default(0)
-  failedTargets      Int @default(0)
-  completedTargets   Int @default(0)
+  totalTargets      Int @default(0)
+  dispatchedTargets Int @default(0)
+  failedTargets     Int @default(0)
+  completedTargets  Int @default(0)
 
-  scheduleType      ScheduleType?
-  scheduleTime      String?  // "HH:MM" 24h IST
-  callDelaySeconds  Int      @default(3)
-  agentProfileId    String?
-  lastRunAt         DateTime?
+  scheduleType     ScheduleType?
+  scheduleTime     String? // "HH:MM" 24h IST
+  callDelaySeconds Int           @default(3)
+  agentProfileId   String?
+  lastRunAt        DateTime?
 
   startedAt DateTime?
   endedAt   DateTime?
@@ -423,19 +453,19 @@ model Campaign {
 }
 
 model CampaignTarget {
-  id          String               @id @default(cuid())
-  campaignId  String
-  phoneNumber String
-  status      CampaignTargetStatus @default(PENDING)
-  callId      String?
+  id           String               @id @default(cuid())
+  campaignId   String
+  phoneNumber  String
+  status       CampaignTargetStatus @default(PENDING)
+  callId       String?
   leadName     String?
   dispatchId   String?
   dispatchedAt DateTime?
-  attempts    Int                  @default(0)
-  lastError   String?              @db.Text
-  variables   Json? // per-target template vars
-  createdAt   DateTime             @default(now())
-  updatedAt   DateTime             @updatedAt
+  attempts     Int                  @default(0)
+  lastError    String?              @db.Text
+  variables    Json? // per-target template vars
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
 
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
@@ -461,7 +491,7 @@ model Tool {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   assistants   AssistantTool[]
   invocations  ToolInvocation[]
 
@@ -481,15 +511,15 @@ model AssistantTool {
 }
 
 model ToolInvocation {
-  id        String   @id @default(cuid())
-  callId    String
-  toolId    String?
-  toolName  String
-  arguments Json?
-  result    Json?
-  error     String?  @db.Text
+  id         String   @id @default(cuid())
+  callId     String
+  toolId     String?
+  toolName   String
+  arguments  Json?
+  result     Json?
+  error      String?  @db.Text
   durationMs Int?
-  createdAt DateTime @default(now())
+  createdAt  DateTime @default(now())
 
   call Call  @relation(fields: [callId], references: [id], onDelete: Cascade)
   tool Tool? @relation(fields: [toolId], references: [id], onDelete: SetNull)
@@ -503,14 +533,14 @@ model ToolInvocation {
 // =============================================================================
 
 model Webhook {
-  id             String        @id @default(cuid())
+  id             String         @id @default(cuid())
   organizationId String
   url            String
   secret         String?
   events         WebhookEvent[]
-  isActive       Boolean       @default(true)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  isActive       Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   deliveries   WebhookDelivery[]
@@ -543,15 +573,15 @@ model WebhookDelivery {
 // =============================================================================
 
 model AgentProfile {
-  id            String   @id @default(cuid())
-  name          String
-  voice         String   @default("Aoede")
-  model         String   @default("gemini-3.1-flash-live-preview")
-  systemPrompt  String?  @map("system_prompt")
-  enabledTools  String   @default("[]") @map("enabled_tools")
-  isDefault     Boolean  @default(false) @map("is_default")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  id           String   @id @default(cuid())
+  name         String
+  voice        String   @default("Aoede")
+  model        String   @default("gemini-3.1-flash-live-preview")
+  systemPrompt String?  @map("system_prompt")
+  enabledTools String   @default("[]") @map("enabled_tools")
+  isDefault    Boolean  @default(false) @map("is_default")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@index([isDefault])
   @@map("agent_profiles")
@@ -562,53 +592,53 @@ model AgentProfile {
 // =============================================================================
 
 model Contact {
-  id            String   @id @default(cuid())
-  phoneNumber   String   @unique @map("phone_number")
-  name          String?
-  email         String?
-  notes         String?
-  tags          String   @default("[]")
-  totalCalls    Int      @default(0) @map("total_calls")
-  lastCallAt    DateTime? @map("last_call_at")
-  lastOutcome   String?  @map("last_outcome")
-  isBooked      Boolean  @default(false) @map("is_booked")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  id          String    @id @default(cuid())
+  phoneNumber String    @unique @map("phone_number")
+  name        String?
+  email       String?
+  notes       String?
+  tags        String    @default("[]")
+  totalCalls  Int       @default(0) @map("total_calls")
+  lastCallAt  DateTime? @map("last_call_at")
+  lastOutcome String?   @map("last_outcome")
+  isBooked    Boolean   @default(false) @map("is_booked")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  memory        ContactMemory[]
-  appointments  Appointment[]
+  memory       ContactMemory[]
+  appointments Appointment[]
 
   @@map("contacts")
 }
 
 model ContactMemory {
-  id            String   @id @default(cuid())
-  phoneNumber   String   @map("phone_number")
-  insight       String
-  createdAt     DateTime @default(now()) @map("created_at")
+  id          String   @id @default(cuid())
+  phoneNumber String   @map("phone_number")
+  insight     String
+  createdAt   DateTime @default(now()) @map("created_at")
 
-  contact       Contact? @relation(fields: [phoneNumber], references: [phoneNumber], onDelete: Cascade)
+  contact Contact? @relation(fields: [phoneNumber], references: [phoneNumber], onDelete: Cascade)
 
   @@index([phoneNumber, createdAt])
   @@map("contact_memory")
 }
 
 model Appointment {
-  id                String            @id @default(cuid())
-  bookingId         String            @unique @map("booking_id")
-  name              String
-  phoneNumber       String            @map("phone_number")
-  email             String?
-  date              String
-  time              String
-  service           String
-  status            AppointmentStatus @default(BOOKED)
-  calcomBookingUid  String?           @map("calcom_booking_uid")
-  gcalEventId       String?           @map("gcal_event_id")
-  notes             String?
-  createdAt         DateTime          @default(now()) @map("created_at")
+  id               String            @id @default(cuid())
+  bookingId        String            @unique @map("booking_id")
+  name             String
+  phoneNumber      String            @map("phone_number")
+  email            String?
+  date             String
+  time             String
+  service          String
+  status           AppointmentStatus @default(BOOKED)
+  calcomBookingUid String?           @map("calcom_booking_uid")
+  gcalEventId      String?           @map("gcal_event_id")
+  notes            String?
+  createdAt        DateTime          @default(now()) @map("created_at")
 
-  contact           Contact? @relation(fields: [phoneNumber], references: [phoneNumber])
+  contact Contact? @relation(fields: [phoneNumber], references: [phoneNumber])
 
   @@index([date, time])
   @@index([phoneNumber])
@@ -642,12 +672,44 @@ model ErrorLog {
 }
 
 model ActiveCall {
-  roomId       String   @id @map("room_id")
-  phoneNumber  String?  @map("phone_number")
-  callerName   String?  @map("caller_name")
-  status       String   @default("ringing")
-  startedAt    DateTime @default(now()) @map("started_at")
-  lastUpdated  DateTime @default(now()) @updatedAt @map("last_updated")
+  roomId      String   @id @map("room_id")
+  phoneNumber String?  @map("phone_number")
+  callerName  String?  @map("caller_name")
+  status      String   @default("ringing")
+  startedAt   DateTime @default(now()) @map("started_at")
+  lastUpdated DateTime @default(now()) @updatedAt @map("last_updated")
 
   @@map("active_calls")
+}
+
+// =============================================================================
+//  PROVIDER RATES — billing rates per (provider, sku, kind)
+//
+//  Cost is COMPUTED at query time as Call.usage × current ProviderRate, never
+//  stored on the Call row alone. That way historical calls move with rate
+//  changes (e.g. when OpenAI cuts gpt-4o-mini prices, every existing call's
+//  reported cost drops to match — exactly what an accurate cost dashboard
+//  needs).
+//
+//  Source = OPENROUTER for LLM rates auto-refreshed from the openrouter.ai
+//  free public API every 3 hours; MANUAL for STT/TTS/telephony where no
+//  public pricing API exists; DEFAULT for the seeded values that ship with
+//  the code on first boot.
+// =============================================================================
+
+model ProviderRate {
+  id             String     @id @default(cuid())
+  provider       String // "openai" | "groq" | "anthropic" | "google" | "deepgram" | "sarvam" | "elevenlabs" | "cartesia" | "vobiz"
+  sku            String // "gpt-4o-mini" | "llama-3.3-70b-versatile" | "nova-3" | "turbo-v2-5" | "outbound" | …
+  kind           RateKind
+  rateUsd        Decimal    @db.Decimal(14, 8)
+  source         RateSource @default(MANUAL)
+  lastVerifiedAt DateTime   @default(now()) @map("last_verified_at")
+  notes          String?
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  @@unique([provider, sku, kind])
+  @@index([provider, kind])
+  @@map("provider_rates")
 }
