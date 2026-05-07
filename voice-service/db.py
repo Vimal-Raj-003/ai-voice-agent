@@ -304,30 +304,62 @@ async def complete_call(
     was_booked: bool = False,
     transcript: str | None = None,
     notes: str | None = None,
+    # Usage breakdown — captured for live-rate cost recomputation in the
+    # dashboard. All optional; missing fields just leave the column null.
+    llm_input_tokens: int | None = None,
+    llm_output_tokens: int | None = None,
+    llm_provider_used: str | None = None,
+    llm_sku_used: str | None = None,
+    stt_seconds: int | None = None,
+    stt_provider_used: str | None = None,
+    stt_sku_used: str | None = None,
+    tts_chars: int | None = None,
+    tts_provider_used: str | None = None,
+    tts_sku_used: str | None = None,
+    telephony_provider: str | None = None,
 ) -> None:
     """Update an in-progress call to its final state and upsert the contact CRM row.
 
     Counterpart to ``create_call_row``. The transcript blob lives in ``calls.summary``
     because the schema has no dedicated transcript column.
+
+    The usage columns let the dashboard recompute cost as
+    ``usage × current ProviderRate`` whenever rates change, instead of being
+    locked to the snapshot ``cost_usd`` baked in at the time of the call.
     """
     pool = await get_pool()
     await pool.execute(
         """UPDATE calls SET
-             status            = 'COMPLETED'::"CallStatus",
-             outcome           = $1::"CallOutcome",
-             reason            = $2,
-             "durationSeconds" = $3,
-             "recordingUrl"    = COALESCE($4, "recordingUrl"),
-             notes             = COALESCE($5, notes),
-             sentiment         = $6,
-             "costUsd"         = $7,
-             interrupt_count   = $8,
-             was_booked        = $9,
-             summary           = $10,
-             "updatedAt"       = now()
+             status              = 'COMPLETED'::"CallStatus",
+             outcome             = $1::"CallOutcome",
+             reason              = $2,
+             "durationSeconds"   = $3,
+             "recordingUrl"      = COALESCE($4, "recordingUrl"),
+             notes               = COALESCE($5, notes),
+             sentiment           = $6,
+             "costUsd"           = $7,
+             interrupt_count     = $8,
+             was_booked          = $9,
+             summary             = $10,
+             llm_input_tokens    = $12,
+             llm_output_tokens   = $13,
+             llm_provider_used   = $14,
+             llm_sku_used        = $15,
+             stt_seconds         = $16,
+             stt_provider_used   = $17,
+             stt_sku_used        = $18,
+             tts_chars           = $19,
+             tts_provider_used   = $20,
+             tts_sku_used        = $21,
+             telephony_provider  = $22,
+             "updatedAt"         = now()
            WHERE id = $11""",
         outcome.upper(), reason, duration_seconds, recording_url, notes,
         sentiment, cost_usd, interrupt_count, was_booked, transcript, call_id,
+        llm_input_tokens, llm_output_tokens, llm_provider_used, llm_sku_used,
+        stt_seconds, stt_provider_used, stt_sku_used,
+        tts_chars, tts_provider_used, tts_sku_used,
+        telephony_provider,
     )
     if phone_number:
         await pool.execute(

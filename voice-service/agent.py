@@ -427,6 +427,8 @@ async def entrypoint(ctx: JobContext) -> None:
 async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, phone: str, name: str) -> None:
     duration = int(time.time() - agent_tools._call_start_time)
     transcript = ""
+    user_chars_total = 0       # for STT estimate (we transcribed the user)
+    assistant_chars_total = 0  # for TTS chars (we synthesised the assistant)
     try:
         chat_ctx = getattr(session, "chat_ctx", None)
         if chat_ctx is None:
@@ -447,6 +449,11 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
                 content = " ".join(str(c) for c in content if isinstance(c, str))
             if role and content:
                 lines.append(f"[{role.upper()}] {content}")
+                role_lower = str(role).lower()
+                if role_lower == "user":
+                    user_chars_total += len(str(content))
+                elif role_lower == "assistant":
+                    assistant_chars_total += len(str(content))
         transcript = "\n".join(lines)
     except Exception as exc:
         logger.warning("transcript_read_failed", error=str(exc))
@@ -484,6 +491,47 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
     reason = agent_tools._closed_reason or "session ended"
     was_booked = outcome == "BOOKED"
 
+    # ── Usage breakdown for cost dashboard ───────────────────────────────────
+    # The dashboard recomputes cost as usage × current ProviderRate so we
+    # capture raw counts here (not money). Token counts are estimated from
+    # the transcript at ~4 chars/token — accurate enough for a rolling
+    # cost dashboard, off by single-digit % vs exact tokenizer counts.
+    use_realtime = config.USE_GEMINI_REALTIME and bool(_google_realtime)
+    if use_realtime:
+        llm_provider_used = "google"
+        llm_sku_used = os.getenv("GEMINI_MODEL", config.GEMINI_MODEL)
+        # In realtime mode the same Gemini handles both STT and TTS; book
+        # the audio to the LLM provider so we don't double-count.
+        stt_provider_used = "google"
+        stt_sku_used = llm_sku_used
+        tts_provider_used = "google"
+        tts_sku_used = llm_sku_used
+    else:
+        llm_provider = (profile.get("llm_provider") or config.DEFAULT_LLM_PROVIDER).lower()
+        llm_provider_used = "groq" if llm_provider == "groq" else "anthropic" if llm_provider == "claude" else "openai"
+        if llm_provider_used == "groq":
+            llm_sku_used = config.GROQ_MODEL
+        elif llm_provider_used == "anthropic":
+            llm_sku_used = os.getenv("ANTHROPIC_MODEL", "claude-haiku-3-5")
+        else:
+            llm_sku_used = config.DEFAULT_LLM_MODEL
+        stt_provider_used = "deepgram" if _deepgram_stt else "sarvam"
+        stt_sku_used = config.STT_MODEL if stt_provider_used == "deepgram" else "saaras-v3"
+        tts_provider = (profile.get("tts_provider") or config.DEFAULT_TTS_PROVIDER).lower()
+        tts_provider_used = tts_provider if tts_provider in ("sarvam", "elevenlabs", "cartesia", "openai") else "openai"
+        tts_sku_used = {
+            "sarvam": "bulbul-v3",
+            "elevenlabs": "turbo-v2-5",
+            "cartesia": "sonic-2",
+            "openai": "tts-1",
+        }.get(tts_provider_used, "tts-1")
+
+    llm_input_tokens = max(0, user_chars_total // 4 + len(profile.get("system_prompt") or "") // 4)
+    llm_output_tokens = max(0, assistant_chars_total // 4)
+    stt_seconds = duration  # we transcribed the whole call
+    tts_chars = assistant_chars_total
+    telephony_provider = "vobiz"
+
     log_call_ok = False
     call_id = getattr(agent_tools, "_call_id", None)
     try:
@@ -496,6 +544,17 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
                 sentiment=sentiment, cost_usd=cost_usd,
                 interrupt_count=getattr(agent_tools, "interrupt_count", 0),
                 was_booked=was_booked, transcript=transcript,
+                llm_input_tokens=llm_input_tokens,
+                llm_output_tokens=llm_output_tokens,
+                llm_provider_used=llm_provider_used,
+                llm_sku_used=llm_sku_used,
+                stt_seconds=stt_seconds,
+                stt_provider_used=stt_provider_used,
+                stt_sku_used=stt_sku_used,
+                tts_chars=tts_chars,
+                tts_provider_used=tts_provider_used,
+                tts_sku_used=tts_sku_used,
+                telephony_provider=telephony_provider,
             )
         else:
             # Fallback: row was never inserted (e.g. early exit before session.start).
