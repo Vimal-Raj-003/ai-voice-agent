@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import { requireRole } from "@/lib/auth";
+import { requireRole } from "@/lib/require-role";
 import { Badge } from "@/components/Badge";
 import {
   changeRole,

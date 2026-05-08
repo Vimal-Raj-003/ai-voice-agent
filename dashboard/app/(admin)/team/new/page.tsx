@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requireRole } from "@/lib/auth";
+import { requireRole } from "@/lib/require-role";
 import InviteForm from "@/components/InviteForm";
 import { inviteUser } from "../actions";
 

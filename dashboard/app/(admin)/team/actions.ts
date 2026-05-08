@@ -2,7 +2,7 @@
 
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { requireRole, type Role } from "@/lib/auth";
+import { requireRole, type Role } from "@/lib/require-role";
 import { getDefaultOrg } from "@/lib/org";
 import { sendEmail } from "@/lib/email";
 import { revalidatePath } from "next/cache";
