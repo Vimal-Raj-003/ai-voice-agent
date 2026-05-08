@@ -774,3 +774,43 @@ async def record_webhook_delivery(
         json.dumps(payload), response_code,
         response_body, succeeded_at,
     )
+
+
+# ── Compliance helpers (Feature Pack 4 / Task 7) ──────────────────────────────
+
+async def is_on_dnd(org_id: str, phone_e164: str) -> bool:
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        '''SELECT 1 FROM dnd_numbers
+           WHERE "organizationId" = $1 AND "phoneE164" = $2''',
+        org_id,
+        phone_e164,
+    )
+    return row is not None
+
+
+async def get_org_quiet_hours(org_id: str) -> dict | None:
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        '''SELECT "quietHoursStart" AS start, "quietHoursEnd" AS end_,
+                  "quietHoursTimezone" AS tz
+             FROM organizations WHERE id = $1''',
+        org_id,
+    )
+    if not row:
+        return None
+    return {"start": row["start"], "end": row["end_"], "tz": row["tz"]}
+
+
+async def add_dnd_caller_request(org_id: str, phone_e164: str) -> None:
+    """Used by the agent when a caller says 'stop calling'."""
+    pool = await get_pool()
+    await pool.execute(
+        '''INSERT INTO dnd_numbers
+             (id, "organizationId", "phoneE164", source, "createdAt")
+           VALUES ($1, $2, $3, 'CALLER_REQUEST', now())
+           ON CONFLICT ("organizationId", "phoneE164") DO NOTHING''',
+        str(uuid.uuid4()),
+        org_id,
+        phone_e164,
+    )
