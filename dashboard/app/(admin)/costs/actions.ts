@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireRole } from "@/lib/require-role";
 
 // Manual rate-refresh trigger fired from RatesPanel's "Refresh now" button.
 // Proxies straight to voice-service /api/rates/refresh — that's where the
@@ -10,6 +11,7 @@ export async function refreshRatesAction(): Promise<{
   output: number;
   errors: number;
 }> {
+  await requireRole("ADMIN");
   const url = process.env.VOICE_SERVICE_URL || "http://localhost:8000";
   const token = process.env.VOICE_SERVICE_TOKEN || "";
   const r = await fetch(`${url}/api/rates/refresh`, {

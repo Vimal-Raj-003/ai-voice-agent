@@ -2,8 +2,10 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireRole } from "@/lib/require-role";
 
 export async function updateContact(phone: string, formData: FormData) {
+  await requireRole("AGENT");
   const name = String(formData.get("name") ?? "").trim() || null;
   const email = String(formData.get("email") ?? "").trim() || null;
   const notes = String(formData.get("notes") ?? "").trim() || null;

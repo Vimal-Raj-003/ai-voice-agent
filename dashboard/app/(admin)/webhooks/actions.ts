@@ -25,6 +25,7 @@ function parseEvents(formData: FormData): WebhookEvent[] {
 }
 
 export async function createWebhook(formData: FormData) {
+  await requireRole("ADMIN");
   const { id: orgId } = await getDefaultOrg();
   const url = String(formData.get("url") || "").trim();
   if (!url.startsWith("http")) return;
@@ -41,6 +42,7 @@ export async function createWebhook(formData: FormData) {
 }
 
 export async function updateWebhook(id: string, formData: FormData) {
+  await requireRole("ADMIN");
   const url = String(formData.get("url") || "").trim();
   const events = parseEvents(formData);
   const isActive = formData.get("isActive") === "on";
@@ -59,6 +61,7 @@ export async function updateWebhook(id: string, formData: FormData) {
 }
 
 export async function deleteWebhook(id: string) {
+  await requireRole("ADMIN");
   await prisma.webhook.delete({ where: { id } });
   revalidatePath("/webhooks");
   redirect("/webhooks");

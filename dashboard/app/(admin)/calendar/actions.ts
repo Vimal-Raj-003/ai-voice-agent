@@ -3,6 +3,7 @@
 import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireRole } from "@/lib/require-role";
 
 // Server actions for manual calendar management — admin can create a
 // booking outside an agent flow (useful for filling no-shows / walk-ins),
@@ -17,6 +18,7 @@ export type CreateBookingResult =
   | { ok: false; error: string };
 
 export async function createBooking(formData: FormData): Promise<CreateBookingResult> {
+  await requireRole("AGENT");
   const name = String(formData.get("name") || "").trim();
   const rawPhone = String(formData.get("phone") || "").trim();
   const date = String(formData.get("date") || "").trim();
@@ -75,6 +77,7 @@ export async function createBooking(formData: FormData): Promise<CreateBookingRe
 }
 
 export async function cancelBooking(id: string): Promise<void> {
+  await requireRole("AGENT");
   await prisma.appointment.update({
     where: { id },
     data: { status: "CANCELLED" },
@@ -83,6 +86,7 @@ export async function cancelBooking(id: string): Promise<void> {
 }
 
 export async function markCompleted(id: string): Promise<void> {
+  await requireRole("AGENT");
   await prisma.appointment.update({
     where: { id },
     data: { status: "COMPLETED" },

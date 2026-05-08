@@ -4,8 +4,10 @@ import { getDefaultOrg } from "@/lib/org";
 import { voiceService } from "@/lib/voice-service";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { requireRole } from "@/lib/require-role";
 
 export async function createCampaign(formData: FormData) {
+  await requireRole("ADMIN");
   const { id: orgId } = await getDefaultOrg();
   const scheduleTypeRaw = formData.get("scheduleType") as string | null;
   const c = await prisma.campaign.create({
@@ -25,6 +27,7 @@ export async function createCampaign(formData: FormData) {
 }
 
 export async function updateCampaign(id: string, formData: FormData) {
+  await requireRole("ADMIN");
   const scheduleTypeRaw = formData.get("scheduleType") as string | null;
   await prisma.campaign.update({
     where: { id },
@@ -49,17 +52,20 @@ export async function updateCampaign(id: string, formData: FormData) {
 }
 
 export async function deleteCampaign(id: string) {
+  await requireRole("ADMIN");
   await prisma.campaign.delete({ where: { id } });
   revalidatePath("/campaigns");
   redirect("/campaigns");
 }
 
 export async function runCampaignNow(id: string) {
+  await requireRole("AGENT");
   await voiceService.campaignRunNow(id);
   revalidatePath(`/campaigns/${id}`);
 }
 
 export async function uploadTargets(id: string, formData: FormData) {
+  await requireRole("ADMIN");
   const csv = String(formData.get("csv") || "").trim();
   if (!csv) return;
   const lines = csv.split(/\r?\n/).filter(Boolean);

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { requireRole } from "@/lib/require-role";
 
 const E164 = /^\+\d{8,15}$/;
 
@@ -13,6 +14,7 @@ function nullable(v: FormDataEntryValue | null): string | null {
 }
 
 export async function createPhoneNumber(formData: FormData) {
+  await requireRole("ADMIN");
   const { id: orgId } = await getDefaultOrg();
   const number = String(formData.get("number") || "").trim();
   if (!E164.test(number)) {
@@ -33,6 +35,7 @@ export async function createPhoneNumber(formData: FormData) {
 }
 
 export async function updatePhoneNumber(id: string, formData: FormData) {
+  await requireRole("ADMIN");
   await prisma.phoneNumber.update({
     where: { id },
     data: {
@@ -47,6 +50,7 @@ export async function updatePhoneNumber(id: string, formData: FormData) {
 }
 
 export async function deletePhoneNumber(id: string) {
+  await requireRole("ADMIN");
   await prisma.phoneNumber.delete({ where: { id } });
   revalidatePath("/phone-numbers");
   redirect("/phone-numbers");

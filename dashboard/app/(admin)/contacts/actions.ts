@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireRole } from "@/lib/require-role";
 
 // Hard limits to bound the import workload — anyone authenticated could
 // otherwise upload a 500MB blob and exhaust memory + Prisma connections.
@@ -68,6 +69,7 @@ export type ImportResult = {
 };
 
 export async function importContactsCsv(formData: FormData): Promise<ImportResult> {
+  await requireRole("ADMIN");
   const file = formData.get("file");
   if (!(file instanceof File)) {
     return {

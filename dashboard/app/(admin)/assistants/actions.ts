@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { requireRole } from "@/lib/require-role";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function _bool(v: FormDataEntryValue | null): boolean {
@@ -92,6 +93,7 @@ async function syncAssistantTools(assistantId: string, toolIds: string[]) {
 }
 
 export async function createAssistant(formData: FormData) {
+  await requireRole("ADMIN");
   const { id: orgId } = await getDefaultOrg();
   const a = await prisma.assistant.create({
     data: { organizationId: orgId, ...readAssistantPayload(formData) },
@@ -102,6 +104,7 @@ export async function createAssistant(formData: FormData) {
 }
 
 export async function updateAssistant(id: string, formData: FormData) {
+  await requireRole("ADMIN");
   await prisma.assistant.update({
     where: { id },
     data: readAssistantPayload(formData),
@@ -112,6 +115,7 @@ export async function updateAssistant(id: string, formData: FormData) {
 }
 
 export async function deleteAssistant(id: string) {
+  await requireRole("ADMIN");
   await prisma.assistant.delete({ where: { id } });
   revalidatePath("/assistants");
   redirect("/assistants");

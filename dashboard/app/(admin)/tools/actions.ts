@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { requireRole } from "@/lib/require-role";
 
 const NAME_RE = /^[a-z][a-z0-9_]{0,31}$/;
 
@@ -104,6 +105,7 @@ function readPayload(formData: FormData) {
 }
 
 export async function createTool(formData: FormData) {
+  await requireRole("ADMIN");
   const { id: orgId } = await getDefaultOrg();
   const t = await prisma.tool.create({
     data: { organizationId: orgId, ...readPayload(formData) },
@@ -113,6 +115,7 @@ export async function createTool(formData: FormData) {
 }
 
 export async function updateTool(id: string, formData: FormData) {
+  await requireRole("ADMIN");
   await prisma.tool.update({
     where: { id },
     data: readPayload(formData),
@@ -122,6 +125,7 @@ export async function updateTool(id: string, formData: FormData) {
 }
 
 export async function deleteTool(id: string) {
+  await requireRole("ADMIN");
   await prisma.tool.delete({ where: { id } });
   revalidatePath("/tools");
   redirect("/tools");

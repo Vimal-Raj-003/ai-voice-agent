@@ -2,8 +2,10 @@
 import { prisma } from "@/lib/prisma";
 import { KNOWN_SETTINGS } from "@/lib/known-settings";
 import { revalidatePath } from "next/cache";
+import { requireRole } from "@/lib/require-role";
 
 export async function upsertSetting(formData: FormData) {
+  await requireRole("OWNER");
   const key = String(formData.get("key") || "").trim();
   const value = String(formData.get("value") || "");
   if (!key) return;
@@ -20,6 +22,7 @@ export async function upsertSetting(formData: FormData) {
 }
 
 export async function deleteSetting(key: string) {
+  await requireRole("OWNER");
   await prisma.setting.delete({ where: { key } });
   revalidatePath("/settings");
 }
@@ -29,6 +32,7 @@ export async function deleteSetting(key: string) {
 // UI can wire it to a "Revert to env" button without leaking the underlying
 // table mechanics. Silently no-ops when nothing is stored.
 export async function revertSettingToEnv(key: string) {
+  await requireRole("OWNER");
   if (!key) return;
   await prisma.setting.deleteMany({ where: { key } });
   revalidatePath("/settings");
