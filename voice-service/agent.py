@@ -501,6 +501,17 @@ async def entrypoint(ctx: JobContext) -> None:
 
     # Outbound dial-out branch
     if phone not in ("unknown", "demo") and not user_in_room:
+        # ── DND race-close (Feature Pack 4 / Task 8) ─────────────────────────
+        # Re-check DND just before SIP dial: the dnd_numbers table may have been
+        # updated between dispatch and this point (e.g. opt-out during delay).
+        _dnd_org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
+        if await db.is_on_dnd(_dnd_org_id, phone):
+            logger.warning("dnd_race_caught", phone=phone)
+            await db.log_error("agent", f"DND race caught for {phone}")
+            agent_tools._closed_outcome = "OPT_OUT"
+            await db.remove_active_call(ctx.room.name)
+            return
+
         logger.info("dialing_out", phone=phone, trunk=config.OUTBOUND_TRUNK_ID)
         try:
             await ctx.api.sip.create_sip_participant(

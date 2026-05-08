@@ -29,6 +29,7 @@ from slowapi.util import get_remote_address
 from sse_starlette.sse import EventSourceResponse
 
 import db
+from compliance import check_dispatch_allowed
 from observability import get_logger, init_observability
 
 load_dotenv()
@@ -139,6 +140,22 @@ async def dispatch_single(request: Request) -> dict:
     if not phone.startswith("+"):
         raise HTTPException(400, "Phone must start with + and country code")
 
+    # ── Compliance check (Feature Pack 4 / Task 8) ────────────────────────────
+    org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
+    compliance = await check_dispatch_allowed(org_id, phone, contact_tz=None)
+    if not compliance.allowed:
+        return JSONResponse(
+            status_code=compliance.code,
+            content={
+                "error": compliance.reason,
+                **(
+                    {"next_allowed_at": compliance.next_allowed_at.isoformat()}
+                    if compliance.next_allowed_at
+                    else {}
+                ),
+            },
+        )
+
     metadata = {
         "phone_number":     phone,
         "agent_profile_id": body.get("agent_profile_id"),
@@ -182,6 +199,10 @@ async def dispatch_bulk(request: Request) -> dict:
 
     batch_id = f"BATCH_{random.randint(100000, 999999)}"
     results = []
+    blocked = 0
+    deferred = 0
+    # ── Compliance org_id (Feature Pack 4 / Task 8) ───────────────────────────
+    org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
     lk = _lk_client()
     try:
         for c in contacts:
@@ -189,6 +210,19 @@ async def dispatch_bulk(request: Request) -> dict:
             if not phone.startswith("+"):
                 results.append({"phone": phone, "status": "error", "message": "Must start with +"})
                 continue
+
+            # Compliance check before dispatch
+            decision = await check_dispatch_allowed(org_id, phone, c.get("contact_tz"))
+            if not decision.allowed:
+                if decision.reason == "DND":
+                    results.append({"phone": phone, "status": "blocked", "message": "On DND list"})
+                    blocked += 1
+                else:
+                    naa = decision.next_allowed_at.isoformat() if decision.next_allowed_at else None
+                    results.append({"phone": phone, "status": "deferred", "next_allowed_at": naa})
+                    deferred += 1
+                continue
+
             try:
                 room = f"call-{phone.replace('+', '')}-{random.randint(1000, 9999)}"
                 d = await lk.agent_dispatch.create_dispatch(
@@ -207,7 +241,13 @@ async def dispatch_bulk(request: Request) -> dict:
             except Exception as exc:
                 voice_dispatch_failures.inc()
                 results.append({"phone": phone, "status": "error", "message": str(exc)})
-        return {"batch_id": batch_id, "total": len(contacts), "results": results}
+        return {
+            "batch_id": batch_id,
+            "total": len(contacts),
+            "results": results,
+            "blocked": blocked,
+            "deferred": deferred,
+        }
     finally:
         await lk.aclose()
 
@@ -283,6 +323,10 @@ async def _run_campaign_internal(campaign_id: str) -> None:
     profile_id = row["agentProfileId"]
     dispatched = 0
     failed = 0
+    blocked = 0
+    deferred = 0
+    # ── Compliance org_id (Feature Pack 4 / Task 8) ───────────────────────────
+    campaign_org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
     lk = _lk_client()
     try:
         for t in targets:
@@ -290,6 +334,32 @@ async def _run_campaign_internal(campaign_id: str) -> None:
             if not phone.startswith("+"):
                 failed += 1
                 continue
+
+            # Compliance check: DND + quiet-hours before any SIP dispatch
+            decision = await check_dispatch_allowed(campaign_org_id, phone, None)
+            if not decision.allowed:
+                if decision.reason == "DND":
+                    await pool.execute(
+                        """UPDATE campaign_targets
+                              SET status = 'BLOCKED'::"CampaignTargetStatus",
+                                  "lastError" = 'On DND list',
+                                  "updatedAt" = now()
+                            WHERE id = $1""",
+                        t["id"],
+                    )
+                    blocked += 1
+                else:
+                    await pool.execute(
+                        """UPDATE campaign_targets
+                              SET status = 'DEFERRED'::"CampaignTargetStatus",
+                                  "dispatchAfter" = $1,
+                                  "updatedAt" = now()
+                            WHERE id = $2""",
+                        decision.next_allowed_at, t["id"],
+                    )
+                    deferred += 1
+                continue
+
             try:
                 room = f"call-{phone.replace('+', '')}-{random.randint(1000, 9999)}"
                 d = await lk.agent_dispatch.create_dispatch(
@@ -340,6 +410,13 @@ async def _run_campaign_internal(campaign_id: str) -> None:
             WHERE id = $3""",
         dispatched, failed, campaign_id,
     )
+    if blocked or deferred:
+        logger.info(
+            "campaign_compliance_summary",
+            campaign_id=campaign_id,
+            blocked=blocked,
+            deferred=deferred,
+        )
 
 
 async def _reload_scheduled_campaigns() -> None:
