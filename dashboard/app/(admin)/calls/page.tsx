@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
-import { PhoneCall } from "lucide-react";
 import {
   Badge,
   directionTone,
@@ -9,151 +8,170 @@ import {
   sentimentTone,
   statusTone,
 } from "@/components/Badge";
-import EmptyState from "@/components/EmptyState";
-import Select from "@/components/Select";
+import CallsFilters from "@/components/CallsFilters";
 
-type Search = {
-  outcome?: string;
-  status?: string;
-  phone?: string;
-  page?: string;
-};
+export const dynamic = "force-dynamic";
+
+const PAGE_SIZE = 25;
 
 export default async function CallsPage({
   searchParams,
 }: {
-  searchParams: Promise<Search>;
+  searchParams: Promise<Record<string, string | undefined>>;
 }) {
   const sp = await searchParams;
   const { id: orgId } = await getDefaultOrg();
+
+  const q = (sp.q ?? "").trim();
+  const direction = sp.direction || undefined;
+  const status = sp.status || undefined;
+  const outcome = sp.outcome || undefined;
+  const assistantId = sp.assistantId || undefined;
+  const from = sp.from ? new Date(sp.from) : undefined;
+  const to = sp.to ? new Date(sp.to + "T23:59:59") : undefined;
   const page = Math.max(1, Number(sp.page || 1));
-  const limit = 25;
-  const where = {
+  const offset = (page - 1) * PAGE_SIZE;
+
+  let idFilter: string[] | null = null;
+  let snippetMap: Map<string, string> = new Map();
+  if (q) {
+    const rows: { call_id: string; snippet: string }[] = await prisma.$queryRaw`
+      SELECT DISTINCT ON ("callId")
+        "callId" AS call_id,
+        substring(content from greatest(1, position(${q} in lower(content)) - 30) for 120) AS snippet
+      FROM transcript_messages
+      WHERE content ILIKE '%' || ${q} || '%' OR content % ${q}
+      ORDER BY "callId", similarity(content, ${q}) DESC
+      LIMIT 200
+    `;
+    idFilter = rows.map((r) => r.call_id);
+    snippetMap = new Map(rows.map((r) => [r.call_id, r.snippet]));
+    if (idFilter.length === 0) idFilter = ["__none__"];
+  }
+
+  const where: Record<string, unknown> = {
     organizationId: orgId,
-    ...(sp.outcome ? { outcome: sp.outcome as any } : {}),
-    ...(sp.status ? { status: sp.status as any } : {}),
-    ...(sp.phone
-      ? {
-          OR: [
-            { toNumber: { contains: sp.phone } },
-            { fromNumber: { contains: sp.phone } },
-          ],
-        }
-      : {}),
   };
-  const [rows, total] = await Promise.all([
+  if (direction) where.direction = direction;
+  if (status) where.status = status;
+  if (outcome) where.outcome = outcome;
+  if (assistantId) where.assistantId = assistantId;
+  if (from || to) {
+    where.createdAt = {};
+    if (from) (where.createdAt as Record<string, Date>).gte = from;
+    if (to) (where.createdAt as Record<string, Date>).lte = to;
+  }
+  if (idFilter) where.id = { in: idFilter };
+
+  const [calls, total, assistants] = await Promise.all([
     prisma.call.findMany({
       where,
       orderBy: { createdAt: "desc" },
-      take: limit,
-      skip: (page - 1) * limit,
+      skip: offset,
+      take: PAGE_SIZE,
     }),
     prisma.call.count({ where }),
+    prisma.assistant.findMany({
+      where: { organizationId: orgId },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
   ]);
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <h1 className="text-3xl font-bold">Calls</h1>
-      <form className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-sm">
-        <input
-          name="phone"
-          placeholder="phone…"
-          defaultValue={sp.phone ?? ""}
-          className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
-        />
-        <Select
-          name="outcome"
-          defaultValue={sp.outcome ?? ""}
-          options={[
-            { value: "", label: "All outcomes" },
-            { value: "BOOKED", label: "Booked" },
-            { value: "NOT_INTERESTED", label: "Not interested" },
-            { value: "WRONG_NUMBER", label: "Wrong number" },
-            { value: "VOICEMAIL", label: "Voicemail" },
-            { value: "NO_ANSWER", label: "No answer" },
-            { value: "CALLBACK_REQUESTED", label: "Callback requested" },
-            { value: "TRANSFERRED", label: "Transferred" },
-            { value: "FAILED", label: "Failed" },
-            { value: "COMPLETED", label: "Completed" },
-          ]}
-        />
-        <Select
-          name="status"
-          defaultValue={sp.status ?? ""}
-          options={[
-            { value: "", label: "All statuses" },
-            { value: "QUEUED", label: "Queued" },
-            { value: "RINGING", label: "Ringing" },
-            { value: "IN_PROGRESS", label: "In progress" },
-            { value: "COMPLETED", label: "Completed" },
-            { value: "FAILED", label: "Failed" },
-            { value: "NO_ANSWER", label: "No answer" },
-            { value: "BUSY", label: "Busy" },
-            { value: "CANCELED", label: "Canceled" },
-          ]}
-        />
-        <button className="rounded-lg bg-gradient-to-r from-cyan-300 via-violet-300 to-pink-300 px-3 py-2 text-sm font-semibold text-black hover:from-cyan-200 hover:via-violet-200 hover:to-pink-200 transition shadow-[0_0_20px_rgba(167,139,250,0.2)]">
-          Filter
-        </button>
-      </form>
-      {rows.length === 0 ? (
-        <EmptyState
-          icon={PhoneCall}
-          title="No calls found"
-          description={
-            sp.phone || sp.outcome || sp.status
-              ? "No calls match your current filters — try clearing them."
-              : "When calls come in or go out, they appear here with transcripts, recordings, sentiment, and cost."
-          }
-          action={{ href: "/demo", label: "Try the demo widget" }}
-        />
-      ) : (
-      <div className="glass rounded-2xl divide-y divide-white/5">
-        {rows.map((c) => {
+      <CallsFilters assistants={assistants} />
+      <div className="text-xs text-gray-500">
+        {total} call{total === 1 ? "" : "s"}
+        {q && ` matching "${q}"`}
+      </div>
+      <ul className="rounded-2xl border border-white/10 divide-y divide-white/5">
+        {calls.length === 0 && (
+          <li className="p-6 text-sm text-gray-500 text-center">
+            No calls found. {q && "Try clearing filters."}
+          </li>
+        )}
+        {calls.map((c) => {
           const cost = Number(c.costUsd ?? 0);
           return (
-            <Link
-              key={c.id}
-              href={`/calls/${c.id}`}
-              className="flex items-center justify-between gap-4 p-4 hover:bg-white/[0.02]"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{c.toNumber}</span>
-                  <Badge tone={directionTone(c.direction)}>
-                    {c.direction.toLowerCase()}
-                  </Badge>
+            <li key={c.id} className="p-3 hover:bg-white/[0.02]">
+              <Link href={`/calls/${c.id}`} className="block">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-mono text-sm">{c.toNumber}</div>
+                    <div className="text-[11px] text-gray-500">
+                      {c.createdAt.toLocaleString()}
+                      {c.durationSeconds != null && ` · ${c.durationSeconds}s`}
+                      {cost > 0 && ` · $${cost.toFixed(4)}`}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge tone={directionTone(c.direction)}>{c.direction.toLowerCase()}</Badge>
+                    <Badge tone={statusTone(c.status)}>{c.status}</Badge>
+                    {c.outcome && <Badge tone={outcomeTone(c.outcome)}>{c.outcome}</Badge>}
+                    {c.sentiment && <Badge tone={sentimentTone(c.sentiment)}>{c.sentiment}</Badge>}
+                  </div>
                 </div>
-                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                  <Badge tone={statusTone(c.status)}>{c.status}</Badge>
-                  {c.outcome && (
-                    <Badge tone={outcomeTone(c.outcome)}>{c.outcome}</Badge>
-                  )}
-                  {c.sentiment && (
-                    <Badge tone={sentimentTone(c.sentiment)}>
-                      {c.sentiment}
-                    </Badge>
-                  )}
-                  <span className="text-xs text-gray-500">
-                    {c.durationSeconds ?? 0}s
-                  </span>
-                  {cost > 0 && (
-                    <span className="text-xs text-gray-500">
-                      · ${cost.toFixed(4)}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <span className="shrink-0 text-xs text-gray-500">
-                {c.createdAt.toLocaleString()}
-              </span>
-            </Link>
+                {q && snippetMap.has(c.id) && (
+                  <div
+                    className="mt-2 text-[11px] text-gray-400 italic line-clamp-2"
+                    dangerouslySetInnerHTML={{
+                      __html: snippetMap
+                        .get(c.id)!
+                        .replace(
+                          new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig"),
+                          '<mark class="bg-violet-500/30 text-white">$1</mark>',
+                        ),
+                    }}
+                  />
+                )}
+              </Link>
+            </li>
           );
         })}
-      </div>
+      </ul>
+
+      {totalPages > 1 && (
+        <Pagination current={page} total={totalPages} sp={sp} />
       )}
-      <div className="text-xs text-gray-500">
-        Page {page} · {total} total
-      </div>
+    </div>
+  );
+}
+
+function Pagination({
+  current,
+  total,
+  sp,
+}: {
+  current: number;
+  total: number;
+  sp: Record<string, string | undefined>;
+}) {
+  const pageUrl = (p: number) => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(sp)) {
+      if (v && k !== "page") params.set(k, String(v));
+    }
+    if (p > 1) params.set("page", String(p));
+    return `/calls?${params.toString()}`;
+  };
+  return (
+    <div className="flex items-center justify-center gap-1 text-xs">
+      {current > 1 && (
+        <Link href={pageUrl(current - 1)} className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5">
+          ← prev
+        </Link>
+      )}
+      <span className="px-2 py-1 text-gray-500">
+        Page {current} of {total}
+      </span>
+      {current < total && (
+        <Link href={pageUrl(current + 1)} className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5">
+          next →
+        </Link>
+      )}
     </div>
   );
 }
