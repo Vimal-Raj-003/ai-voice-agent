@@ -29,6 +29,7 @@ from slowapi.util import get_remote_address
 from sse_starlette.sse import EventSourceResponse
 
 import db
+import notify
 from compliance import check_dispatch_allowed
 from observability import get_logger, init_observability
 
@@ -456,6 +457,23 @@ async def _refresh_rates_safely() -> None:
         logger.error("provider_rates_refresh_failed", error=str(exc))
 
 
+async def _poll_webhook_retries() -> None:
+    """APScheduler job: retry RETRY_SCHEDULED webhook deliveries (60s interval)."""
+    try:
+        rows = await db.fetch_pending_retries(limit=50)
+    except Exception as exc:
+        logger.warning("webhook_retry_fetch_failed", error=str(exc))
+        return
+    for r in rows:
+        try:
+            await notify.send_existing_delivery(
+                r["id"], r["url"], r["secret"], r["event"], r["payload"]
+            )
+        except Exception as exc:
+            logger.warning("webhook_retry_failed", id=r["id"], error=str(exc))
+            await db.schedule_webhook_retry(r["id"], str(exc))
+
+
 @app.on_event("startup")
 async def _start_scheduler() -> None:
     global _scheduler
@@ -471,6 +489,19 @@ async def _start_scheduler() -> None:
         _refresh_rates_safely,
         CronTrigger(hour="*/3", minute=0, timezone=_ist()),
         id="provider-rates-refresh",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    # Webhook retry poller — runs every 60 s, picks up RETRY_SCHEDULED rows
+    # whose nextAttemptAt has passed, and re-POSTs up to 50 per tick.
+    # coalesce=True + max_instances=1 prevents concurrent runs from racing
+    # the same delivery rows (the SQL also uses SKIP LOCKED as a safety net).
+    _scheduler.add_job(
+        _poll_webhook_retries,
+        "interval",
+        seconds=60,
+        id="webhook_retry_poll",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
