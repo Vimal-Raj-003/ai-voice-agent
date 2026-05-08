@@ -16,6 +16,7 @@ import {
   Hash,
   Key,
   Wrench,
+  Ban,
 } from "lucide-react";
 
 const links = [
@@ -24,6 +25,7 @@ const links = [
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/phone-numbers", label: "Phone numbers", icon: Hash },
+  { href: "/dnd", label: "Do-Not-Call", icon: Ban },
   { href: "/calls", label: "Calls", icon: PhoneCall },
   { href: "/costs", label: "Costs", icon: CircleDollarSign },
   { href: "/calendar", label: "Calendar", icon: Calendar },
