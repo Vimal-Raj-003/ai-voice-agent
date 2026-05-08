@@ -557,6 +557,16 @@ async def entrypoint(ctx: JobContext) -> None:
                 )
                 asyncio.create_task(_handle_voicemail(session, voicemail_msg, ctx))
 
+    # Recording-consent prompt — only when the assistant has explicit copy and
+    # recording is enabled. Plays after firstMessage and before the agent's
+    # generated greeting. allow_interruptions=False so it always completes.
+    consent = profile.get("recording_consent_message")
+    if profile.get("recording_enabled", False) and consent:
+        try:
+            await session.say(consent, allow_interruptions=False)
+        except Exception as exc:
+            logger.warning("consent_prompt_failed", error=str(exc))
+
     # Greet (the prompt instructs the agent to speak first)
     await session.generate_reply(instructions="Begin the call now per your system prompt.")
 

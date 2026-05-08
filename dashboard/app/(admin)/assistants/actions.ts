@@ -51,6 +51,9 @@ function readAssistantPayload(formData: FormData) {
     hallucinationGuard: _bool(formData.get("hallucinationGuard")),
     minPauseMs: _int(formData.get("minPauseMs"), 200),
     recordingEnabled: _bool(formData.get("recordingEnabled")),
+    recordingConsentMessage:
+      String(formData.get("recordingConsentMessage") || "").trim() || null,
+    redactionEnabled: formData.get("redactionEnabled") !== "false",
   };
 }
 

@@ -117,6 +117,24 @@ export default function AssistantForm({
             defaultValue={initial?.systemPrompt ?? ""}
             rows={14}
           />
+          <FormField
+            label="Recording consent message"
+            tooltip="Played after the greeting when recording is enabled. Required for two-party-consent jurisdictions (most US states, India). Leave empty to skip."
+          >
+            <textarea
+              name="recordingConsentMessage"
+              rows={2}
+              defaultValue={initial?.recordingConsentMessage ?? ""}
+              placeholder="This call may be recorded for quality and training purposes."
+              className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
+            />
+          </FormField>
+          <FormField
+            label="Redact PII in transcripts"
+            tooltip="Auto-mask credit cards (Luhn-checked), Aadhaar, SSN, email, and phone numbers in the stored transcript."
+          >
+            <BooleanSelect name="redactionEnabled" defaultValue={initial?.redactionEnabled ?? true} />
+          </FormField>
         </section>
 
         {/* ── Call accuracy (right column) — definition stays below; we move

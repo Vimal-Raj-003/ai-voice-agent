@@ -625,7 +625,8 @@ async def get_assistant_as_profile(assistant_id: str) -> dict | None:
                   "backgroundDenoising", "voicemailDetection",
                   "voicemailMessage", "confidenceThresholdPct",
                   "hallucinationGuard", "minPauseMs",
-                  "recordingEnabled", "isActive"
+                  "recordingEnabled", "recordingConsentMessage",
+                  "redactionEnabled", "isActive"
              FROM assistants
             WHERE id = $1 AND "isActive" = true
             LIMIT 1''',
@@ -663,6 +664,8 @@ async def get_assistant_as_profile(assistant_id: str) -> dict | None:
         "hallucination_guard": bool(r["hallucinationGuard"]),
         "min_pause_ms": r["minPauseMs"],
         "recording_enabled": bool(r["recordingEnabled"]),
+        "recording_consent_message": r["recordingConsentMessage"],
+        "redaction_enabled": bool(r["redactionEnabled"]),
         "enabled_tools": "[]",  # populated by get_assistant_tools later
     }
 
