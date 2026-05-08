@@ -13,6 +13,9 @@ import {
   Calendar,
   Webhook,
   CircleDollarSign,
+  Hash,
+  Key,
+  Wrench,
 } from "lucide-react";
 
 const links = [
@@ -20,11 +23,14 @@ const links = [
   { href: "/assistants", label: "Assistants", icon: Bot },
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/contacts", label: "Contacts", icon: Users },
+  { href: "/phone-numbers", label: "Phone numbers", icon: Hash },
   { href: "/calls", label: "Calls", icon: PhoneCall },
   { href: "/costs", label: "Costs", icon: CircleDollarSign },
   { href: "/calendar", label: "Calendar", icon: Calendar },
+  { href: "/tools", label: "Tools", icon: Wrench },
   { href: "/live-logs", label: "Live Logs", icon: Activity },
   { href: "/webhooks", label: "Webhooks", icon: Webhook },
+  { href: "/api-keys", label: "API keys", icon: Key },
   { href: "/demo", label: "Demo", icon: Sparkles },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

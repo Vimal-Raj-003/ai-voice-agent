@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import uuid
@@ -585,3 +586,191 @@ async def get_default_agent_profile() -> dict | None:
         "SELECT * FROM agent_profiles WHERE is_default = true LIMIT 1",
     )
     return dict(row) if row else None
+
+
+# ── Inbound routing (Feature Pack 3 / Task 2) ────────────────────────────────
+
+async def get_phone_number_routing(dialed_number: str) -> dict | None:
+    """Return the PhoneNumber row for this dialed number, or None.
+
+    Inbound only — agent.py calls this to discover which assistant should
+    handle the call. Inactive rows return None (treated as no routing).
+    """
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        '''SELECT id, number, "assistantId", "isActive", label
+             FROM phone_numbers
+            WHERE number = $1 AND "isActive" = true
+            LIMIT 1''',
+        dialed_number,
+    )
+    return dict(row) if row else None
+
+
+async def get_assistant_as_profile(assistant_id: str) -> dict | None:
+    """Load an Assistant row and shape it as the profile dict the agent expects.
+
+    Maps Prisma camelCase columns onto the snake_case keys agent.py reads.
+    Falls back to None if the assistant is missing or inactive.
+    """
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        '''SELECT id, name,
+                  "systemPrompt", "firstMessage", "endCallMessage",
+                  "llmProvider", "llmModel", temperature, "maxTokens",
+                  "sttProvider", "sttModel", "sttLanguage",
+                  "ttsProvider", "ttsModel", "voiceId",
+                  "silenceTimeoutSeconds", "maxDurationSeconds",
+                  "endOfSpeechSensitivity", "interruptionThresholdMs",
+                  "backgroundDenoising", "voicemailDetection",
+                  "voicemailMessage", "confidenceThresholdPct",
+                  "hallucinationGuard", "minPauseMs",
+                  "recordingEnabled", "isActive"
+             FROM assistants
+            WHERE id = $1 AND "isActive" = true
+            LIMIT 1''',
+        assistant_id,
+    )
+    if not row:
+        return None
+    r = dict(row)
+    return {
+        "id": r["id"],
+        "name": r["name"],
+        "system_prompt": r["systemPrompt"],
+        "first_message": r["firstMessage"],
+        "end_call_message": r["endCallMessage"],
+        "llm_provider": (r["llmProvider"] or "OPENAI").lower(),
+        "model": r["llmModel"],
+        "temperature": float(r["temperature"]) if r["temperature"] is not None else 0.7,
+        "max_tokens": r["maxTokens"],
+        "stt_provider": (r["sttProvider"] or "DEEPGRAM").lower(),
+        "stt_model": r["sttModel"],
+        "stt_language": r["sttLanguage"],
+        "tts_provider": (r["ttsProvider"] or "DEEPGRAM").lower(),
+        "tts_model": r["ttsModel"],
+        "voice": r["voiceId"],
+        "silence_timeout_seconds": r["silenceTimeoutSeconds"],
+        "max_duration_seconds": r["maxDurationSeconds"],
+        "end_of_speech_sensitivity": (r["endOfSpeechSensitivity"] or "LOW").upper()
+        if r["endOfSpeechSensitivity"]
+        else "LOW",
+        "interruption_threshold_ms": r["interruptionThresholdMs"],
+        "background_denoising": bool(r["backgroundDenoising"]),
+        "voicemail_detection": bool(r["voicemailDetection"]),
+        "voicemail_message": r["voicemailMessage"] or "",
+        "confidence_threshold_pct": r["confidenceThresholdPct"],
+        "hallucination_guard": bool(r["hallucinationGuard"]),
+        "min_pause_ms": r["minPauseMs"],
+        "recording_enabled": bool(r["recordingEnabled"]),
+        "enabled_tools": "[]",  # populated by get_assistant_tools later
+    }
+
+
+# ── API key verification (Feature Pack 3 / Task 3) ────────────────────────────
+
+async def verify_api_key(plaintext_key: str) -> dict | None:
+    """Hash the key and look it up. Returns the row dict if active, else None.
+
+    Updates lastUsedAt asynchronously so the hot path stays fast — the auth
+    decision returns before the timestamp lands.
+    """
+    if not plaintext_key.startswith("jjv_"):
+        return None
+    h = hashlib.sha256(plaintext_key.encode()).hexdigest()
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        '''SELECT id, "organizationId", name, "lastUsedAt", "revokedAt"
+             FROM api_keys
+            WHERE "keyHash" = $1 AND "revokedAt" IS NULL
+            LIMIT 1''',
+        h,
+    )
+    if not row:
+        return None
+    asyncio.create_task(_touch_api_key(row["id"]))
+    return dict(row)
+
+
+async def _touch_api_key(api_key_id: str) -> None:
+    try:
+        pool = await get_pool()
+        await pool.execute(
+            'UPDATE api_keys SET "lastUsedAt" = $1 WHERE id = $2',
+            datetime.now(UTC).replace(tzinfo=None),
+            api_key_id,
+        )
+    except Exception:
+        # Don't crash auth for a missed timestamp update.
+        pass
+
+
+# ── Webhook delivery (Feature Pack 3 / Task 4) ────────────────────────────────
+
+async def get_active_webhooks_for_event(org_id: str, event: str) -> list[dict]:
+    """Return webhook rows that should fire for this event in this org.
+
+    The events column is a Postgres enum array (WebhookEvent[]); we cast to
+    text[] for the membership check so the query works with any of the
+    enum values without us hard-coding them here.
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        '''SELECT id, url, secret, events
+             FROM webhooks
+            WHERE "organizationId" = $1 AND "isActive" = true
+              AND $2 = ANY(events::text[])''',
+        org_id, event,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_assistant_tools(assistant_id: str) -> list[dict]:
+    """Active Tool rows bound to this assistant via assistant_tools."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        '''SELECT t.id, t.name, t.description, t.parameters AS "parametersJson",
+                  t.kind, t."httpMethod", t."httpUrl", t."httpHeaders",
+                  t."timeoutSeconds", t."isActive"
+             FROM tools t
+             JOIN assistant_tools at ON at."toolId" = t.id
+            WHERE at."assistantId" = $1 AND t."isActive" = true''',
+        assistant_id,
+    )
+    out = []
+    for r in rows:
+        d = dict(r)
+        # parameters comes back as JSON-as-text — coerce to dict for jsonschema
+        if isinstance(d.get("parametersJson"), str):
+            try:
+                d["parametersJson"] = json.loads(d["parametersJson"])
+            except Exception:
+                d["parametersJson"] = {"type": "object", "properties": {}}
+        if isinstance(d.get("httpHeaders"), str):
+            try:
+                d["httpHeaders"] = json.loads(d["httpHeaders"])
+            except Exception:
+                d["httpHeaders"] = {}
+        out.append(d)
+    return out
+
+
+async def record_webhook_delivery(
+    webhook_id: str,
+    event: str,
+    payload: dict,
+    response_code: int | None,
+    response_body: str,
+    succeeded_at,
+    call_id: str | None = None,
+) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        '''INSERT INTO webhook_deliveries
+             (id, "webhookId", "callId", event, payload, "responseCode",
+              "responseBody", attempts, "succeededAt", "createdAt")
+           VALUES ($1, $2, $3, $4::"WebhookEvent", $5::jsonb, $6, $7, 1, $8, now())''',
+        str(uuid.uuid4()), webhook_id, call_id, event,
+        json.dumps(payload), response_code,
+        response_body, succeeded_at,
+    )

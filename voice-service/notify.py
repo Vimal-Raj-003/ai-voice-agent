@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json as _json
 import os
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -102,3 +106,40 @@ async def send_webhook(webhook_url: str, event_type: str, payload: dict) -> bool
     except Exception as exc:
         logger.warning("webhook_failed", error=str(exc))
         return False
+
+
+async def send_signed_webhook(
+    url: str,
+    secret: str,
+    event_type: str,
+    payload: dict,
+) -> tuple[int | None, str]:
+    """Sign and POST a webhook. Returns (status_code, body[:500]).
+
+    Adds these headers (HMAC-SHA256 over <ts>.<canonical_body>):
+      X-JJV-Event:     CALL_ENDED
+      X-JJV-Timestamp: <unix seconds>
+      X-JJV-Signature: sha256=<hex>
+
+    Receivers verify by recomputing hmac(secret, ts + "." + body).
+    Backward-compatible — receivers that ignore unknown headers see plain JSON.
+    """
+    body_bytes = _json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ts = str(int(time.time()))
+    msg = ts.encode() + b"." + body_bytes
+    sig = hmac.new(
+        (secret or "").encode(), msg, hashlib.sha256
+    ).hexdigest()
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "JilljillVoice/1.0",
+        "X-JJV-Event": event_type,
+        "X-JJV-Timestamp": ts,
+        "X-JJV-Signature": f"sha256={sig}",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(url, content=body_bytes, headers=headers)
+            return r.status_code, (r.text or "")[:500]
+    except Exception as exc:
+        return None, str(exc)[:500]

@@ -273,6 +273,7 @@ model Assistant {
   interruptionThresholdMs Int              @default(150)
   backgroundDenoising     Boolean          @default(true)
   voicemailDetection      Boolean          @default(false)
+  voicemailMessage        String?          @db.Text
   confidenceThresholdPct  Int              @default(0)
   hallucinationGuard      Boolean          @default(true)
   minPauseMs              Int              @default(200)
@@ -517,6 +518,17 @@ model Tool {
   serverUrl      String?
   serverSecret   String?
   builtin        String?
+  // ── Custom HTTP tool runtime (Feature Pack 3 / Task 5) ─────────────────
+  // kind = "HTTP" → at agent boot, an llm.function_tool wrapper makes the
+  //   configured request when the LLM invokes this tool.
+  // kind = "BUILTIN" → name maps to a hard-coded handler in tools.py (the
+  //   existing 9 tools). Default for legacy rows.
+  kind           String   @default("HTTP")
+  httpMethod     String?  @default("POST") // GET | POST | PUT | DELETE
+  httpUrl        String? // template — supports {arg} substitution from LLM args
+  httpHeaders    Json? // {"Authorization": "Bearer xxx"}
+  timeoutSeconds Int      @default(15)
+  isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

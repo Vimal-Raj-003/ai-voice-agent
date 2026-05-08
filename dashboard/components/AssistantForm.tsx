@@ -4,9 +4,18 @@ import BooleanSelect from "./BooleanSelect";
 import FormField from "./FormField";
 import SystemPromptField from "./SystemPromptField";
 
+type ToolOption = {
+  id: string;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+};
+
 type Props = {
   action: (formData: FormData) => Promise<void>;
   initial?: Partial<Assistant>;
+  tools?: ToolOption[];
+  selectedToolIds?: string[];
 };
 
 // Adapter for legacy `hint` prop usage in this file — every existing call
@@ -69,7 +78,13 @@ const SENSITIVITY = [
   },
 ];
 
-export default function AssistantForm({ action, initial }: Props) {
+export default function AssistantForm({
+  action,
+  initial,
+  tools = [],
+  selectedToolIds = [],
+}: Props) {
+  const selectedSet = new Set(selectedToolIds);
   return (
     // Wider max-width so the 2-column row (Identity + Call accuracy) has
     // enough horizontal room for the Identity textarea + the call-accuracy
@@ -155,6 +170,56 @@ export default function AssistantForm({ action, initial }: Props) {
         </div>
       </section>
 
+
+      {tools.length > 0 && (
+        <section className="glass rounded-2xl p-5 space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
+              Tools enabled
+            </h3>
+            <p className="text-[11px] text-gray-500 mt-1">
+              Custom HTTP tools the LLM can call mid-conversation. Define new
+              ones at <code className="text-gray-400">/tools</code>.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {tools.map((t) => {
+              const checked = selectedSet.has(t.id);
+              return (
+                <label
+                  key={t.id}
+                  className={`flex items-start gap-2 rounded-lg border p-2.5 cursor-pointer transition ${
+                    checked
+                      ? "border-violet-400/50 bg-violet-500/[0.06]"
+                      : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04]"
+                  } ${t.isActive ? "" : "opacity-50"}`}
+                >
+                  <input
+                    type="checkbox"
+                    name={`tool_${t.id}`}
+                    defaultChecked={checked}
+                    disabled={!t.isActive}
+                    className="mt-0.5 accent-violet-400"
+                  />
+                  <span>
+                    <span className="block font-mono text-xs text-violet-200">
+                      {t.name}
+                      {!t.isActive && (
+                        <span className="ml-2 text-gray-500">(paused)</span>
+                      )}
+                    </span>
+                    {t.description && (
+                      <span className="block text-[11px] text-gray-500 line-clamp-2">
+                        {t.description}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       <button className="rounded-lg bg-gradient-to-r from-cyan-300 via-violet-300 to-pink-300 px-5 py-2 text-sm font-semibold text-black hover:from-cyan-200 hover:via-violet-200 hover:to-pink-200 shadow-[0_0_20px_rgba(167,139,250,0.25)] transition">
         Save assistant
@@ -265,7 +330,7 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
         </Field>
         <Field
           label="Voicemail detection"
-          hint="Detect answering-machine tone & leave a short message. (Schema only — agent integration pending.)"
+          hint="Detect answering-machine tone, optionally leave a message, then hang up."
         >
           <BooleanSelect
             name="voicemailDetection"
@@ -291,6 +356,18 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
           />
         </Field>
       </div>
+      <Field
+        label="Voicemail message (optional)"
+        hint="Spoken when voicemail is detected. Leave blank to hang up silently."
+      >
+        <textarea
+          name="voicemailMessage"
+          rows={3}
+          defaultValue={initial?.voicemailMessage ?? ""}
+          placeholder="Hi, this is Priya from Acme Dental — please call us back at +91…"
+          className={inputCls}
+        />
+      </Field>
     </section>
   );
 }

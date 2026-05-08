@@ -42,6 +42,8 @@ function readAssistantPayload(formData: FormData) {
     ),
     backgroundDenoising: _bool(formData.get("backgroundDenoising")),
     voicemailDetection: _bool(formData.get("voicemailDetection")),
+    voicemailMessage:
+      String(formData.get("voicemailMessage") || "").trim() || null,
     confidenceThresholdPct: Math.max(
       0,
       Math.min(100, _int(formData.get("confidenceThresholdPct"), 0)),
@@ -52,11 +54,46 @@ function readAssistantPayload(formData: FormData) {
   };
 }
 
+// Returns the set of tool IDs the user checked on the form. Form sends each
+// as `tool_<id>=on`, mirroring the webhook events checkbox pattern.
+function readToolIds(formData: FormData): string[] {
+  const ids: string[] = [];
+  for (const [key, value] of formData.entries()) {
+    if (key.startsWith("tool_") && value === "on") {
+      ids.push(key.slice(5));
+    }
+  }
+  return ids;
+}
+
+async function syncAssistantTools(assistantId: string, toolIds: string[]) {
+  const existing = await prisma.assistantTool.findMany({
+    where: { assistantId },
+    select: { toolId: true },
+  });
+  const existingIds = new Set(existing.map((e) => e.toolId));
+  const desired = new Set(toolIds);
+  const toAdd = [...desired].filter((id) => !existingIds.has(id));
+  const toRemove = [...existingIds].filter((id) => !desired.has(id));
+  if (toAdd.length) {
+    await prisma.assistantTool.createMany({
+      data: toAdd.map((toolId) => ({ assistantId, toolId })),
+      skipDuplicates: true,
+    });
+  }
+  if (toRemove.length) {
+    await prisma.assistantTool.deleteMany({
+      where: { assistantId, toolId: { in: toRemove } },
+    });
+  }
+}
+
 export async function createAssistant(formData: FormData) {
   const { id: orgId } = await getDefaultOrg();
   const a = await prisma.assistant.create({
     data: { organizationId: orgId, ...readAssistantPayload(formData) },
   });
+  await syncAssistantTools(a.id, readToolIds(formData));
   revalidatePath("/assistants");
   redirect(`/assistants/${a.id}`);
 }
@@ -66,6 +103,7 @@ export async function updateAssistant(id: string, formData: FormData) {
     where: { id },
     data: readAssistantPayload(formData),
   });
+  await syncAssistantTools(id, readToolIds(formData));
   revalidatePath("/assistants");
   revalidatePath(`/assistants/${id}`);
 }

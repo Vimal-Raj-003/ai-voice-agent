@@ -23,6 +23,9 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sse_starlette.sse import EventSourceResponse
 
 import db
@@ -33,6 +36,13 @@ init_observability()
 logger = get_logger("server")
 
 app = FastAPI(title="OutboundAI Voice Service", version="1.0.0")
+
+# ── Rate limiting (Feature Pack 3 / Task 4) ──────────────────────────────────
+# Per-IP, in-process — sufficient for single-tenant deployments. Move to Redis
+# storage if/when we run multiple voice-service replicas.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── Prometheus ────────────────────────────────────────────────────────────────
 voice_calls_total       = Counter("voice_calls_total", "Total calls handled", ["outcome"])
@@ -45,12 +55,29 @@ voice_dispatch_failures = Counter("voice_dispatch_failures_total", "Dispatch fai
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 async def require_token(request: Request) -> None:
-    expected = os.environ.get("VOICE_SERVICE_TOKEN", "")
-    if not expected:
-        raise HTTPException(503, "Service token not configured")
+    """Two auth paths:
+      1. Shared service token (dashboard ↔ voice-service via VOICE_SERVICE_TOKEN).
+      2. Per-customer API key issued from the dashboard, hashed and stored in
+         api_keys. Bearer must start with the "jjv_" prefix to take this path.
+    """
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or auth[7:] != expected:
-        raise HTTPException(401, "Invalid bearer token")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(401, "Missing bearer token")
+    presented = auth[7:]
+
+    expected = os.environ.get("VOICE_SERVICE_TOKEN", "")
+    if expected and presented == expected:
+        return
+
+    if presented.startswith("jjv_"):
+        try:
+            row = await db.verify_api_key(presented)
+        except Exception:
+            row = None
+        if row:
+            return
+
+    raise HTTPException(401, "Invalid bearer token")
 
 
 # ── Lifespan: open/close DB pool ──────────────────────────────────────────────
@@ -102,6 +129,7 @@ def _lk_client() -> lkapi.LiveKitAPI:
 
 
 @app.post("/api/dispatch/single", dependencies=[Depends(require_token)])
+@limiter.limit("100/minute")
 async def dispatch_single(request: Request) -> dict:
     body = await request.json()
     phone = (body.get("phone") or "").strip()
@@ -139,6 +167,7 @@ async def dispatch_single(request: Request) -> dict:
 
 
 @app.post("/api/dispatch/bulk", dependencies=[Depends(require_token)])
+@limiter.limit("100/minute")
 async def dispatch_bulk(request: Request) -> dict:
     body = await request.json()
     contacts = body.get("contacts") or []

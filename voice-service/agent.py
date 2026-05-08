@@ -21,6 +21,7 @@ import json  # noqa: E402
 import re  # noqa: E402
 import time  # noqa: E402
 from collections import defaultdict  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
 
 from dotenv import load_dotenv  # noqa: E402
 from livekit import agents, api  # noqa: E402, F401
@@ -41,6 +42,7 @@ import notify  # noqa: E402
 from language_presets import LANGUAGE_PRESETS  # noqa: E402, F401
 from observability import get_logger, init_observability  # noqa: E402
 from prompts import build_prompt, count_tokens  # noqa: E402
+from voicemail import looks_like_voicemail  # noqa: E402
 
 load_dotenv(".env")
 init_observability()
@@ -265,10 +267,15 @@ async def _load_caller_history(phone: str) -> str:
 
 
 async def _resolve_profile(profile_id: str | None) -> dict:
+    """Look up by id in agent_profiles, then assistants, then default."""
     if profile_id:
         prof = await db.get_agent_profile(profile_id)
         if prof:
             return prof
+        # Inbound routing (Task 2) passes an Assistant id — fall through.
+        assistant = await db.get_assistant_as_profile(profile_id)
+        if assistant:
+            return assistant
     prof = await db.get_default_agent_profile()
     return prof or {}
 
@@ -315,7 +322,37 @@ async def entrypoint(ctx: JobContext) -> None:
         await db.log_error("agent", f"rate-limit blocked {phone}")
         return
 
-    profile = await _resolve_profile(meta.get("agent_profile_id"))
+    # ── Inbound routing (Feature Pack 3 / Task 2) ────────────────────────────
+    # For inbound calls only: look up the dialed-to number to find the bound
+    # assistant. If found, prefer it over metadata-supplied agent_profile_id.
+    inbound_user_in_room = any(
+        "sip_" in p.identity for p in ctx.room.remote_participants.values()
+    )
+    inbound_assistant_id: str | None = None
+    if inbound_user_in_room:
+        dialed_to: str | None = None
+        for p in ctx.room.remote_participants.values():
+            attrs = p.attributes or {}
+            called = attrs.get("sip.calledNumber") or attrs.get("calledNumber")
+            if called:
+                dialed_to = called
+                break
+        if dialed_to:
+            try:
+                routing = await db.get_phone_number_routing(dialed_to)
+            except Exception as exc:
+                logger.warning("inbound_routing_lookup_failed", error=str(exc))
+                routing = None
+            if routing and routing.get("assistantId"):
+                inbound_assistant_id = routing["assistantId"]
+                logger.info(
+                    "inbound_routing_hit",
+                    to=dialed_to,
+                    assistant_id=inbound_assistant_id,
+                )
+
+    profile_lookup_id = inbound_assistant_id or meta.get("agent_profile_id")
+    profile = await _resolve_profile(profile_lookup_id)
     history = await _load_caller_history(phone)
 
     system_prompt = build_prompt(
@@ -345,6 +382,36 @@ async def entrypoint(ctx: JobContext) -> None:
     agent_tools = AppointmentTools(ctx, phone, name)
     enabled = json.loads(profile.get("enabled_tools") or "[]") if isinstance(profile.get("enabled_tools"), str) else (profile.get("enabled_tools") or [])
     tool_list = agent_tools.build_tool_list(enabled)
+
+    # ── Custom HTTP tools (Feature Pack 3 / Task 5) ──────────────────────────
+    # Look up Tool rows bound to this assistant via AssistantTool. Each active
+    # HTTP tool becomes an additional llm.function_tool the LLM can invoke.
+    assistant_id_for_tools = (
+        inbound_assistant_id
+        or (profile.get("id") if isinstance(profile, dict) else None)
+    )
+    if assistant_id_for_tools:
+        try:
+            custom_defs = await db.get_assistant_tools(assistant_id_for_tools)
+        except Exception as exc:
+            logger.warning("custom_tools_lookup_failed", error=str(exc))
+            custom_defs = []
+        if custom_defs:
+            from custom_tools import build_custom_tool
+            for d in custom_defs:
+                if d.get("kind") == "HTTP" and d.get("isActive"):
+                    try:
+                        tool_list.append(build_custom_tool(d, ctx))
+                    except Exception as exc:
+                        logger.warning(
+                            "custom_tool_build_failed",
+                            tool=d.get("name"), error=str(exc),
+                        )
+            logger.info(
+                "custom_tools_loaded",
+                count=sum(1 for d in custom_defs if d.get("isActive")),
+                assistant_id=assistant_id_for_tools,
+            )
 
     agent = Agent(instructions=system_prompt, tools=tool_list)
     session = _build_session(tools=tool_list, system_prompt=system_prompt, profile=profile)
@@ -377,6 +444,9 @@ async def entrypoint(ctx: JobContext) -> None:
         livekit_room_name=ctx.room.name,
     )
     agent_tools._call_id = call_id
+    # Expose call_id on ctx so custom_tools (Task 5) can record invocations
+    # against the right Call row when the LLM fires them mid-conversation.
+    ctx._call_id = call_id  # type: ignore[attr-defined]
 
     # Stream transcript turns into transcript_messages so the dashboard /calls/[id] view is
     # populated live. Hook the conversation_item_added event emitted by livekit-agents 1.x.
@@ -449,6 +519,31 @@ async def entrypoint(ctx: JobContext) -> None:
             await db.remove_active_call(ctx.room.name)
             return
 
+    # ── Voicemail detection ──────────────────────────────────────────────────
+    # Heuristic: first user transcript turn that matches voicemail phrases or
+    # exceeds a long-message threshold ⇒ treat as answering machine, optionally
+    # leave a message, then disconnect. Off by default per assistant.
+    assistant_voicemail_enabled = bool(profile.get("voicemail_detection"))
+    voicemail_msg = profile.get("voicemail_message") or ""
+    voicemail_detected = {"flag": False}
+
+    if assistant_voicemail_enabled:
+        @session.on("user_input_transcribed")
+        def _vm_check(event: Any) -> None:  # noqa: ANN401 — runtime event
+            if voicemail_detected["flag"]:
+                return
+            if not getattr(event, "is_final", True):
+                return
+            text = getattr(event, "transcript", "") or ""
+            if looks_like_voicemail(text):
+                voicemail_detected["flag"] = True
+                agent_tools._closed_outcome = "VOICEMAIL"
+                agent_tools._closed_reason = "voicemail detected on first turn"
+                logger.info(
+                    "voicemail_detected", phone=phone, transcript=text[:120]
+                )
+                asyncio.create_task(_handle_voicemail(session, voicemail_msg, ctx))
+
     # Greet (the prompt instructs the agent to speak first)
     await session.generate_reply(instructions="Begin the call now per your system prompt.")
 
@@ -457,6 +552,24 @@ async def entrypoint(ctx: JobContext) -> None:
     agent_tools._room_name = ctx.room.name
     agent_tools._session = session
     ctx.add_shutdown_callback(lambda: _shutdown_hook(ctx, agent_tools, session, profile, phone, name))
+
+
+# ── Voicemail handler ────────────────────────────────────────────────────────
+
+async def _handle_voicemail(session, msg: str, ctx: JobContext) -> None:
+    """Optional: leave a recorded message, then disconnect."""
+    if msg:
+        try:
+            await session.generate_reply(
+                instructions=f"Speak this message exactly, no preamble: {msg}"
+            )
+            await asyncio.sleep(2)
+        except Exception as exc:
+            logger.warning("voicemail_msg_failed", error=str(exc))
+    try:
+        await ctx.shutdown(reason="voicemail")
+    except Exception:
+        pass
 
 
 # ── Shutdown hook ────────────────────────────────────────────────────────────
@@ -658,6 +771,50 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
             })
     except Exception:
         pass
+
+    # ── DB-row webhooks (Feature Pack 3 / Task 4) ────────────────────────────
+    # HMAC-signed payloads to receivers configured via the dashboard. Records
+    # delivery rows so /webhooks/[id] shows attempt history.
+    try:
+        org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
+        event = "CALL_ENDED" if log_call_ok else "CALL_FAILED"
+        db_webhooks = await db.get_active_webhooks_for_event(org_id, event)
+        if db_webhooks:
+            full_payload = {
+                "event": event,
+                "call_id": call_id,
+                "phone": phone,
+                "lead_name": name or agent_tools.lead_name,
+                "duration": duration,
+                "outcome": outcome,
+                "reason": reason,
+                "sentiment": sentiment,
+                "cost_usd": cost_usd,
+                "was_booked": was_booked,
+                "recording_url": getattr(agent_tools, "recording_url", None),
+            }
+            for wh in db_webhooks:
+                code, body = await notify.send_signed_webhook(
+                    wh["url"], wh.get("secret") or "",
+                    event, full_payload,
+                )
+                succeeded_at = (
+                    datetime.now(UTC).replace(tzinfo=None)
+                    if (code is not None and 200 <= code < 300)
+                    else None
+                )
+                try:
+                    await db.record_webhook_delivery(
+                        wh["id"], event, full_payload,
+                        code, body, succeeded_at,
+                        call_id=call_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "webhook_delivery_record_failed", error=str(exc)
+                    )
+    except Exception as exc:
+        logger.warning("db_webhook_dispatch_failed", error=str(exc))
 
 
 # ── Worker entry ─────────────────────────────────────────────────────────────

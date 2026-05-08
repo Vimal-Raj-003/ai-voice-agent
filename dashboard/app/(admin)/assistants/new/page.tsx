@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { ArrowRight, Sparkles } from "lucide-react";
+import { prisma } from "@/lib/prisma";
+import { getDefaultOrg } from "@/lib/org";
 import { createAssistant } from "../actions";
 import AssistantForm from "@/components/AssistantForm";
 import {
@@ -7,6 +9,8 @@ import {
   CUSTOM_FROM_SCRATCH,
 } from "@/lib/assistant-templates";
 import { Badge } from "@/components/Badge";
+
+export const dynamic = "force-dynamic";
 
 export default async function NewAssistantPage({
   searchParams,
@@ -103,7 +107,23 @@ export default async function NewAssistantPage({
           </Badge>
         )}
       </div>
-      <AssistantForm action={createAssistant} initial={tpl?.seed} />
+      <AssistantFormWithTools tplSeed={tpl?.seed} />
     </div>
+  );
+}
+
+async function AssistantFormWithTools({
+  tplSeed,
+}: {
+  tplSeed?: Parameters<typeof AssistantForm>[0]["initial"];
+}) {
+  const { id: orgId } = await getDefaultOrg();
+  const tools = await prisma.tool.findMany({
+    where: { organizationId: orgId },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true, description: true, isActive: true },
+  });
+  return (
+    <AssistantForm action={createAssistant} initial={tplSeed} tools={tools} />
   );
 }

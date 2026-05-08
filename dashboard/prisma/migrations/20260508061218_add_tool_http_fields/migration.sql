@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "tools" ADD COLUMN     "httpHeaders" JSONB,
+ADD COLUMN     "httpMethod" TEXT DEFAULT 'POST',
+ADD COLUMN     "httpUrl" TEXT,
+ADD COLUMN     "isActive" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "kind" TEXT NOT NULL DEFAULT 'HTTP',
+ADD COLUMN     "timeoutSeconds" INTEGER NOT NULL DEFAULT 15;
