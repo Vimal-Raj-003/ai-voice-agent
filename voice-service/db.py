@@ -549,12 +549,27 @@ async def get_active_calls() -> list[dict]:
 
 # ── Real-time transcript ──────────────────────────────────────────────────────
 
-async def insert_transcript_message(call_id: str, role: str, content: str) -> None:
+async def insert_transcript_message(
+    call_id: str,
+    role: str,
+    content: str,
+    content_redacted: str | None = None,
+    has_pii: bool = False,
+) -> None:
     pool = await get_pool()
     await pool.execute(
-        """INSERT INTO transcript_messages (id, "callId", role, content, "timestamp")
-           VALUES ($1, $2, $3::"TranscriptRole", $4, now())""",
-        str(uuid.uuid4()), call_id, role.upper(), content,
+        '''INSERT INTO transcript_messages
+             (id, "callId", role, content, "contentRedacted", "hasPii", "timestamp")
+           VALUES ($1, $2, $3::"TranscriptRole", $4, $5, $6, now())''',
+        str(uuid.uuid4()), call_id, role.upper(), content, content_redacted, has_pii,
+    )
+
+
+async def mark_call_has_pii(call_id: str) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        '''UPDATE calls SET "transcriptHasPii" = true WHERE id = $1''',
+        call_id,
     )
 
 

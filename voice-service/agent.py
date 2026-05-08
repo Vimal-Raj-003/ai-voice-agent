@@ -39,6 +39,7 @@ from livekit.plugins import noise_cancellation, silero  # noqa: E402, F401
 import config  # noqa: E402
 import db  # noqa: E402
 import notify  # noqa: E402
+import redactor  # noqa: E402
 from language_presets import LANGUAGE_PRESETS  # noqa: E402, F401
 from observability import get_logger, init_observability  # noqa: E402
 from prompts import build_prompt, count_tokens  # noqa: E402
@@ -459,8 +460,41 @@ async def entrypoint(ctx: JobContext) -> None:
         if not text:
             return
         asyncio.create_task(
-            db.insert_transcript_message(call_id, role.upper(), text)
+            _insert_transcript_with_redaction(call_id, role.upper(), text, profile, phone)
         )
+
+
+    async def _insert_transcript_with_redaction(
+        cid: str, role: str, text: str, prof: dict, caller_phone: str,
+    ) -> None:
+        """Apply PII redaction then persist the transcript message."""
+        try:
+            mode = await db.get_setting("PII_STORAGE_MODE") or "redacted_only"
+        except Exception:
+            mode = "redacted_only"
+        redaction_enabled = prof.get("redaction_enabled", True)
+        protected_nums: tuple[str, ...] = (caller_phone,)
+        if redaction_enabled:
+            redacted_text, had_pii = redactor.redact(text, protected_nums)
+        else:
+            redacted_text, had_pii = text, False
+
+        if redaction_enabled and mode == "redacted_only":
+            db_content = redacted_text
+            db_redacted = None
+        else:
+            db_content = text
+            db_redacted = redacted_text if redaction_enabled else None
+
+        await db.insert_transcript_message(
+            call_id=cid,
+            role=role,
+            content=db_content,
+            content_redacted=db_redacted,
+            has_pii=had_pii,
+        )
+        if had_pii:
+            await db.mark_call_has_pii(cid)
 
     @session.on("conversation_item_added")
     def _on_item(event: Any) -> None:  # noqa: ANN401 — runtime event from livekit
