@@ -66,7 +66,10 @@ async def require_token(request: Request) -> None:
     presented = auth[7:]
 
     expected = os.environ.get("VOICE_SERVICE_TOKEN", "")
-    if expected and presented == expected:
+    # Constant-time compare: short-circuiting on the first byte difference would
+    # leak token length / prefix to a timing attacker. Token is high-entropy in
+    # practice so this is hygiene more than active threat-mitigation.
+    if expected and hmac.compare_digest(presented, expected):
         return
 
     if presented.startswith("jjv_"):

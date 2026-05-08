@@ -102,7 +102,7 @@ export default function ToolForm({
         <span className="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">
           Headers{" "}
           <span className="text-gray-600 normal-case tracking-normal">
-            optional · key=value per line
+            optional · key=value per line · treat like a credential
           </span>
         </span>
         <textarea
@@ -112,6 +112,11 @@ export default function ToolForm({
           placeholder="Authorization=Bearer your-token&#10;X-Source=jjv"
           className={inputCls + " font-mono"}
         />
+        <span className="block text-[10px] text-amber-300/80 mt-1">
+          ⚠ Anything entered here (including Authorization tokens) is stored
+          on the Tool row and shipped on every invocation. Rotate the value
+          if this tool is deleted or shared.
+        </span>
       </label>
       <label className="block">
         <span className="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">

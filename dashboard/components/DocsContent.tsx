@@ -388,6 +388,50 @@ export default function DocsContent() {
           table. The detail page shows status (success / 4xx / 5xx /
           pending), attempts, and the response body.
         </p>
+        <h3 className="text-sm font-semibold text-gray-200 mt-4">
+          Verifying signatures (HMAC-SHA256)
+        </h3>
+        <p>
+          Every delivery includes three headers your endpoint should verify:
+        </p>
+        <ul className="list-disc list-inside text-xs text-gray-400 ml-4 space-y-0.5">
+          <li>
+            <code>X-JJV-Event</code> — the event name (e.g.{" "}
+            <code>CALL_ENDED</code>).
+          </li>
+          <li>
+            <code>X-JJV-Timestamp</code> — Unix seconds when we signed.
+          </li>
+          <li>
+            <code>X-JJV-Signature</code> — hex HMAC-SHA256 of{" "}
+            <code>{"<timestamp>.<canonical_body>"}</code> using your
+            webhook&apos;s secret. The body is canonicalised with
+            sorted keys and tight separators before signing.
+          </li>
+        </ul>
+        <p className="mt-2">
+          Reject requests where the signature doesn&apos;t match (use a
+          constant-time compare) or where the timestamp is more than{" "}
+          <strong>5 minutes</strong> off — that window is the receiver&apos;s
+          defense against replay attacks.
+        </p>
+        <p>Reference receiver (Node.js):</p>
+        <Code>{`import crypto from "crypto";
+
+function verify(req, body, secret) {
+  const ts = req.headers["x-jjv-timestamp"];
+  const sig = req.headers["x-jjv-signature"];
+  if (!ts || !sig) return false;
+  if (Math.abs(Date.now()/1000 - Number(ts)) > 300) return false;
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(\`\${ts}.\${body}\`)
+    .digest("hex");
+  return crypto.timingSafeEqual(
+    Buffer.from(sig, "hex"),
+    Buffer.from(expected, "hex")
+  );
+}`}</Code>
       </Section>
 
       {/* ── API Reference ───────────────────────────────────────────────────── */}

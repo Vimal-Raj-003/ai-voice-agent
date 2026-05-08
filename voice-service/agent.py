@@ -526,6 +526,7 @@ async def entrypoint(ctx: JobContext) -> None:
     assistant_voicemail_enabled = bool(profile.get("voicemail_detection"))
     voicemail_msg = profile.get("voicemail_message") or ""
     voicemail_detected = {"flag": False}
+    voicemail_window_start = time.time()
 
     if assistant_voicemail_enabled:
         @session.on("user_input_transcribed")
@@ -535,7 +536,8 @@ async def entrypoint(ctx: JobContext) -> None:
             if not getattr(event, "is_final", True):
                 return
             text = getattr(event, "transcript", "") or ""
-            if looks_like_voicemail(text):
+            elapsed = time.time() - voicemail_window_start
+            if looks_like_voicemail(text, elapsed):
                 voicemail_detected["flag"] = True
                 agent_tools._closed_outcome = "VOICEMAIL"
                 agent_tools._closed_reason = "voicemail detected on first turn"

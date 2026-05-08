@@ -44,8 +44,43 @@ function readPayload(formData: FormData) {
   const description = String(formData.get("description") || "").trim();
   const httpMethod = String(formData.get("httpMethod") || "POST").toUpperCase();
   const httpUrl = String(formData.get("httpUrl") || "").trim();
-  if (!httpUrl.startsWith("http")) {
-    throw new Error("HTTP URL is required and must start with http(s)://");
+  // Strict scheme check + parse so we catch e.g. `httpfoo://` or empty hosts.
+  let parsed: URL;
+  try {
+    parsed = new URL(httpUrl);
+  } catch {
+    throw new Error("HTTP URL is required and must be a valid http(s):// URL.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("HTTP URL must use http:// or https://.");
+  }
+  if (!parsed.hostname) {
+    throw new Error("HTTP URL must include a hostname.");
+  }
+  // Reject placeholders (`{foo}`) anywhere in scheme/host/port. Allowing them
+  // there would let the LLM pivot the request to a different host at runtime.
+  // Path/query placeholders are fine — that's the whole point of templating.
+  const authority = `${parsed.protocol}//${parsed.host}`;
+  if (/\{[a-zA-Z_][a-zA-Z0-9_]*\}/.test(authority)) {
+    throw new Error(
+      "Placeholders ({arg}) are only allowed in the path or query — not in the host or port.",
+    );
+  }
+  // Best-effort SSRF nudge — full enforcement lives in the voice-service at
+  // request time (DNS resolves there). Here we just block the obvious literals
+  // so an operator gets immediate feedback in the dashboard.
+  const host = parsed.hostname.toLowerCase();
+  const blockedLiterals = [
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "::1",
+    "169.254.169.254", // AWS/GCP/Azure metadata
+  ];
+  if (blockedLiterals.includes(host)) {
+    throw new Error(
+      `HTTP URL host '${host}' is on the blocklist (loopback / metadata).`,
+    );
   }
   const headers = parseHeaders(String(formData.get("httpHeaders") || ""));
   const schema = validateSchema(String(formData.get("parametersJson") || ""));
