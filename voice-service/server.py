@@ -29,6 +29,7 @@ from slowapi.util import get_remote_address
 from sse_starlette.sse import EventSourceResponse
 
 import db
+import idempotency
 import notify
 from compliance import check_dispatch_allowed
 from observability import get_logger, init_observability
@@ -136,13 +137,23 @@ def _lk_client() -> lkapi.LiveKitAPI:
 @app.post("/api/dispatch/single", dependencies=[Depends(require_token)])
 @limiter.limit("100/minute")
 async def dispatch_single(request: Request) -> dict:
-    body = await request.json()
+    raw = await request.body()
+    # Cache body bytes on request so idempotency.check's second read is a no-op
+    request._body = raw  # noqa: SLF001  (Starlette internal cache)
+    body = json.loads(raw or b"{}")
     phone = (body.get("phone") or "").strip()
     if not phone.startswith("+"):
         raise HTTPException(400, "Phone must start with + and country code")
 
-    # ── Compliance check (Feature Pack 4 / Task 8) ────────────────────────────
+    # ── Idempotency (Feature Pack 4 / Task 15) ────────────────────────────────
     org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
+    key, cached = await idempotency.check(request, "dispatch.single", org_id)
+    if cached:
+        resp = JSONResponse(status_code=cached["status"], content=cached["body"])
+        resp.headers["Idempotency-Replayed"] = "true"
+        return resp
+
+    # ── Compliance check (Feature Pack 4 / Task 8) ────────────────────────────
     compliance = await check_dispatch_allowed(org_id, phone, contact_tz=None)
     if not compliance.allowed:
         return JSONResponse(
@@ -178,7 +189,10 @@ async def dispatch_single(request: Request) -> dict:
             ),
         )
         logger.info("dispatched", phone=phone, room=room_name, dispatch_id=dispatch.id)
-        return {"status": "ok", "dispatch_id": dispatch.id, "room": room_name, "phone": phone}
+        result_body = {"status": "ok", "dispatch_id": dispatch.id, "room": room_name, "phone": phone}
+        if key:
+            await idempotency.record(request, "dispatch.single", org_id, key, 200, result_body)
+        return result_body
     except Exception as exc:
         voice_dispatch_failures.inc()
         logger.error("dispatch_failed", error=str(exc), phone=phone)
@@ -190,7 +204,10 @@ async def dispatch_single(request: Request) -> dict:
 @app.post("/api/dispatch/bulk", dependencies=[Depends(require_token)])
 @limiter.limit("100/minute")
 async def dispatch_bulk(request: Request) -> dict:
-    body = await request.json()
+    raw = await request.body()
+    # Cache body bytes on request so idempotency.check's second read is a no-op
+    request._body = raw  # noqa: SLF001  (Starlette internal cache)
+    body = json.loads(raw or b"{}")
     contacts = body.get("contacts") or []
     delay = float(body.get("delay_seconds", 3))
     profile_id = body.get("agent_profile_id")
@@ -198,12 +215,19 @@ async def dispatch_bulk(request: Request) -> dict:
     if not contacts:
         raise HTTPException(400, "contacts required")
 
+    # ── Idempotency (Feature Pack 4 / Task 15) ────────────────────────────────
+    org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
+    key, cached = await idempotency.check(request, "dispatch.bulk", org_id)
+    if cached:
+        resp = JSONResponse(status_code=cached["status"], content=cached["body"])
+        resp.headers["Idempotency-Replayed"] = "true"
+        return resp
+
     batch_id = f"BATCH_{random.randint(100000, 999999)}"
     results = []
     blocked = 0
     deferred = 0
     # ── Compliance org_id (Feature Pack 4 / Task 8) ───────────────────────────
-    org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
     lk = _lk_client()
     try:
         for c in contacts:
@@ -242,13 +266,16 @@ async def dispatch_bulk(request: Request) -> dict:
             except Exception as exc:
                 voice_dispatch_failures.inc()
                 results.append({"phone": phone, "status": "error", "message": str(exc)})
-        return {
+        result_body = {
             "batch_id": batch_id,
             "total": len(contacts),
             "results": results,
             "blocked": blocked,
             "deferred": deferred,
         }
+        if key:
+            await idempotency.record(request, "dispatch.bulk", org_id, key, 200, result_body)
+        return result_body
     finally:
         await lk.aclose()
 
@@ -457,6 +484,15 @@ async def _refresh_rates_safely() -> None:
         logger.error("provider_rates_refresh_failed", error=str(exc))
 
 
+async def _prune_idempotency() -> None:
+    """APScheduler job: delete idempotency_keys older than 24 hours (daily at 03:00 IST)."""
+    try:
+        n = await db.prune_idempotency_keys()
+        logger.info("idempotency_pruned", deleted=n)
+    except Exception as exc:
+        logger.error("idempotency_prune_failed", error=str(exc))
+
+
 async def _poll_webhook_retries() -> None:
     """APScheduler job: retry RETRY_SCHEDULED webhook deliveries (60s interval)."""
     try:
@@ -502,6 +538,16 @@ async def _start_scheduler() -> None:
         "interval",
         seconds=60,
         id="webhook_retry_poll",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    # Daily idempotency key prune — removes entries older than 24 hours.
+    # Runs at 03:00 IST; coalesce+max_instances=1 prevents overlap.
+    _scheduler.add_job(
+        _prune_idempotency,
+        CronTrigger(hour=3, minute=0, timezone=_ist()),
+        id="idempotency_prune",
         replace_existing=True,
         coalesce=True,
         max_instances=1,

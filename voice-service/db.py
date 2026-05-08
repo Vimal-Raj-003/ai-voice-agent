@@ -920,3 +920,41 @@ async def queue_immediate_retry(delivery_id: str) -> None:
            WHERE id = $1''',
         delivery_id,
     )
+
+
+# ── Idempotency helpers (Feature Pack 4 / Task 15) ────────────────────────────
+
+async def get_idempotency(org_id: str, scope: str, key: str) -> dict | None:
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        '''SELECT "requestHash", "responseStatus", "responseBody"
+             FROM idempotency_keys
+             WHERE "organizationId" = $1 AND scope = $2 AND key = $3''',
+        org_id, scope, key,
+    )
+    return dict(row) if row else None
+
+
+async def record_idempotency(
+    org_id: str, scope: str, key: str, request_hash: str,
+    response_status: int, response_body: dict,
+) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        '''INSERT INTO idempotency_keys
+             (id, "organizationId", scope, key, "requestHash",
+              "responseStatus", "responseBody", "createdAt")
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, now())
+           ON CONFLICT ("organizationId", scope, key) DO NOTHING''',
+        str(uuid.uuid4()), org_id, scope, key, request_hash,
+        response_status, json.dumps(response_body),
+    )
+
+
+async def prune_idempotency_keys() -> int:
+    pool = await get_pool()
+    r = await pool.execute(
+        '''DELETE FROM idempotency_keys
+             WHERE "createdAt" < now() - interval '24 hours' '''
+    )
+    return int(r.split()[-1]) if r else 0
