@@ -15,6 +15,8 @@ import {
   Settings as SettingsIcon,
   AlertTriangle,
   Sparkles,
+  ShieldCheck,
+  KeyRound,
 } from "lucide-react";
 import CopyButton from "./CopyButton";
 
@@ -63,6 +65,8 @@ const TOC = [
   { id: "dispatch", label: "Placing calls", icon: PhoneCall },
   { id: "costs-rates", label: "Costs & rates", icon: CircleDollarSign },
   { id: "webhooks", label: "Webhooks", icon: Webhook },
+  { id: "compliance", label: "Compliance", icon: ShieldCheck },
+  { id: "idempotency", label: "Idempotency", icon: KeyRound },
   { id: "api-reference", label: "REST API reference", icon: Code2 },
   { id: "env-vars", label: "Environment variables", icon: SettingsIcon },
   { id: "troubleshooting", label: "Troubleshooting", icon: AlertTriangle },
@@ -432,6 +436,52 @@ function verify(req, body, secret) {
     Buffer.from(expected, "hex")
   );
 }`}</Code>
+      </Section>
+
+      {/* ── Compliance ──────────────────────────────────────────────────────── */}
+      <Section id="compliance" icon={ShieldCheck} title="Compliance — DND, quiet hours, recording consent">
+        <p>
+          <strong>DND list.</strong> Add numbers to{" "}
+          <code className="text-violet-300">/dnd</code> to block outbound dispatches.
+          Returns 403 BLOCKED_DND on{" "}
+          <code className="text-violet-300">/api/dispatch/single</code>; sets{" "}
+          <code>CampaignTarget.status=&apos;BLOCKED&apos;</code> for bulk.
+        </p>
+        <p>
+          <strong>Quiet hours.</strong> Configured per-org in Settings (
+          <code>QUIET_HOURS_START</code> / <code>_END</code> /{" "}
+          <code>_TIMEZONE</code>). Per-contact override via{" "}
+          <code>Contact.timezone</code>. Returns 429 OUTSIDE_QUIET_HOURS with{" "}
+          <code>next_allowed_at</code>. Bulk dispatches set{" "}
+          <code>status=&apos;DEFERRED&apos;</code> and the campaign scheduler retries after the
+          timestamp.
+        </p>
+        <p>
+          <strong>Recording consent.</strong> Configure per-assistant in the
+          Assistant edit form. Plays after <code>firstMessage</code> when{" "}
+          <code>recordingEnabled=true</code>.
+        </p>
+      </Section>
+
+      {/* ── Idempotency ─────────────────────────────────────────────────────── */}
+      <Section id="idempotency" icon={KeyRound} title="Idempotency">
+        <p>
+          Send <code>Idempotency-Key: &lt;random&gt;</code> (≤128 chars) on{" "}
+          <code className="text-violet-300">/api/dispatch/*</code>. We dedup against
+          the request body hash for 24h. Same key + same body returns the original
+          response with <code>Idempotency-Replayed: true</code>. Same key + different
+          body returns 422.
+        </p>
+        <Code>{`const key = crypto.randomUUID();
+await fetch("/api/dispatch/single", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Idempotency-Key": key,
+    "Authorization": "Bearer jjv_..."
+  },
+  body: JSON.stringify({ phone, ... })
+});`}</Code>
       </Section>
 
       {/* ── API Reference ───────────────────────────────────────────────────── */}

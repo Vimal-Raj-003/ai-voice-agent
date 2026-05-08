@@ -153,6 +153,45 @@ export const KNOWN_SETTINGS: SettingDef[] = [
     sensitive: false,
     type: "url",
   },
+
+  // ─ Privacy / compliance ───────────────────────────────────────────────────
+  {
+    key: "PII_STORAGE_MODE",
+    label: "PII storage mode",
+    category: "general",
+    sensitive: false,
+    type: "text",
+    placeholder: "redacted_only",
+    description:
+      "How transcripts are stored. Values: redacted_only (default — raw discarded), both (raw + redacted, admin can toggle), redacted_persistent_raw_ephemeral (raw nulled after 24h).",
+  },
+  {
+    key: "QUIET_HOURS_START",
+    label: "Quiet hours — allowed start (HH:MM)",
+    category: "general",
+    sensitive: false,
+    type: "text",
+    placeholder: "09:00",
+    description: "Earliest local time outbound dispatches are allowed. 24h format.",
+  },
+  {
+    key: "QUIET_HOURS_END",
+    label: "Quiet hours — allowed end (HH:MM)",
+    category: "general",
+    sensitive: false,
+    type: "text",
+    placeholder: "21:00",
+    description: "Latest local time outbound dispatches are allowed. 24h format. Wrap-around (e.g., 21:00 → 09:00) is supported.",
+  },
+  {
+    key: "QUIET_HOURS_TIMEZONE",
+    label: "Quiet hours — timezone",
+    category: "general",
+    sensitive: false,
+    type: "text",
+    placeholder: "Asia/Kolkata",
+    description: "IANA timezone (default Asia/Kolkata). Per-contact override supported via Contact.timezone.",
+  },
 ];
 
 export const SETTING_CATEGORIES: { id: SettingCategory; label: string; description: string }[] = [

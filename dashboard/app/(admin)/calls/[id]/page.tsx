@@ -87,6 +87,11 @@ export default async function CallDetail({
             {transcript.length} turn{transcript.length === 1 ? "" : "s"}
           </span>
         </h2>
+        {c.transcriptHasPii && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.08] p-2 text-xs text-amber-200 mb-3">
+            PII detected and redacted in this transcript.
+          </div>
+        )}
         {transcript.length === 0 ? (
           <p className="text-sm text-gray-500">
             No transcript yet — turns appear here while the call is in progress.
@@ -107,7 +112,11 @@ export default async function CallDetail({
                 <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-1 font-mono">
                   {m.role.toLowerCase()} · {m.timestamp.toLocaleTimeString()}
                 </div>
-                {m.content}
+                {m.contentRedacted && m.contentRedacted !== m.content ? (
+                  <span title="Redacted">{m.contentRedacted}</span>
+                ) : (
+                  m.content
+                )}
               </li>
             ))}
           </ul>
