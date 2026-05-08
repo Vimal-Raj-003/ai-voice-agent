@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import httpx
 import requests
 
+import db
 from observability import get_logger
 
 logger = get_logger("notify")
@@ -113,6 +114,9 @@ async def send_signed_webhook(
     secret: str,
     event_type: str,
     payload: dict,
+    *,
+    webhook_id: str | None = None,
+    call_id: str | None = None,
 ) -> tuple[int | None, str]:
     """Sign and POST a webhook. Returns (status_code, body[:500]).
 
@@ -123,7 +127,22 @@ async def send_signed_webhook(
 
     Receivers verify by recomputing hmac(secret, ts + "." + body).
     Backward-compatible — receivers that ignore unknown headers see plain JSON.
+
+    If ``webhook_id`` is provided, a WebhookDelivery row is created (PENDING)
+    before the POST and updated to SUCCESS or RETRY_SCHEDULED on outcome.
+    The delivery row id is NOT returned here to preserve backward-compat; use
+    ``send_existing_delivery`` for retry replays that need the id.
     """
+    # Pre-insert delivery row when webhook_id is supplied (new integrated path).
+    delivery_id: str | None = None
+    if webhook_id:
+        try:
+            delivery_id = await db.create_webhook_delivery_pending(
+                webhook_id, event_type, payload, call_id=call_id
+            )
+        except Exception as exc:
+            logger.warning("webhook_delivery_create_failed", error=str(exc))
+
     body_bytes = _json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     ts = str(int(time.time()))
     msg = ts.encode() + b"." + body_bytes
@@ -140,6 +159,52 @@ async def send_signed_webhook(
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(url, content=body_bytes, headers=headers)
-            return r.status_code, (r.text or "")[:500]
+        status_code: int | None = r.status_code
+        body_text = (r.text or "")[:500]
     except Exception as exc:
-        return None, str(exc)[:500]
+        status_code = None
+        body_text = str(exc)[:500]
+
+    # Update delivery row state when running the integrated path.
+    if delivery_id:
+        try:
+            if status_code is not None and 200 <= status_code < 300:
+                await db.mark_webhook_succeeded(delivery_id, status_code, body_text)
+            else:
+                error_msg = (
+                    f"HTTP {status_code}: {body_text}"
+                    if status_code is not None
+                    else body_text
+                )
+                await db.schedule_webhook_retry(delivery_id, error_msg)
+        except Exception as exc:
+            logger.warning("webhook_delivery_update_failed", error=str(exc))
+
+    return status_code, body_text
+
+
+async def send_existing_delivery(
+    delivery_id: str, url: str, secret: str, event: str, payload: dict
+) -> None:
+    """Replay a webhook delivery row. Updates the row on outcome."""
+    body = _json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    ts = str(int(time.time()))
+    sig = hmac.new(
+        (secret or "").encode(),
+        f"{ts}.{body}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    headers = {
+        "Content-Type": "application/json",
+        "X-JJV-Event": event,
+        "X-JJV-Timestamp": ts,
+        "X-JJV-Signature": sig,
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(url, content=body, headers=headers)
+    if 200 <= resp.status_code < 300:
+        await db.mark_webhook_succeeded(delivery_id, resp.status_code, resp.text)
+    else:
+        await db.schedule_webhook_retry(
+            delivery_id, f"HTTP {resp.status_code}: {resp.text[:200]}"
+        )

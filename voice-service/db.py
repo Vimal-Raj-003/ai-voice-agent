@@ -817,3 +817,106 @@ async def add_dnd_caller_request(org_id: str, phone_e164: str) -> None:
         org_id,
         phone_e164,
     )
+
+
+# ── Webhook retry helpers (Feature Pack 4 / Tasks 12-13) ─────────────────────
+
+RETRY_SCHEDULE_SECONDS = [60, 300, 1800, 7200, 43200]  # 1m, 5m, 30m, 2h, 12h
+
+
+async def create_webhook_delivery_pending(
+    webhook_id: str,
+    event: str,
+    payload: dict,
+    call_id: str | None = None,
+) -> str:
+    """Insert a delivery row with status PENDING, attempts=0. Returns the new id."""
+    pool = await get_pool()
+    delivery_id = str(uuid.uuid4())
+    await pool.execute(
+        '''INSERT INTO webhook_deliveries
+             (id, "webhookId", "callId", event, payload, attempts, status, "createdAt")
+           VALUES ($1, $2, $3, $4::"WebhookEvent", $5::jsonb, 0, 'PENDING', now())''',
+        delivery_id, webhook_id, call_id, event,
+        json.dumps(payload),
+    )
+    return delivery_id
+
+
+async def schedule_webhook_retry(delivery_id: str, error: str) -> None:
+    """Bump attemptsMade, schedule next attempt or dead-letter.
+
+    Note: In Prisma the column is exposed as ``attemptsMade``; the underlying
+    Postgres column is ``attempts`` (via @map). Raw SQL uses ``attempts``.
+    """
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        '''SELECT "attempts" FROM webhook_deliveries WHERE id = $1''',
+        delivery_id,
+    )
+    if not row:
+        return
+    next_attempt_idx = row["attempts"]  # 0-indexed: value is count of completed attempts
+    if next_attempt_idx >= len(RETRY_SCHEDULE_SECONDS):
+        await pool.execute(
+            '''UPDATE webhook_deliveries
+               SET status = 'DEAD_LETTER',
+                   "attempts" = "attempts" + 1,
+                   "lastError" = $2,
+                   "nextAttemptAt" = NULL
+               WHERE id = $1''',
+            delivery_id, error[:1000],
+        )
+        return
+    delay = RETRY_SCHEDULE_SECONDS[next_attempt_idx]
+    await pool.execute(
+        '''UPDATE webhook_deliveries
+           SET status = 'RETRY_SCHEDULED',
+               "attempts" = "attempts" + 1,
+               "lastError" = $2,
+               "nextAttemptAt" = now() + ($3 || ' seconds')::interval
+           WHERE id = $1''',
+        delivery_id, error[:1000], str(delay),
+    )
+
+
+async def mark_webhook_succeeded(delivery_id: str, status_code: int, body: str) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        '''UPDATE webhook_deliveries
+           SET status = 'SUCCESS',
+               "attempts" = "attempts" + 1,
+               "responseCode" = $2,
+               "responseBody" = $3,
+               "succeededAt" = now(),
+               "nextAttemptAt" = NULL
+           WHERE id = $1''',
+        delivery_id, status_code, (body or "")[:5000],
+    )
+
+
+async def fetch_pending_retries(limit: int = 50) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        '''SELECT d.id, d."webhookId", d.event::text AS event, d.payload,
+                  w.url, w.secret
+           FROM webhook_deliveries d
+           JOIN webhooks w ON w.id = d."webhookId"
+           WHERE d.status = 'RETRY_SCHEDULED' AND d."nextAttemptAt" <= now()
+             AND w."isActive" = true
+           ORDER BY d."nextAttemptAt" ASC
+           LIMIT $1
+           FOR UPDATE OF d SKIP LOCKED''',
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def queue_immediate_retry(delivery_id: str) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        '''UPDATE webhook_deliveries
+           SET status = 'RETRY_SCHEDULED', "nextAttemptAt" = now()
+           WHERE id = $1''',
+        delivery_id,
+    )
