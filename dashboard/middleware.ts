@@ -9,9 +9,14 @@ import { NextResponse } from "next/server";
 // the browser-side EventSource / LiveKit-client integrations keep working —
 // the bearer token sent to voice-service is what protects those.
 export default auth((req) => {
-  const isLogin = req.nextUrl.pathname.startsWith("/login");
+  const { pathname } = req.nextUrl;
+  const isLogin = pathname.startsWith("/login");
+  const isPublic =
+    isLogin ||
+    pathname.startsWith("/forgot-password") ||
+    pathname.startsWith("/reset-password");
   const isAuthenticated = !!req.auth;
-  if (!isAuthenticated && !isLogin) {
+  if (!isAuthenticated && !isPublic) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("callbackUrl", req.nextUrl.pathname);

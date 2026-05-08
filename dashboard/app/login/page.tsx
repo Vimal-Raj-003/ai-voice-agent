@@ -2,6 +2,7 @@ import { signIn } from "@/lib/auth";
 import { AuthError } from "next-auth";
 import { redirect } from "next/navigation";
 import { Sparkles, AlertCircle } from "lucide-react";
+import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -95,6 +96,9 @@ export default async function LoginPage({
             className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
           />
         </label>
+        <div className="text-right">
+          <Link href="/forgot-password" className="text-xs text-violet-300 hover:text-violet-200">Forgot password?</Link>
+        </div>
         <button className="w-full rounded-lg bg-gradient-to-r from-cyan-300 via-violet-300 to-pink-300 py-2 text-sm font-semibold text-black hover:from-cyan-200 hover:via-violet-200 hover:to-pink-200 shadow-[0_0_20px_rgba(167,139,250,0.3)] transition">
           Sign in
         </button>
