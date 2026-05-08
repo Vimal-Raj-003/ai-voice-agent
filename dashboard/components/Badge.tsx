@@ -8,7 +8,8 @@ type Tone =
   | "warning"
   | "danger"
   | "info"
-  | "muted";
+  | "muted"
+  | "violet";
 
 const toneClasses: Record<Tone, string> = {
   neutral: "bg-white/10 text-white/80 border-white/15",
@@ -17,6 +18,7 @@ const toneClasses: Record<Tone, string> = {
   danger: "bg-red-500/15 text-red-300 border-red-500/30",
   info: "bg-sky-500/15 text-sky-300 border-sky-500/30",
   muted: "bg-white/5 text-gray-400 border-white/10",
+  violet: "bg-violet-500/15 text-violet-300 border-violet-500/30",
 };
 
 export function Badge({

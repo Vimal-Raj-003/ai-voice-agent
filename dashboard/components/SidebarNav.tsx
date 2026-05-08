@@ -33,6 +33,7 @@ const links = [
   { href: "/api-keys", label: "API keys", icon: Key },
   { href: "/demo", label: "Demo", icon: Sparkles },
   { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/team", label: "Team", icon: Users },
 ];
 
 export default function SidebarNav() {
