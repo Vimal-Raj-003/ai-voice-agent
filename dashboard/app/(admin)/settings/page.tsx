@@ -9,6 +9,8 @@ import {
 } from "@/lib/known-settings";
 import SettingRow from "@/components/SettingRow";
 import DocsContent from "@/components/DocsContent";
+import SettingsSearchBar from "@/components/SettingsSearchBar";
+import { Download } from "lucide-react";
 
 const KNOWN_KEYS = new Set(KNOWN_SETTINGS.map((s) => s.key));
 
@@ -35,10 +37,11 @@ async function fetchEnvOrigin(): Promise<
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; q?: string }>;
 }) {
   const sp = await searchParams;
   const requested = sp.tab as TabId | undefined;
+  const q = (sp.q ?? "").trim().toLowerCase();
   const active: TabId =
     requested === DOCS_TAB ||
     SETTING_CATEGORIES.some((c) => c.id === requested)
@@ -58,7 +61,19 @@ export default async function SettingsPage({
   const storedMap = new Map(stored.map((s) => [s.key, s]));
   const voiceServiceReachable = envMap.size > 0;
 
-  const defs = isDocs ? [] : settingsByCategory(active as SettingCategory);
+  // When a search query is present, ignore the category filter and search
+  // across the full registry — the user typed something specific, so the tab
+  // restriction would only get in the way. Otherwise show just the active
+  // category's defs.
+  let defs = isDocs ? [] : settingsByCategory(active as SettingCategory);
+  if (q && !isDocs) {
+    defs = KNOWN_SETTINGS.filter(
+      (s) =>
+        s.key.toLowerCase().includes(q) ||
+        s.label.toLowerCase().includes(q) ||
+        (s.description?.toLowerCase().includes(q) ?? false),
+    );
+  }
   const meta = isDocs
     ? null
     : SETTING_CATEGORIES.find((c) => c.id === active);
@@ -107,6 +122,20 @@ export default async function SettingsPage({
         <p className="text-xs text-gray-500 -mt-2">{meta.description}</p>
       )}
 
+      {!isDocs && (
+        <div className="flex flex-wrap items-center gap-3">
+          <SettingsSearchBar />
+          <a
+            href="/api/settings/export"
+            className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-300 hover:text-white hover:bg-white/10"
+            title="Download all stored settings as a .env file (sensitive values redacted)"
+          >
+            <Download size={12} />
+            Export .env
+          </a>
+        </div>
+      )}
+
       {isDocs ? (
         <DocsContent />
       ) : (
@@ -116,6 +145,12 @@ export default async function SettingsPage({
               Voice-service is offline — the &quot;env&quot; column reflects
               whatever was last stored in the DB; live env-origin information
               is unavailable until the voice-service is back up.
+            </div>
+          )}
+
+          {q && defs.length === 0 && (
+            <div className="rounded-lg border border-white/10 bg-white/[0.02] px-3 py-6 text-center text-sm text-gray-500">
+              No settings match <span className="font-mono">&quot;{q}&quot;</span>.
             </div>
           )}
 

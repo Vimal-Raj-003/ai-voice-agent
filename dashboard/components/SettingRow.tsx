@@ -1,9 +1,12 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Eye, EyeOff, Check, Loader2 } from "lucide-react";
+import { Eye, EyeOff, Check, Loader2, Copy, Undo2 } from "lucide-react";
 import type { SettingDef } from "@/lib/known-settings";
-import { upsertSetting } from "@/app/(admin)/settings/actions";
+import {
+  upsertSetting,
+  revertSettingToEnv,
+} from "@/app/(admin)/settings/actions";
 import Select from "./Select";
 
 type Props = {
@@ -15,11 +18,33 @@ type Props = {
 export default function SettingRow({ def, storedValue, configuredViaEnv }: Props) {
   const [reveal, setReveal] = useState(false);
   const [pending, start] = useTransition();
+  const [reverting, startRevert] = useTransition();
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [keyCopied, setKeyCopied] = useState(false);
   const [value, setValue] = useState(storedValue ?? "");
 
   const isPassword = def.sensitive && !reveal;
   const isBoolean = def.type === "boolean";
+  // "Revert to env" only makes sense when there's a stored override AND the
+  // running voice-service has reported an env-origin value to fall back to.
+  const canRevert = !!storedValue && configuredViaEnv;
+
+  const onCopyKey = async () => {
+    try {
+      await navigator.clipboard.writeText(def.key);
+      setKeyCopied(true);
+      setTimeout(() => setKeyCopied(false), 1500);
+    } catch {
+      // clipboard blocked
+    }
+  };
+
+  const onRevert = () => {
+    startRevert(async () => {
+      await revertSettingToEnv(def.key);
+      setValue("");
+    });
+  };
 
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -48,6 +73,15 @@ export default function SettingRow({ def, storedValue, configuredViaEnv }: Props
               {def.label}
             </label>
             <code className="text-[10px] text-gray-500 font-mono">{def.key}</code>
+            <button
+              type="button"
+              onClick={onCopyKey}
+              aria-label={keyCopied ? "Key copied" : "Copy key"}
+              title={keyCopied ? "Copied" : "Copy key"}
+              className="text-gray-500 hover:text-white"
+            >
+              {keyCopied ? <Check size={11} /> : <Copy size={11} />}
+            </button>
             {def.sensitive && (
               <span className="text-[10px] uppercase tracking-wide text-amber-400/80">
                 sensitive
@@ -131,6 +165,23 @@ export default function SettingRow({ def, storedValue, configuredViaEnv }: Props
             "Save"
           )}
         </button>
+
+        {canRevert && (
+          <button
+            type="button"
+            onClick={onRevert}
+            disabled={reverting}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-gray-400 hover:text-amber-300 hover:bg-white/10 disabled:opacity-50"
+            title="Delete the stored override and fall back to the env value"
+          >
+            {reverting ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Undo2 size={12} />
+            )}
+            Revert
+          </button>
+        )}
       </div>
     </form>
   );

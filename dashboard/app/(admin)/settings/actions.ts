@@ -23,3 +23,13 @@ export async function deleteSetting(key: string) {
   await prisma.setting.delete({ where: { key } });
   revalidatePath("/settings");
 }
+
+// Revert a stored override back to the env-supplied value. Same semantics as
+// deleteSetting but expressed as a server action with a clearer name so the
+// UI can wire it to a "Revert to env" button without leaking the underlying
+// table mechanics. Silently no-ops when nothing is stored.
+export async function revertSettingToEnv(key: string) {
+  if (!key) return;
+  await prisma.setting.deleteMany({ where: { key } });
+  revalidatePath("/settings");
+}
