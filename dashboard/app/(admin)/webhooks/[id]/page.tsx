@@ -69,8 +69,8 @@ export default async function WebhookDetailPage({
                   </Badge>
                 </div>
                 <div className="text-[10px] text-gray-500 mt-1 font-mono">
-                  {d.createdAt.toLocaleString()} · {d.attempts} attempt
-                  {d.attempts === 1 ? "" : "s"}
+                  {d.createdAt.toLocaleString()} · {d.attemptsMade} attempt
+                  {d.attemptsMade === 1 ? "" : "s"}
                   {d.succeededAt
                     ? ` · succeeded ${new Date(d.succeededAt).toLocaleTimeString()}`
                     : ""}

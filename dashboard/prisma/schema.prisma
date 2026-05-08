@@ -95,6 +95,8 @@ enum CampaignTargetStatus {
   COMPLETED
   FAILED
   SKIPPED
+  BLOCKED
+  DEFERRED
 }
 
 enum WebhookEvent {
@@ -115,6 +117,7 @@ enum CallOutcome {
   TRANSFERRED
   FAILED
   COMPLETED
+  OPT_OUT
 }
 
 enum AppointmentStatus {
@@ -157,41 +160,73 @@ enum ErrorLevel {
   CRITICAL
 }
 
+enum UserRole {
+  OWNER
+  ADMIN
+  AGENT
+  VIEWER
+}
+
+enum DndSource {
+  MANUAL
+  CALLER_REQUEST
+  CSV_IMPORT
+  WEBHOOK
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCESS
+  RETRY_SCHEDULED
+  DEAD_LETTER
+}
+
 // =============================================================================
 //  TENANCY (Org / User / API Key)
 // =============================================================================
 
 model Organization {
-  id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                             String   @id @default(cuid())
+  name                           String
+  slug                           String   @unique
+  quietHoursStart                String?  @default("09:00")
+  quietHoursEnd                  String?  @default("21:00")
+  quietHoursTimezone             String   @default("Asia/Kolkata")
+  recordingDefaultConsentMessage String?  @default("This call may be recorded for quality and training purposes.")
+  createdAt                      DateTime @default(now())
+  updatedAt                      DateTime @updatedAt
 
-  users        User[]
-  assistants   Assistant[]
-  phoneNumbers PhoneNumber[]
-  sipTrunks    SipTrunk[]
-  calls        Call[]
-  campaigns    Campaign[]
-  tools        Tool[]
-  apiKeys      ApiKey[]
-  webhooks     Webhook[]
+  users           User[]
+  assistants      Assistant[]
+  phoneNumbers    PhoneNumber[]
+  sipTrunks       SipTrunk[]
+  calls           Call[]
+  campaigns       Campaign[]
+  tools           Tool[]
+  apiKeys         ApiKey[]
+  webhooks        Webhook[]
+  invites         Invite[]
+  dndNumbers      DndNumber[]
+  idempotencyKeys IdempotencyKey[]
 
   @@map("organizations")
 }
 
 model User {
-  id             String   @id @default(cuid())
-  email          String   @unique
+  id             String    @id @default(cuid())
+  email          String    @unique
   name           String?
   passwordHash   String?
   organizationId String
-  role           String   @default("member") // owner | admin | member
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  role           UserRole  @default(VIEWER)
+  isActive       Boolean   @default(true)
+  invitedBy      String?
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization         Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  passwordResetTokens  PasswordResetToken[]
 
   @@index([organizationId])
   @@map("users")
@@ -211,6 +246,38 @@ model ApiKey {
 
   @@index([organizationId])
   @@map("api_keys")
+}
+
+model Invite {
+  id             String    @id @default(cuid())
+  organizationId String
+  email          String
+  role           UserRole
+  tokenHash      String    @unique
+  invitedBy      String
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([email])
+  @@map("invites")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
 }
 
 // =============================================================================
@@ -251,8 +318,10 @@ model Assistant {
   backgroundSound       String?
 
   // Recording / Privacy
-  recordingEnabled Boolean @default(true)
-  hipaaEnabled     Boolean @default(false)
+  recordingEnabled        Boolean @default(true)
+  hipaaEnabled            Boolean @default(false)
+  recordingConsentMessage String?
+  redactionEnabled        Boolean @default(true)
 
   // ── Call accuracy & speech tuning (industry-standard knobs) ──────────────
   // endOfSpeechSensitivity: how aggressively VAD declares the user has
@@ -392,8 +461,9 @@ model Call {
   telephonyProvider String? @map("telephony_provider") // "vobiz" | "twilio"
 
   // Recording / artifacts
-  recordingUrl String?
-  summary      String? @db.Text
+  recordingUrl     String?
+  summary          String?  @db.Text
+  transcriptHasPii Boolean  @default(false)
 
   // OutboundAI: outcome / sentiment / notes
   outcome             CallOutcome?
@@ -431,13 +501,15 @@ model Call {
 }
 
 model TranscriptMessage {
-  id        String         @id @default(cuid())
-  callId    String
-  role      TranscriptRole
-  content   String         @db.Text
-  timestamp DateTime       @default(now())
+  id               String         @id @default(cuid())
+  callId           String
+  role             TranscriptRole
+  content          String         @db.Text
+  contentRedacted  String?        @db.Text
+  hasPii           Boolean        @default(false)
+  timestamp        DateTime       @default(now())
   // Optional rich data (e.g. tool args/results)
-  data      Json?
+  data             Json?
 
   call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
 
@@ -483,19 +555,20 @@ model Campaign {
 }
 
 model CampaignTarget {
-  id           String               @id @default(cuid())
-  campaignId   String
-  phoneNumber  String
-  status       CampaignTargetStatus @default(PENDING)
-  callId       String?
-  leadName     String?
-  dispatchId   String?
-  dispatchedAt DateTime?
-  attempts     Int                  @default(0)
-  lastError    String?              @db.Text
-  variables    Json? // per-target template vars
-  createdAt    DateTime             @default(now())
-  updatedAt    DateTime             @updatedAt
+  id            String               @id @default(cuid())
+  campaignId    String
+  phoneNumber   String
+  status        CampaignTargetStatus @default(PENDING)
+  callId        String?
+  leadName      String?
+  dispatchId    String?
+  dispatchedAt  DateTime?
+  dispatchAfter DateTime?
+  attempts      Int                  @default(0)
+  lastError     String?              @db.Text
+  variables     Json? // per-target template vars
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
 
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
@@ -591,22 +664,58 @@ model Webhook {
 }
 
 model WebhookDelivery {
-  id           String       @id @default(cuid())
-  webhookId    String
-  callId       String?
-  event        WebhookEvent
-  payload      Json
-  responseCode Int?
-  responseBody String?      @db.Text
-  attempts     Int          @default(1)
-  succeededAt  DateTime?
-  createdAt    DateTime     @default(now())
+  id            String                @id @default(cuid())
+  webhookId     String
+  callId        String?
+  event         WebhookEvent
+  payload       Json
+  responseCode  Int?
+  responseBody  String?               @db.Text
+  attemptsMade  Int                   @default(1)                  @map("attempts")
+  status        WebhookDeliveryStatus @default(PENDING)
+  nextAttemptAt DateTime?
+  lastError     String?               @db.Text
+  succeededAt   DateTime?
+  createdAt     DateTime              @default(now())
 
   webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
   call    Call?   @relation(fields: [callId], references: [id], onDelete: SetNull)
 
   @@index([webhookId, createdAt])
   @@map("webhook_deliveries")
+}
+
+model DndNumber {
+  id             String    @id @default(cuid())
+  organizationId String
+  phoneE164      String
+  reason         String?
+  source         DndSource
+  addedBy        String?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, phoneE164])
+  @@index([organizationId])
+  @@map("dnd_numbers")
+}
+
+model IdempotencyKey {
+  id             String   @id @default(cuid())
+  organizationId String
+  scope          String
+  key            String
+  requestHash    String
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, scope, key])
+  @@index([createdAt])
+  @@map("idempotency_keys")
 }
 
 // =============================================================================
@@ -639,6 +748,7 @@ model Contact {
   email       String?
   notes       String?
   tags        String    @default("[]")
+  timezone    String?
   totalCalls  Int       @default(0) @map("total_calls")
   lastCallAt  DateTime? @map("last_call_at")
   lastOutcome String?   @map("last_outcome")
