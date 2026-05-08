@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import crypto from "node:crypto";
 import type { WebhookEvent } from "@prisma/client";
+import { requireRole } from "@/lib/require-role";
 
 const ALL_EVENTS: WebhookEvent[] = [
   "CALL_STARTED",
@@ -61,4 +62,22 @@ export async function deleteWebhook(id: string) {
   await prisma.webhook.delete({ where: { id } });
   revalidatePath("/webhooks");
   redirect("/webhooks");
+}
+
+export async function retryDelivery(deliveryId: string): Promise<void> {
+  await requireRole("ADMIN");
+  await prisma.webhookDelivery.update({
+    where: { id: deliveryId },
+    data: { status: "RETRY_SCHEDULED", nextAttemptAt: new Date() },
+  });
+  revalidatePath("/webhooks");
+}
+
+export async function replayAllDeadLetters(webhookId: string): Promise<void> {
+  await requireRole("ADMIN");
+  await prisma.webhookDelivery.updateMany({
+    where: { webhookId, status: "DEAD_LETTER" },
+    data: { status: "RETRY_SCHEDULED", nextAttemptAt: new Date(), attemptsMade: 0 },
+  });
+  revalidatePath("/webhooks");
 }

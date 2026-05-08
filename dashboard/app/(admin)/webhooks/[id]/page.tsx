@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
-import { updateWebhook, deleteWebhook } from "../actions";
+import { updateWebhook, deleteWebhook, retryDelivery, replayAllDeadLetters } from "../actions";
 import WebhookForm from "@/components/WebhookForm";
 import { Badge } from "@/components/Badge";
 
@@ -23,6 +23,9 @@ export default async function WebhookDetailPage({
     where: { webhookId: id },
     orderBy: { createdAt: "desc" },
     take: 50,
+  });
+  const deadLetterCount = await prisma.webhookDelivery.count({
+    where: { webhookId: id, status: "DEAD_LETTER" },
   });
   return (
     <div className="space-y-6 max-w-3xl">
@@ -48,6 +51,13 @@ export default async function WebhookDetailPage({
             {deliveries.length}
           </span>
         </h2>
+        {deadLetterCount > 0 && (
+          <form action={replayAllDeadLetters.bind(null, w.id)}>
+            <button className="rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-200 px-3 py-1.5 text-xs mb-3">
+              Replay all dead-lettered ({deadLetterCount})
+            </button>
+          </form>
+        )}
         {deliveries.length === 0 ? (
           <p className="text-sm text-gray-500">
             No deliveries yet — voice-service POSTs to this URL when the
@@ -64,16 +74,33 @@ export default async function WebhookDetailPage({
                   <span className="font-mono text-xs text-violet-200">
                     {d.event}
                   </span>
-                  <Badge tone={deliveryTone(d)}>
-                    {d.responseCode ?? "pending"}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge tone={
+                      d.status === "SUCCESS" ? "success"
+                      : d.status === "DEAD_LETTER" ? "danger"
+                      : d.status === "RETRY_SCHEDULED" ? "warning"
+                      : "muted"
+                    }>{d.status}</Badge>
+                    <Badge tone={deliveryTone(d)}>
+                      {d.responseCode ?? "pending"}
+                    </Badge>
+                  </div>
                 </div>
-                <div className="text-[10px] text-gray-500 mt-1 font-mono">
-                  {d.createdAt.toLocaleString()} · {d.attemptsMade} attempt
-                  {d.attemptsMade === 1 ? "" : "s"}
-                  {d.succeededAt
-                    ? ` · succeeded ${new Date(d.succeededAt).toLocaleTimeString()}`
-                    : ""}
+                <div className="text-[10px] text-gray-500 mt-1 font-mono flex items-center gap-2">
+                  <span>
+                    {d.createdAt.toLocaleString()} · {d.attemptsMade} attempt
+                    {d.attemptsMade === 1 ? "" : "s"}
+                    {d.succeededAt
+                      ? ` · succeeded ${new Date(d.succeededAt).toLocaleTimeString()}`
+                      : ""}
+                  </span>
+                  {(d.status === "DEAD_LETTER" || d.status === "RETRY_SCHEDULED") && (
+                    <form action={retryDelivery.bind(null, d.id)}>
+                      <button className="text-xs text-violet-300 hover:text-violet-200">
+                        Retry now
+                      </button>
+                    </form>
+                  )}
                 </div>
                 {d.responseBody && (
                   <pre className="mt-2 text-[10px] text-gray-400 font-mono whitespace-pre-wrap break-all line-clamp-3">
