@@ -37,11 +37,7 @@ const OUTCOMES: Option[] = [
   { value: "OPT_OUT", label: "Opt-out" },
 ];
 
-export default function CallsFilters({
-  assistants,
-}: {
-  assistants: { id: string; name: string }[];
-}) {
+export default function CallsFilters() {
   const router = useRouter();
   const sp = useSearchParams();
   const [q, setQ] = useState(sp.get("q") ?? "");
@@ -71,7 +67,6 @@ export default function CallsFilters({
     sp.get("direction") ||
     sp.get("status") ||
     sp.get("outcome") ||
-    sp.get("assistantId") ||
     sp.get("from") ||
     sp.get("to");
 
@@ -115,28 +110,16 @@ export default function CallsFilters({
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>
-        <select
-          value={sp.get("assistantId") ?? ""}
-          onChange={(e) => setParam("assistantId", e.target.value)}
-          className="rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm"
-        >
-          <option value="">All assistants</option>
-          {assistants.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
-          ))}
-        </select>
-        <input
-          type="date"
-          value={sp.get("from") ?? ""}
-          onChange={(e) => setParam("from", e.target.value)}
-          className="rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm"
-        />
-        <input
-          type="date"
-          value={sp.get("to") ?? ""}
-          onChange={(e) => setParam("to", e.target.value)}
-          className="rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm"
-        />
+        <label className="flex items-center gap-1.5 text-xs text-gray-400">
+          Date
+          <input
+            type="date"
+            aria-label="Date"
+            value={sp.get("from") ?? ""}
+            onChange={(e) => setParam("from", e.target.value)}
+            className="rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-gray-100"
+          />
+        </label>
         {hasAny && (
           <button
             type="button"

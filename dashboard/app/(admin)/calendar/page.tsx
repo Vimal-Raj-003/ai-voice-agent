@@ -3,6 +3,7 @@ import { CalendarCheck, CheckCircle2, XCircle, Clock } from "lucide-react";
 import MonthGrid from "@/components/calendar/MonthGrid";
 import DayDrawer from "@/components/calendar/DayDrawer";
 import BookingForm from "@/components/calendar/BookingForm";
+import CalendarAutoRefresh from "@/components/calendar/CalendarAutoRefresh";
 import StatCard from "@/components/StatCard";
 
 type Search = { month?: string; day?: string };
@@ -67,6 +68,7 @@ export default async function CalendarPage({
 
   return (
     <div className="space-y-6">
+      <CalendarAutoRefresh />
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-3xl font-bold">Calendar</h1>

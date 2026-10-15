@@ -11,34 +11,42 @@ import {
   Legend,
 } from "recharts";
 import { providerColor } from "@/lib/provider-colors";
+import { type Currency, formatMoney } from "@/lib/currency";
 
 type Row = { date: string } & Record<string, number | string>;
 
 export default function CostStackedBar({
   data,
   providers,
+  // Values are always USD; currency/fxRate convert for DISPLAY only. Omitted
+  // by the Overview page, which stays in USD.
+  currency = "USD",
+  fxRate = null,
 }: {
   data: Row[];
   providers: string[];
+  currency?: Currency;
+  fxRate?: number | null;
 }) {
+  const money = (v: number, d: number) => formatMoney(v, currency, fxRate, d);
   return (
     <ResponsiveContainer width="100%" height={260}>
       <BarChart data={data} margin={{ top: 6, right: 8, left: -12, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
         <XAxis
           dataKey="date"
-          stroke="rgba(255,255,255,0.4)"
+          stroke="var(--text-muted)"
           fontSize={10}
           tickLine={false}
           axisLine={false}
           tickFormatter={(d: string) => d.slice(5)}
         />
         <YAxis
-          stroke="rgba(255,255,255,0.4)"
+          stroke="var(--text-muted)"
           fontSize={10}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(v: number) => `$${v.toFixed(2)}`}
+          tickFormatter={(v: number) => money(v, 2)}
         />
         <Tooltip
           contentStyle={{
@@ -48,8 +56,8 @@ export default function CostStackedBar({
             backdropFilter: "blur(8px)",
             fontSize: 12,
           }}
-          labelStyle={{ color: "#a78bfa", fontWeight: 600 }}
-          formatter={(value, name) => [`$${Number(value).toFixed(4)}`, String(name)]}
+          labelStyle={{ color: "var(--text-primary)", fontWeight: 600 }}
+          formatter={(value, name) => [money(Number(value), 4), String(name)]}
         />
         <Legend
           wrapperStyle={{ fontSize: 10, paddingTop: 4 }}

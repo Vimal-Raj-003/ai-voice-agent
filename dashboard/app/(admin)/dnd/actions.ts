@@ -2,13 +2,13 @@
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/require-role";
 import { getDefaultOrg } from "@/lib/org";
-import { normalizeE164 } from "@/lib/phone";
+import { normalizePhone } from "@/lib/phone";
 import { revalidatePath } from "next/cache";
 
 export async function addDndNumber(formData: FormData): Promise<void> {
   const { user } = await requireRole("ADMIN");
   const { id: orgId } = await getDefaultOrg();
-  const phone = normalizeE164(String(formData.get("phone") || ""));
+  const phone = normalizePhone(String(formData.get("phone") || "")).e164;
   if (!phone) throw new Error("Invalid phone number");
   const reason = String(formData.get("reason") || "").trim() || null;
   await prisma.dndNumber.upsert({
@@ -40,7 +40,7 @@ export async function importDndCsv(formData: FormData): Promise<{ added: number;
   let added = 0;
   let skipped = 0;
   for (const line of text.split(/\r?\n/)) {
-    const phone = normalizeE164(line.trim().split(",")[0]);
+    const phone = normalizePhone(line.trim().split(",")[0]).e164;
     if (!phone) {
       skipped++;
       continue;

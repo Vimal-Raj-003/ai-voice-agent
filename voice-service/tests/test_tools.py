@@ -49,7 +49,12 @@ async def test_check_availability_returns_next_when_booked(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_book_appointment_returns_confirmation(monkeypatch):
-    async def fake_insert(name, phone, date, time, service):
+    # No Cal.com configured → local-only path (legacy behaviour preserved).
+    monkeypatch.delenv("CALCOM_API_KEY", raising=False)
+    monkeypatch.delenv("CALCOM_EVENT_TYPE_ID", raising=False)
+
+    async def fake_insert(name, phone, date, time, service, **kwargs):
+        assert kwargs.get("calcom_uid") is None
         return "ABC12345"
     monkeypatch.setattr("tools.db.insert_appointment", fake_insert)
     ctx = MagicMock()
@@ -72,12 +77,55 @@ async def test_end_call_records_outcome():
 
 
 @pytest.mark.asyncio
-async def test_transfer_to_human_when_unconfigured(monkeypatch):
-    monkeypatch.delenv("DEFAULT_TRANSFER_NUMBER", raising=False)
+async def test_transfer_to_human_when_unconfigured():
+    """No destinations configured -> refuse, and never attempt a SIP REFER."""
     ctx = MagicMock()
     t = AppointmentTools(ctx, "+91111", "Ravi")
-    out = await t.transfer_to_human("complex query")
-    assert "no fallback number" in out
+    t.transfer_targets = {}
+    out = await t.transfer_to_human("software", "complex query")
+    assert "TRANSFER_UNAVAILABLE" in out
+    ctx.api.sip.transfer_sip_participant.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_transfer_falls_back_to_other_category():
+    """A category with no number uses Other/General rather than failing."""
+    ctx = MagicMock()
+    ctx.room.name = "test-room"          # protobuf needs a str, not a MagicMock
+    ctx.api.sip.transfer_sip_participant = AsyncMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    t._sip_domain = ""
+    t.transfer_targets = {
+        "other": {"category": "other", "label": "Other / General",
+                  "phone": "+919940660868", "priority": 99},
+    }
+    out = await t.transfer_to_human("marketing", "")
+    assert "TRANSFER_OK" in out
+    sent = ctx.api.sip.transfer_sip_participant.call_args.args[0].transfer_to
+    assert "919940660868" in sent
+
+
+@pytest.mark.asyncio
+async def test_transfer_does_not_loop():
+    """A second call cannot start another REFER on a call already handing over."""
+    ctx = MagicMock()
+    ctx.room.name = "test-room"          # protobuf needs a str, not a MagicMock
+    ctx.api.sip.transfer_sip_participant = AsyncMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    t._sip_domain = ""
+    t.transfer_targets = {
+        "software": {"category": "software", "label": "Software",
+                     "phone": "+917397075913", "priority": 10},
+    }
+    assert "TRANSFER_OK" in await t.transfer_to_human("software", "")
+    again = await t.transfer_to_human("software", "")
+    assert "already in progress" in again
+    assert ctx.api.sip.transfer_sip_participant.await_count == 1
+
+
+def test_transfer_number_is_masked_in_logs():
+    assert AppointmentTools._mask_phone("+919940660868") == "***868"
+    assert AppointmentTools._mask_phone("") == "***"
 
 
 @pytest.mark.asyncio
@@ -153,8 +201,9 @@ async def test_book_calcom_converts_local_to_utc(monkeypatch):
     class FakeClient:
         async def __aenter__(self): return self
         async def __aexit__(self, *a): pass
-        async def post(self, url, headers=None, json=None):
+        async def post(self, url, headers=None, params=None, json=None):
             captured["url"] = url
+            captured["params"] = params
             captured["json"] = json
             return FakeResponse()
 

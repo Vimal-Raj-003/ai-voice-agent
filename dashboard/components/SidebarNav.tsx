@@ -17,6 +17,7 @@ import {
   Key,
   Wrench,
   Ban,
+  Server,
 } from "lucide-react";
 
 const links = [
@@ -31,6 +32,7 @@ const links = [
   { href: "/calendar", label: "Calendar", icon: Calendar },
   { href: "/tools", label: "Tools", icon: Wrench },
   { href: "/live-logs", label: "Live Logs", icon: Activity },
+  { href: "/providers", label: "Providers", icon: Server },
   { href: "/webhooks", label: "Webhooks", icon: Webhook },
   { href: "/api-keys", label: "API keys", icon: Key },
   { href: "/demo", label: "Demo", icon: Sparkles },

@@ -2,7 +2,9 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/require-role";
+import { normalizePhone } from "@/lib/phone";
 
 // Hard limits to bound the import workload — anyone authenticated could
 // otherwise upload a 500MB blob and exhaust memory + Prisma connections.
@@ -237,4 +239,172 @@ export async function importContactsCsv(formData: FormData): Promise<ImportResul
 
   revalidatePath("/contacts");
   return result;
+}
+
+// ── Create a single contact (person/customer address-book entry) ──────────────
+// Separate from phone-number telephony config. Name + E.164 phone required.
+export type CreateContactState = { error?: string } | null;
+
+export async function createContact(
+  _prev: CreateContactState,
+  formData: FormData,
+): Promise<CreateContactState> {
+  await requireRole("ADMIN");
+  const name = String(formData.get("name") || "").trim();
+  const rawPhone = String(formData.get("phone") || "").trim();
+  if (!name) return { error: "Name is required." };
+  if (!rawPhone) return { error: "Phone number is required." };
+  // India-default normalization (10-digit 6-9 → +91…); keeps existing +country.
+  const norm = normalizePhone(rawPhone);
+  if (!norm.e164) {
+    return {
+      error:
+        norm.reason === "missing country code (+)"
+          ? "Phone must include a country code (e.g. +14155550123), or be a 10-digit Indian mobile."
+          : `Invalid phone — ${norm.reason ?? "please check the number"}.`,
+    };
+  }
+  const phone = norm.e164;
+  const email = String(formData.get("email") || "").trim() || null;
+  const company = String(formData.get("company") || "").trim() || null;
+  const notes = String(formData.get("notes") || "").trim() || null;
+  const rawTags = String(formData.get("tags") || "").trim();
+  const tags = rawTags
+    ? JSON.stringify(rawTags.split(/[,;|]/).map((t) => t.trim()).filter(Boolean))
+    : "[]";
+
+  try {
+    // Upsert on the unique phone so re-saving an existing number updates it
+    // rather than throwing a unique-constraint error.
+    await prisma.contact.upsert({
+      where: { phoneNumber: phone },
+      update: { name, email, company, notes, tags },
+      create: { phoneNumber: phone, name, email, company, notes, tags },
+    });
+  } catch (err) {
+    // Save failed → stay on the form and surface the real error.
+    return { error: err instanceof Error ? err.message : "Failed to save contact." };
+  }
+
+  // Only after a confirmed insert: refresh the list data and redirect to it.
+  // (redirect() throws NEXT_REDIRECT — intentionally outside the try above.)
+  revalidatePath("/contacts");
+  redirect("/contacts?saved=1");
+}
+
+// ── Contact autocomplete search (name / phone / email) ───────────────────────
+export type ContactHit = { phoneNumber: string; name: string | null; email: string | null };
+
+export async function searchContacts(q: string): Promise<ContactHit[]> {
+  await requireRole("AGENT");
+  const query = (q ?? "").trim();
+  if (!query) return [];
+  // Phone: match on digit substrings, tolerant of +, spaces, hyphens, a leading
+  // 0, and a leading 91 (so "7397", "07397", "+917397" all find +917397…).
+  const digits = query.replace(/\D/g, "");
+  const alt = digits.replace(/^0+/, "").replace(/^91/, "");
+  const OR: Record<string, unknown>[] = [
+    { name: { contains: query, mode: "insensitive" } },
+    { email: { contains: query, mode: "insensitive" } },
+  ];
+  if (digits) {
+    OR.push({ phoneNumber: { contains: digits } });
+    if (alt && alt !== digits) OR.push({ phoneNumber: { contains: alt } });
+  }
+  const rows = await prisma.contact.findMany({
+    where: { OR },
+    orderBy: [{ name: "asc" }, { lastCallAt: "desc" }],
+    take: 10,
+    select: { phoneNumber: true, name: true, email: true },
+  });
+  return rows;
+}
+
+// ── Delete a contact ──────────────────────────────────────────────────────────
+export async function deleteContact(phone: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await requireRole("ADMIN");
+    await prisma.contact.delete({ where: { phoneNumber: phone } });
+    revalidatePath("/contacts");
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to remove contact." };
+  }
+}
+
+// ── Smart CSV import ──────────────────────────────────────────────────────────
+// The client parses the CSV, auto-maps headers (synonyms) and sends already-
+// mapped rows here. We validate (Name + E.164 phone required, email optional),
+// skip duplicates (by phone, and by email when present) against the batch AND
+// existing rows, and never silently overwrite. Returns a summary + invalid rows.
+export type MappedRow = {
+  name?: string; phone?: string; email?: string;
+  company?: string; notes?: string; tags?: string;
+};
+export type SmartImportResult = {
+  imported: number;
+  duplicates: number;
+  assumedIndia: number;
+  invalid: { row: number; name: string; phone: string; reason: string }[];
+};
+
+export async function importContactsMapped(rows: MappedRow[]): Promise<SmartImportResult> {
+  await requireRole("ADMIN");
+  const res: SmartImportResult = { imported: 0, duplicates: 0, assumedIndia: 0, invalid: [] };
+  if (!Array.isArray(rows) || rows.length === 0) return res;
+  const data = rows.slice(0, MAX_ROWS);
+  const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  const existing = await prisma.contact.findMany({ select: { phoneNumber: true, email: true } });
+  const existPhones = new Set(existing.map((e) => e.phoneNumber));
+  const existEmails = new Set(existing.filter((e) => e.email).map((e) => e.email!.toLowerCase()));
+  const seenPhones = new Set<string>();
+
+  const toCreate: {
+    phoneNumber: string; name: string; email: string | null;
+    company: string | null; notes: string | null; tags: string;
+  }[] = [];
+
+  data.forEach((r, i) => {
+    const rowNum = i + 2; // +1 for 0-index, +1 for the header row
+    const name = (r.name ?? "").trim();
+    const rawPhone = (r.phone ?? "").trim();
+    const emailRaw = (r.email ?? "").trim();
+    const email = emailRaw ? emailRaw.toLowerCase() : "";
+
+    if (!name) return void res.invalid.push({ row: rowNum, name, phone: rawPhone, reason: "missing name" });
+    // India-default normalization (10-digit 6-9 → +91…); keeps existing +country.
+    const norm = normalizePhone(rawPhone);
+    if (!norm.e164)
+      return void res.invalid.push({ row: rowNum, name, phone: rawPhone, reason: norm.reason ?? "invalid phone" });
+    const phone = norm.e164;
+    if (norm.assumedIndia) res.assumedIndia++;
+    if (email && !EMAIL.test(email))
+      return void res.invalid.push({ row: rowNum, name, phone, reason: "invalid email" });
+
+    if (seenPhones.has(phone) || existPhones.has(phone) || (email && existEmails.has(email))) {
+      res.duplicates++;
+      return;
+    }
+    seenPhones.add(phone);
+    if (email) existEmails.add(email);
+
+    const tagsRaw = (r.tags ?? "").trim();
+    const tags = tagsRaw
+      ? JSON.stringify(tagsRaw.split(/[,;|]/).map((t) => t.trim()).filter(Boolean))
+      : "[]";
+    toCreate.push({
+      phoneNumber: phone, name, email: email || null,
+      company: (r.company ?? "").trim() || null,
+      notes: (r.notes ?? "").trim() || null,
+      tags,
+    });
+  });
+
+  if (toCreate.length) {
+    const created = await prisma.contact.createMany({ data: toCreate, skipDuplicates: true });
+    res.imported = created.count;
+  }
+  revalidatePath("/contacts");
+  return res;
 }

@@ -55,7 +55,9 @@ export default function CallCostBreakdown({
                     </span>
                   </td>
                   <td className="py-1.5 text-right font-mono tabular-nums text-gray-500">
-                    ${l.rateUsd.toFixed(4)}
+                    {/* This page never requests unavailable lines, so the rate
+                        is always present here; the guard is for the type. */}
+                    {l.rateUsd == null ? "—" : `$${l.rateUsd.toFixed(4)}`}
                   </td>
                   <td className="py-1.5 text-right font-mono tabular-nums">
                     ${l.costUsd.toFixed(6)}

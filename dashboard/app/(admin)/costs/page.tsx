@@ -1,14 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
-import {
-  buildRateMap,
-  aggregateCalls,
-} from "@/lib/cost";
-import StatCard from "@/components/StatCard";
-import CostStackedBar from "@/components/charts/CostStackedBar";
-import CostByProvider from "@/components/charts/CostByProvider";
+import { buildRateMap, aggregateCalls, computeCallCost } from "@/lib/cost";
+import { getUsdInrRate } from "@/lib/currency";
+import CostsView, { type CallCostRow } from "@/components/CostsView";
 import RatesPanel from "@/components/RatesPanel";
-import { CircleDollarSign, Phone, Clock, Coins, AlertTriangle } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +12,7 @@ export default async function CostsPage() {
   const { id: orgId } = await getDefaultOrg();
   const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
 
-  const [rates, calls] = await Promise.all([
+  const [rates, calls, fx] = await Promise.all([
     prisma.providerRate.findMany({ orderBy: [{ provider: "asc" }, { kind: "asc" }] }),
     prisma.call.findMany({
       where: { organizationId: orgId, createdAt: { gte: since } },
@@ -26,6 +22,14 @@ export default async function CostsPage() {
         createdAt: true,
         direction: true,
         durationSeconds: true,
+        // For the per-call table + breakdown.
+        toNumber: true,
+        fromNumber: true,
+        status: true,
+        recordingDurationSeconds: true,
+        // The assistant's CONFIGURED model — compared against the model that
+        // actually ran so a fallback turn can be labelled as such.
+        assistant: { select: { llmModel: true } },
         llmInputTokens: true,
         llmOutputTokens: true,
         llmProviderUsed: true,
@@ -39,6 +43,7 @@ export default async function CostsPage() {
         telephonyProvider: true,
       },
     }),
+    getUsdInrRate(),
   ]);
 
   const rateMap = buildRateMap(rates);
@@ -46,21 +51,52 @@ export default async function CostsPage() {
 
   const totalCalls = calls.length;
   const avgPerCall = totalCalls > 0 ? agg.totalUsd / totalCalls : 0;
-  const totalMinutes =
-    calls.reduce((s, c) => s + (c.durationSeconds ?? 0), 0) / 60;
+  const totalMinutes = calls.reduce((s, c) => s + (c.durationSeconds ?? 0), 0) / 60;
 
-  // For the stacked bar's series list — only providers with non-zero spend
-  // make the chart legend; otherwise we'd render dozens of zeroed columns.
-  const activeProviders = agg.byProvider
-    .filter((p) => p.costUsd > 0)
-    .map((p) => p.provider);
+  // Per-call rows for the "Cost by call" table. `includeUnavailable` makes
+  // usage with no rate visible as "Rate unavailable" instead of vanishing —
+  // those lines carry cost 0, so totals are unaffected.
+  const callRows: CallCostRow[] = calls.map((c) => {
+    const b = computeCallCost(c, rateMap, {
+      includeUnavailable: true,
+      configuredLlmModel: c.assistant?.llmModel ?? null,
+    });
+    return {
+      id: c.id,
+      // The counterparty: who we called, or who called us.
+      phone: c.direction === "INBOUND" ? c.fromNumber : c.toNumber,
+      direction: c.direction,
+      status: c.status,
+      createdAtIso: c.createdAt.toISOString(),
+      durationSeconds: c.durationSeconds,
+      totalUsd: b.totalUsd,
+      hasUnknownRates: b.hasUnknownRates,
+      lines: b.lines,
+    };
+  });
 
-  // Find the freshest "last verified" — surface as a footer so the user can
-  // see how stale the rates are. Threshold = cron interval + slack.
+  // Today / month totals are summed from the SAME per-call costs as the table,
+  // so the headline figures can never disagree with the rows beneath them.
+  const startOfToday = new Date();
+  startOfToday.setUTCHours(0, 0, 0, 0);
+  const startOfMonth = new Date();
+  startOfMonth.setUTCDate(1);
+  startOfMonth.setUTCHours(0, 0, 0, 0);
+  let todayUsd = 0;
+  let monthUsd = 0;
+  for (const r of callRows) {
+    const t = new Date(r.createdAtIso);
+    if (t >= startOfToday) todayUsd += r.totalUsd;
+    if (t >= startOfMonth) monthUsd += r.totalUsd;
+  }
+
+  // Only providers with real spend make the chart legend.
+  const spendingProviders = agg.byProvider.filter((p) => p.costUsd > 0);
+  const activeProviders = spendingProviders.map((p) => p.provider);
+
   const RATES_CRON_INTERVAL_MIN = 180; // matches cron */3 hours
   const RATES_STALE_SLACK_MIN = 20; // allow a run to take its time
-  const RATES_STALE_THRESHOLD_MIN =
-    RATES_CRON_INTERVAL_MIN + RATES_STALE_SLACK_MIN;
+  const RATES_STALE_THRESHOLD_MIN = RATES_CRON_INTERVAL_MIN + RATES_STALE_SLACK_MIN;
 
   const lastVerified = rates.reduce<Date | null>((acc, r) => {
     const d = r.lastVerifiedAt;
@@ -72,102 +108,27 @@ export default async function CostsPage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold">Costs</h1>
-        <p className="text-sm text-gray-400 mt-1">
-          Per-call spend computed live from{" "}
-          <span className="text-gray-300">usage × current ProviderRate</span>.
-          Rates auto-refresh every 3 hours from OpenRouter; STT/TTS/telephony
-          rates are admin-managed.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard
-          label="14-day total"
-          value={`$${agg.totalUsd.toFixed(2)}`}
-          icon={CircleDollarSign}
-          tone="cyan"
-        />
-        <StatCard
-          label="Calls"
-          value={totalCalls}
-          icon={Phone}
-          tone="violet"
-        />
-        <StatCard
-          label="Avg / call"
-          value={`$${avgPerCall.toFixed(4)}`}
-          icon={Coins}
-          tone="emerald"
-        />
-        <StatCard
-          label="Minutes used"
-          value={totalMinutes.toFixed(1)}
-          icon={Clock}
-          tone="magenta"
-        />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <section className="glass rounded-2xl p-5 lg:col-span-2">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
-              Daily spend by provider
-            </h2>
-            <span className="text-[10px] text-gray-500 font-mono">14 days</span>
-          </div>
-          {totalCalls === 0 ? (
-            <div className="h-[260px] flex items-center justify-center text-sm text-gray-500">
-              No calls in the last 14 days yet — once a call completes, the
-              cost lands here.
-            </div>
-          ) : (
-            <CostStackedBar data={agg.byDay} providers={activeProviders} />
-          )}
-        </section>
-
-        <section className="glass rounded-2xl p-5">
-          <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300 mb-2">
-            By provider
-          </h2>
-          {agg.byProvider.length === 0 ? (
-            <div className="h-[220px] flex items-center justify-center text-sm text-gray-500">
-              No spend yet.
-            </div>
-          ) : (
-            <>
-              <CostByProvider data={agg.byProvider.filter((p) => p.costUsd > 0)} />
-              <ul className="mt-3 space-y-1 text-[11px]">
-                {agg.byProvider
-                  .filter((p) => p.costUsd > 0)
-                  .map((p) => (
-                    <li
-                      key={p.provider}
-                      className="flex items-center justify-between text-gray-400"
-                    >
-                      <span className="capitalize">{p.provider}</span>
-                      <span className="font-mono tabular-nums text-gray-300">
-                        ${p.costUsd.toFixed(4)}
-                      </span>
-                    </li>
-                  ))}
-              </ul>
-            </>
-          )}
-        </section>
-      </div>
-
-      {/* Prisma's Decimal type is not serialisable across the server→client
-          boundary, so flatten rateUsd to a string before passing. RatesPanel
-          calls Number() on it for display, which is fine. */}
-      <RatesPanel
-        rates={rates.map((r) => ({ ...r, rateUsd: r.rateUsd.toString() }))}
+      <CostsView
+        fx={fx}
+        totalUsd={agg.totalUsd}
+        totalCalls={totalCalls}
+        avgPerCallUsd={avgPerCall}
+        totalMinutes={totalMinutes}
+        todayUsd={todayUsd}
+        monthUsd={monthUsd}
+        byDay={agg.byDay}
+        byProvider={spendingProviders}
+        activeProviders={activeProviders}
+        calls={callRows}
       />
+
+      {/* Prisma's Decimal is not serialisable across the server→client
+          boundary, so flatten rateUsd to a string before passing. */}
+      <RatesPanel rates={rates.map((r) => ({ ...r, rateUsd: r.rateUsd.toString() }))} />
 
       {ageMinutes != null && ageMinutes > RATES_STALE_THRESHOLD_MIN && (
         <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.08] p-3 text-xs text-amber-200">
-          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           <span>
             Rates were last refreshed {Math.floor(ageMinutes / 60)} hr{" "}
             {ageMinutes % 60} min ago — older than the 3-hour auto-refresh

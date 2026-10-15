@@ -8,6 +8,7 @@ export async function updateContact(phone: string, formData: FormData) {
   await requireRole("AGENT");
   const name = String(formData.get("name") ?? "").trim() || null;
   const email = String(formData.get("email") ?? "").trim() || null;
+  const company = String(formData.get("company") ?? "").trim() || null;
   const notes = String(formData.get("notes") ?? "").trim() || null;
   const tagsRaw = String(formData.get("tags") ?? "").trim();
 
@@ -29,7 +30,7 @@ export async function updateContact(phone: string, formData: FormData) {
 
   await prisma.contact.update({
     where: { phoneNumber: phone },
-    data: { name, email, notes, tags },
+    data: { name, email, company, notes, tags },
   });
   revalidatePath(`/contacts/${encodeURIComponent(phone)}`);
   revalidatePath("/contacts");

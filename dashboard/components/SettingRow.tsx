@@ -11,11 +11,14 @@ import Select from "./Select";
 
 type Props = {
   def: SettingDef;
+  // Plaintext value for non-sensitive settings only. Sensitive values are
+  // never sent to the browser; use `hasStored` for those.
   storedValue: string | null;
+  hasStored: boolean;
   configuredViaEnv: boolean;
 };
 
-export default function SettingRow({ def, storedValue, configuredViaEnv }: Props) {
+export default function SettingRow({ def, storedValue, hasStored, configuredViaEnv }: Props) {
   const [reveal, setReveal] = useState(false);
   const [pending, start] = useTransition();
   const [reverting, startRevert] = useTransition();
@@ -27,7 +30,7 @@ export default function SettingRow({ def, storedValue, configuredViaEnv }: Props
   const isBoolean = def.type === "boolean";
   // "Revert to env" only makes sense when there's a stored override AND the
   // running voice-service has reported an env-origin value to fall back to.
-  const canRevert = !!storedValue && configuredViaEnv;
+  const canRevert = hasStored && configuredViaEnv;
 
   const onCopyKey = async () => {
     try {
@@ -57,6 +60,8 @@ export default function SettingRow({ def, storedValue, configuredViaEnv }: Props
     }
     start(async () => {
       await upsertSetting(fd);
+      // Never keep a secret in client state after saving it.
+      if (def.sensitive) setValue("");
       setSavedAt(Date.now());
     });
   };
@@ -87,12 +92,12 @@ export default function SettingRow({ def, storedValue, configuredViaEnv }: Props
                 sensitive
               </span>
             )}
-            {storedValue && (
+            {hasStored && (
               <span className="text-[10px] uppercase tracking-wide text-emerald-400/80">
                 stored
               </span>
             )}
-            {!storedValue && configuredViaEnv && (
+            {!hasStored && configuredViaEnv && (
               <span className="text-[10px] uppercase tracking-wide text-sky-400/80">
                 env
               </span>
@@ -127,9 +132,11 @@ export default function SettingRow({ def, storedValue, configuredViaEnv }: Props
             type={isPassword ? "password" : "text"}
             inputMode={def.type === "url" ? "url" : "text"}
             placeholder={
-              def.sensitive && configuredViaEnv && !storedValue
-                ? "configured via env (override here)"
-                : def.placeholder
+              def.sensitive && hasStored
+                ? "•••••••• stored — leave blank to keep"
+                : def.sensitive && configuredViaEnv
+                  ? "configured via env (override here)"
+                  : def.placeholder
             }
             value={value}
             onChange={(e) => setValue(e.target.value)}

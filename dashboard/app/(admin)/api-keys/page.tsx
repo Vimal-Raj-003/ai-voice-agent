@@ -5,6 +5,11 @@ import { Plus, Key } from "lucide-react";
 import EmptyState from "@/components/EmptyState";
 import { Badge } from "@/components/Badge";
 import { revokeApiKey, deleteApiKey } from "./actions";
+import {
+  listProviderCredentials, saveProviderCredential,
+  recheckProviderCredential, deleteProviderCredential,
+} from "./actions";
+import ProviderCredentials from "@/components/ProviderCredentials";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +19,8 @@ export default async function ApiKeysPage() {
     where: { organizationId: orgId },
     orderBy: { createdAt: "desc" },
   });
+  // BYOK speech-provider credentials, rendered as a second section below.
+  const credentialRows = await listProviderCredentials();
 
   return (
     <div className="space-y-6">
@@ -87,6 +94,13 @@ export default async function ApiKeysPage() {
           })}
         </div>
       )}
+
+      <ProviderCredentials
+        rows={credentialRows}
+        save={saveProviderCredential}
+        recheck={recheckProviderCredential}
+        remove={deleteProviderCredential}
+      />
     </div>
   );
 }

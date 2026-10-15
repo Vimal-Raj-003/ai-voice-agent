@@ -2,7 +2,6 @@ import Link from "next/link";
 import { ArrowRight, Sparkles } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
-import { createAssistant } from "../actions";
 import AssistantForm from "@/components/AssistantForm";
 import {
   TEMPLATES,
@@ -124,6 +123,6 @@ async function AssistantFormWithTools({
     select: { id: true, name: true, description: true, isActive: true },
   });
   return (
-    <AssistantForm action={createAssistant} initial={tplSeed} tools={tools} />
+    <AssistantForm mode="create" initial={tplSeed} tools={tools} />
   );
 }

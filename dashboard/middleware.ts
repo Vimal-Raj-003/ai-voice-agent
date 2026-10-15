@@ -8,6 +8,12 @@ import { NextResponse } from "next/server";
 // The matcher below excludes the SSE / demo proxy routes from middleware so
 // the browser-side EventSource / LiveKit-client integrations keep working —
 // the bearer token sent to voice-service is what protects those.
+//
+// api/webhooks is excluded for the same reason: a provider callback arrives
+// with no browser session, so the session redirect would turn every delivery
+// into a 307 to /login and the event would be lost. Those routes authenticate
+// the caller themselves — the Vobiz recording callback verifies its HMAC-SHA256
+// signature and rejects anything unsigned — so they must not be session-gated.
 export default auth((req) => {
   const { pathname } = req.nextUrl;
   const isLogin = pathname.startsWith("/login");
@@ -29,6 +35,6 @@ export default auth((req) => {
 
 export const config = {
   matcher: [
-    "/((?!api/auth|api/logs/proxy|api/demo/proxy|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/auth|api/webhooks|api/logs/proxy|api/demo/proxy|_next/static|_next/image|favicon.ico).*)",
   ],
 };

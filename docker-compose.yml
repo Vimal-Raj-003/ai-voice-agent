@@ -71,6 +71,10 @@ services:
     volumes:
       # Optional: mount per-client config overrides without rebuilding
       - ./voice-service/configs:/app/configs:ro
+      # Self-hosted call recordings (replaces the Cloudflare R2 upload). The
+      # agent worker and the API run in THIS container (supervisord), so the API
+      # can serve the files the worker writes. The dashboard proxies them.
+      - recordings:/opt/jilljill/recordings
 
 networks:
   web:
@@ -79,3 +83,6 @@ networks:
 volumes:
   caddy_data:
   caddy_config:
+  # Persistent call-recording storage on the VPS. Survives container rebuilds;
+  # never delete this volume unless you intend to destroy the recordings.
+  recordings:

@@ -55,8 +55,8 @@ export default function OutcomeDonut({ data }: { data: Slice[] }) {
               borderRadius: 12,
               fontSize: 12,
             }}
-            labelStyle={{ color: "#a78bfa" }}
-            itemStyle={{ color: "#f0f4ff" }}
+            labelStyle={{ color: "var(--text-primary)" }}
+            itemStyle={{ color: "var(--text-primary)" }}
           />
         </PieChart>
       </ResponsiveContainer>

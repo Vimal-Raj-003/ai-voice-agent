@@ -44,6 +44,16 @@ export const voiceService = {
     { method: "POST", body },
   ),
   demoToken: () => call<{ token: string; room: string; url: string }>(`/api/demo/token`, { method: "POST" }),
+  monitorToken: (room: string) =>
+    call<{ token: string; room: string; url: string }>(`/api/calls/monitor-token`, {
+      method: "POST",
+      body: { room },
+    }),
+  endCall: (room: string) =>
+    call<{ ok: boolean; room: string }>(`/api/calls/end`, {
+      method: "POST",
+      body: { room },
+    }),
   campaignRunNow: (id: string) => call<{ status: string; campaign_id: string }>(
     `/api/campaigns/${id}/run-now`,
     { method: "POST" },

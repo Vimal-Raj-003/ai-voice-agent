@@ -10,21 +10,56 @@ import type {
   RateKind,
 } from "@prisma/client";
 
+/** Pipeline stage a cost line belongs to, for the per-call breakdown. */
+export type CostCategory =
+  | "TELEPHONY" | "MEDIA" | "STT" | "LLM" | "TTS" | "RECORDING";
+
+export const COST_CATEGORY_LABEL: Record<CostCategory, string> = {
+  TELEPHONY: "Vobiz / Telephony",
+  MEDIA: "LiveKit",
+  STT: "Speech-to-text",
+  LLM: "LLM",
+  TTS: "Text-to-speech",
+  RECORDING: "Recording / Storage",
+};
+
 export type CostLine = {
   label: string;       // "OpenAI gpt-4o-mini input"
   provider: string;
   sku: string;
-  kind: RateKind;
+  kind: RateKind | null;  // null = usage exists but nothing meters it yet
+  category: CostCategory;
   units: number;       // how many tokens / minutes / chars / 1k-chars
   unitLabel: string;   // "Mtok", "min", "kchars"
-  rateUsd: number;     // current rate per unit
-  costUsd: number;     // units × rateUsd
+  rateUsd: number | null; // null = no rate row -> "Rate unavailable"
+  costUsd: number;     // units × rateUsd (0 when the rate is unknown)
+  /** True when usage is real but no rate exists, so cost CANNOT be computed. */
+  unavailable?: boolean;
+  /** True when this LLM line was served by a fallback, not the configured model. */
+  fallback?: boolean;
 };
 
 export type CostBreakdown = {
   totalUsd: number;
   lines: CostLine[];
   hasUnknownRates: boolean; // true if any usage column is set but no matching rate row
+};
+
+/**
+ * Opt-in extras for the Costs page. Defaults keep every existing caller
+ * (Calls detail, Overview) byte-for-byte identical.
+ */
+export type CostOptions = {
+  /**
+   * Emit lines for usage that has NO rate row, marked `unavailable`, instead of
+   * silently dropping them. They carry costUsd 0, so totals never change.
+   */
+  includeUnavailable?: boolean;
+  /**
+   * The assistant's CONFIGURED primary model. When the billed LLM sku differs,
+   * the LLM line is flagged as served by a fallback.
+   */
+  configuredLlmModel?: string | null;
 };
 
 // Fast lookup: { "provider|sku|kind": numeric rate }
@@ -76,103 +111,99 @@ export type CallCostInput = Pick<
 export function computeCallCost(
   call: CallCostInput,
   rateMap: Map<string, number>,
+  opts: CostOptions = {},
 ): CostBreakdown {
   const lines: CostLine[] = [];
   let unknown = false;
 
+  // One place that decides: priced line, or an explicit "Rate unavailable"
+  // line. Cost is NEVER invented — a missing rate yields costUsd 0 and the
+  // `unavailable` flag so the UI can say so.
+  const add = (
+    category: CostCategory,
+    provider: string | null | undefined,
+    sku: string | null | undefined,
+    kind: RateKind | null,
+    units: number,
+    unitLabel: string,
+    label: string,
+    extra: Partial<CostLine> = {},
+  ) => {
+    const rate = kind ? lookup(rateMap, provider, sku, kind) : null;
+    if (rate == null) {
+      unknown = true;
+      if (!opts.includeUnavailable) return;
+      lines.push({
+        label, provider: provider || "—", sku: sku || "—", kind, category,
+        units, unitLabel, rateUsd: null, costUsd: 0, unavailable: true, ...extra,
+      });
+      return;
+    }
+    lines.push({
+      label, provider: provider!, sku: sku!, kind, category,
+      units, unitLabel, rateUsd: rate, costUsd: units * rate, ...extra,
+    });
+  };
+
+  // The billed LLM model differing from the assistant's CONFIGURED model means
+  // a fallback served the call (the worker records the provider/model that
+  // actually ran — never inferred from the model name).
+  const fellBack = Boolean(
+    opts.configuredLlmModel && call.llmSkuUsed &&
+    opts.configuredLlmModel !== call.llmSkuUsed,
+  );
+
   // — LLM input —
   if (call.llmInputTokens && call.llmInputTokens > 0) {
-    const r = lookup(rateMap, call.llmProviderUsed, call.llmSkuUsed, "LLM_INPUT_MTOK");
-    if (r == null) unknown = true;
-    else {
-      const mtok = call.llmInputTokens / 1_000_000;
-      lines.push({
-        label: `${call.llmProviderUsed} ${call.llmSkuUsed} input`,
-        provider: call.llmProviderUsed!,
-        sku: call.llmSkuUsed!,
-        kind: "LLM_INPUT_MTOK",
-        units: mtok,
-        unitLabel: "Mtok",
-        rateUsd: r,
-        costUsd: mtok * r,
-      });
-    }
+    add("LLM", call.llmProviderUsed, call.llmSkuUsed, "LLM_INPUT_MTOK",
+        call.llmInputTokens / 1_000_000, "Mtok",
+        `${call.llmProviderUsed} ${call.llmSkuUsed} input`, { fallback: fellBack });
   }
   // — LLM output —
   if (call.llmOutputTokens && call.llmOutputTokens > 0) {
-    const r = lookup(rateMap, call.llmProviderUsed, call.llmSkuUsed, "LLM_OUTPUT_MTOK");
-    if (r == null) unknown = true;
-    else {
-      const mtok = call.llmOutputTokens / 1_000_000;
-      lines.push({
-        label: `${call.llmProviderUsed} ${call.llmSkuUsed} output`,
-        provider: call.llmProviderUsed!,
-        sku: call.llmSkuUsed!,
-        kind: "LLM_OUTPUT_MTOK",
-        units: mtok,
-        unitLabel: "Mtok",
-        rateUsd: r,
-        costUsd: mtok * r,
-      });
-    }
+    add("LLM", call.llmProviderUsed, call.llmSkuUsed, "LLM_OUTPUT_MTOK",
+        call.llmOutputTokens / 1_000_000, "Mtok",
+        `${call.llmProviderUsed} ${call.llmSkuUsed} output`, { fallback: fellBack });
   }
   // — STT —
   if (call.sttSeconds && call.sttSeconds > 0) {
-    const r = lookup(rateMap, call.sttProviderUsed, call.sttSkuUsed, "STT_MINUTE");
-    if (r == null) unknown = true;
-    else {
-      const min = call.sttSeconds / SECONDS_PER_MINUTE;
-      lines.push({
-        label: `${call.sttProviderUsed} ${call.sttSkuUsed} STT`,
-        provider: call.sttProviderUsed!,
-        sku: call.sttSkuUsed!,
-        kind: "STT_MINUTE",
-        units: min,
-        unitLabel: "min",
-        rateUsd: r,
-        costUsd: min * r,
-      });
-    }
+    add("STT", call.sttProviderUsed, call.sttSkuUsed, "STT_MINUTE",
+        call.sttSeconds / SECONDS_PER_MINUTE, "min",
+        `${call.sttProviderUsed} ${call.sttSkuUsed} STT`);
   }
   // — TTS —
   if (call.ttsChars && call.ttsChars > 0) {
-    const r = lookup(rateMap, call.ttsProviderUsed, call.ttsSkuUsed, "TTS_KCHARS");
-    if (r == null) unknown = true;
-    else {
-      const kchars = call.ttsChars / 1000;
-      lines.push({
-        label: `${call.ttsProviderUsed} ${call.ttsSkuUsed} TTS`,
-        provider: call.ttsProviderUsed!,
-        sku: call.ttsSkuUsed!,
-        kind: "TTS_KCHARS",
-        units: kchars,
-        unitLabel: "kchars",
-        rateUsd: r,
-        costUsd: kchars * r,
-      });
-    }
+    add("TTS", call.ttsProviderUsed, call.ttsSkuUsed, "TTS_KCHARS",
+        call.ttsChars / 1000, "kchars",
+        `${call.ttsProviderUsed} ${call.ttsSkuUsed} TTS`);
   }
-  // — Telephony — pick the right SKU based on call direction so inbound
-  // calls aren't billed at the outbound rate. Inbound is typically zero
-  // (rolled into trunk rental) but it's still a real lookup.
+  // — Telephony — pick the SKU by direction so inbound isn't billed at the
+  // outbound rate. Inbound is typically zero (rolled into trunk rental).
   if (call.telephonyProvider && call.durationSeconds && call.durationSeconds > 0) {
     const sku = call.direction === "INBOUND" ? "inbound" : "outbound";
     const r = lookup(rateMap, call.telephonyProvider, sku, "TELEPHONY_MINUTE");
-    if (r == null) unknown = true;
-    else {
-      const min = call.durationSeconds / SECONDS_PER_MINUTE;
-      if (r > 0) {
-        lines.push({
-          label: `${call.telephonyProvider} ${sku} telephony`,
-          provider: call.telephonyProvider,
-          sku,
-          kind: "TELEPHONY_MINUTE",
-          units: min,
-          unitLabel: "min",
-          rateUsd: r,
-          costUsd: min * r,
-        });
-      }
+    const min = call.durationSeconds / SECONDS_PER_MINUTE;
+    // A real 0 rate is not "unavailable" — it means bundled, so skip quietly.
+    if (r == null || r > 0) {
+      add("TELEPHONY", call.telephonyProvider, sku, "TELEPHONY_MINUTE", min, "min",
+          `${call.telephonyProvider} ${sku} telephony`);
+    }
+  }
+
+  // — Media transport + recording storage —
+  // Real usage, but there is NO RateKind that meters either one, so they can
+  // only ever be reported as "Rate unavailable". Shown on the Costs page so
+  // the breakdown covers the whole pipeline; never given an invented price.
+  if (opts.includeUnavailable) {
+    if (call.durationSeconds && call.durationSeconds > 0) {
+      add("MEDIA", "livekit", "room-minutes", null,
+          call.durationSeconds / SECONDS_PER_MINUTE, "min", "LiveKit room time");
+    }
+    const recSecs = (call as { recordingDurationSeconds?: number | null })
+      .recordingDurationSeconds;
+    if (recSecs && recSecs > 0) {
+      add("RECORDING", "self-hosted", "local-disk", null,
+          recSecs / SECONDS_PER_MINUTE, "min", "Recording storage");
     }
   }
 

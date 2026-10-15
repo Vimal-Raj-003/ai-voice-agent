@@ -1,8 +1,9 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
-import { updateAssistant, deleteAssistant } from "../actions";
+import { deleteAssistant } from "../actions";
 import AssistantForm from "@/components/AssistantForm";
+import UrlSetup from "@/components/UrlSetup";
 
 export const dynamic = "force-dynamic";
 
@@ -26,17 +27,25 @@ export default async function AssistantDetailPage({
     }),
   ]);
   if (!a) notFound();
-  const update = updateAssistant.bind(null, id);
+  // Human call forwarding destinations for this assistant.
+  const transferTargets = await prisma.humanTransferTarget.findMany({
+    where: { assistantId: id },
+    orderBy: { priority: "asc" },
+    select: { category: true, label: true, phoneE164: true, enabled: true, priority: true },
+  });
   const remove = deleteAssistant.bind(null, id);
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold">{a.name}</h1>
       <AssistantForm
-        action={update}
+        mode="edit"
         initial={a}
         tools={tools}
         selectedToolIds={bindings.map((b) => b.toolId)}
+        transferTargets={transferTargets}
       />
+      {/* Website knowledge for THIS assistant only. */}
+      <UrlSetup assistantId={id} />
       <form action={remove}>
         <button className="text-sm text-red-400 hover:text-red-300">
           Delete assistant

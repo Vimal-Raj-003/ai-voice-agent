@@ -1,8 +1,20 @@
+"use client";
+
+import { useActionState, useState } from "react";
+import Link from "next/link";
+import ProviderBadges from "./ProviderBadges";
+import HumanTransferFields, { type TransferTarget } from "./HumanTransferFields";
+import ProviderStatusChip from "./ProviderStatusChip";
+import { useProviderRegistry, selectableProviders, findProvider } from "@/lib/useProviderRegistry";
 import type { Assistant } from "@prisma/client";
+import { saveAssistant } from "@/app/(admin)/assistants/actions";
+import type { AssistantActionState } from "@/app/(admin)/assistants/actions";
 import Select from "./Select";
 import BooleanSelect from "./BooleanSelect";
 import FormField from "./FormField";
 import SystemPromptField from "./SystemPromptField";
+import LlmStackFields from "./LlmStackFields";
+import TtsStackFields from "./TtsStackFields";
 
 type ToolOption = {
   id: string;
@@ -12,10 +24,14 @@ type ToolOption = {
 };
 
 type Props = {
-  action: (formData: FormData) => Promise<void>;
+  // "edit" when an existing assistant id is present, "create" otherwise. When
+  // omitted it's inferred from initial.id so the button + mode stay correct.
+  mode?: "create" | "edit";
   initial?: Partial<Assistant>;
   tools?: ToolOption[];
   selectedToolIds?: string[];
+  /** Human call forwarding destinations for this assistant. */
+  transferTargets?: TransferTarget[];
 };
 
 // Adapter for legacy `hint` prop usage in this file — every existing call
@@ -38,28 +54,6 @@ const Field = ({
 const inputCls =
   "w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-violet-500/40";
 
-const LLM_PROVIDERS = [
-  { value: "OPENAI", label: "OpenAI" },
-  { value: "GROQ", label: "Groq" },
-  { value: "OPENROUTER", label: "OpenRouter" },
-  { value: "ANTHROPIC", label: "Anthropic" },
-  { value: "CUSTOM", label: "Custom" },
-];
-
-const TTS_PROVIDERS = [
-  { value: "DEEPGRAM", label: "Deepgram" },
-  { value: "OPENAI", label: "OpenAI" },
-  { value: "SARVAM", label: "Sarvam" },
-  { value: "CARTESIA", label: "Cartesia" },
-  { value: "ELEVENLABS", label: "ElevenLabs" },
-];
-
-const STT_PROVIDERS = [
-  { value: "DEEPGRAM", label: "Deepgram" },
-  { value: "OPENAI", label: "OpenAI" },
-  { value: "SARVAM", label: "Sarvam" },
-];
-
 const SENSITIVITY = [
   {
     value: "LOW",
@@ -79,17 +73,30 @@ const SENSITIVITY = [
 ];
 
 export default function AssistantForm({
-  action,
+  mode,
   initial,
   tools = [],
   selectedToolIds = [],
+  transferTargets = [],
 }: Props) {
   const selectedSet = new Set(selectedToolIds);
+  // Edit mode when an id is present (or explicitly passed). Drives the button
+  // label and makes create-vs-edit unambiguous in the UI.
+  const isEdit = mode ? mode === "edit" : Boolean(initial?.id);
+  // useActionState tracks the pending transition so we can disable the submit
+  // button — this is what stops a double-click from inserting a second row.
+  const [state, formAction, pending] = useActionState<AssistantActionState, FormData>(
+    saveAssistant,
+    {},
+  );
   return (
     // Wider max-width so the 2-column row (Identity + Call accuracy) has
     // enough horizontal room for the Identity textarea + the call-accuracy
     // 2-col internal grid. Falls back to a single column under lg.
-    <form action={action} className="space-y-5 max-w-5xl">
+    <form action={formAction} className="space-y-5 max-w-5xl">
+      {/* Mode selector for the single saveAssistant action: present id → update
+          that row; empty → create. Kept in sync with the record being edited. */}
+      <input type="hidden" name="assistantId" defaultValue={initial?.id ?? ""} />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* ── Identity ── */}
         <section className="glass rounded-2xl p-5 space-y-4">
@@ -149,45 +156,27 @@ export default function AssistantForm({
           Voice stack
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="LLM provider">
-            <Select
-              name="llmProvider"
-              options={LLM_PROVIDERS}
-              defaultValue={initial?.llmProvider ?? "OPENAI"}
-            />
-          </Field>
-          <Field label="LLM model">
-            <input
-              name="llmModel"
-              defaultValue={initial?.llmModel ?? "gpt-4o-mini"}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="TTS provider">
-            <Select
-              name="ttsProvider"
-              options={TTS_PROVIDERS}
-              defaultValue={initial?.ttsProvider ?? "DEEPGRAM"}
-            />
-          </Field>
-          <Field label="Voice ID">
-            <input
-              name="voiceId"
-              defaultValue={initial?.voiceId ?? ""}
-              className={inputCls}
-              placeholder="e.g. alloy, aura-athena-en"
-            />
-          </Field>
-          <Field label="STT provider">
-            <Select
-              name="sttProvider"
-              options={STT_PROVIDERS}
-              defaultValue={initial?.sttProvider ?? "DEEPGRAM"}
-            />
-          </Field>
+          {/* LLM provider + model are coupled: the model dropdown lists only
+              models the selected provider can serve, resets on provider
+              change, and blocks invalid pairs. See LlmStackFields. */}
+          <LlmStackFields
+            initialProvider={initial?.llmProvider ?? "OPENAI"}
+            initialModel={initial?.llmModel ?? "gpt-4o-mini"}
+            initialFallbackModel={initial?.llmFallbackModel ?? ""}
+          />
+          {/* TTS provider + voice are coupled: the voice dropdown lists only
+              voices the selected provider can speak, resets on provider
+              change, and blocks invalid pairs. See TtsStackFields. */}
+          <TtsStackFields
+            initialProvider={initial?.ttsProvider ?? "DEEPGRAM"}
+            initialVoice={initial?.voiceId ?? ""}
+          />
+          <SttProviderField initial={initial?.sttProvider ?? "DEEPGRAM"} />
         </div>
       </section>
 
+
+      <HumanTransferFields targets={transferTargets} />
 
       {tools.length > 0 && (
         <section className="glass rounded-2xl p-5 space-y-3">
@@ -239,8 +228,29 @@ export default function AssistantForm({
         </section>
       )}
 
-      <button className="rounded-lg bg-gradient-to-r from-cyan-300 via-violet-300 to-pink-300 px-5 py-2 text-sm font-semibold text-black hover:from-cyan-200 hover:via-violet-200 hover:to-pink-200 shadow-[0_0_20px_rgba(167,139,250,0.25)] transition">
-        Save assistant
+      {state?.error && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-sm text-red-200"
+        >
+          {state.error}
+        </div>
+      )}
+
+      <button
+        type="submit"
+        disabled={pending}
+        aria-busy={pending}
+        onClick={() => console.log("[assistant.save] button_clicked", { isEdit })}
+        className="rounded-lg bg-gradient-to-r from-cyan-300 via-violet-300 to-pink-300 px-5 py-2 text-sm font-semibold text-black hover:from-cyan-200 hover:via-violet-200 hover:to-pink-200 shadow-[0_0_20px_rgba(167,139,250,0.25)] transition disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {pending
+          ? isEdit
+            ? "Saving changes…"
+            : "Creating…"
+          : isEdit
+            ? "Save changes"
+            : "Create assistant"}
       </button>
     </form>
   );
@@ -387,5 +397,73 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
         />
       </Field>
     </section>
+  );
+}
+
+/** STT provider, driven by the central registry — no local provider list. */
+function SttProviderField({ initial }: { initial: string }) {
+  const { providers, stale, loading } = useProviderRegistry("STT");
+  const [provider, setProvider] = useState((initial || "DEEPGRAM").toUpperCase());
+  const usable = selectableProviders(providers);
+  const current = findProvider(providers, provider);
+  const notIntegrated = providers.filter((p) => !p.integrated);
+
+  const options = usable.map((p) => ({
+    value: p.value,
+    label: p.name,
+    description: [p.badges.map((b) => b.label).join(" · "), p.priceLabel]
+      .filter(Boolean).join("  ·  ") || undefined,
+  }));
+
+  return (
+    <Field label="STT provider">
+      <Select
+        name="sttProvider"
+        options={options.length ? options : [{ value: provider, label: provider }]}
+        defaultValue={provider}
+        onChange={(v) => setProvider(v.toUpperCase())}
+      />
+      {current && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {/* Recommendation badges: how good/affordable this provider is. */}
+          <ProviderBadges registryBadges={current.badges} />
+          {/* Connection status, kept as its own chip (never inside the row above). */}
+          <ProviderStatusChip status={current.statusBadge} />
+        </div>
+      )}
+      {current?.priceLabel && <p className="mt-1 text-[11px] text-gray-500">{current.priceLabel}</p>}
+      {current?.needsCredential && (
+        <p className="mt-1 text-[11px] text-amber-300">
+          {current.name} needs an API key before calls can use it.{" "}
+          <Link href="/api-keys" className="underline hover:text-amber-200">
+            Add it on the API keys page
+          </Link>
+          .
+        </p>
+      )}
+      {current?.credentialSource === "tenant" && (
+        <p className="mt-1 text-[11px] text-gray-500">
+          Using your organisation&apos;s own {current.name} key.
+        </p>
+      )}
+      {/* A provider that cannot stream is segmented locally by VAD, so replies
+          start only after the caller pauses. Worth saying before they pick it. */}
+      {current?.canRunCalls && current?.needs_vad && (
+        <p className="mt-1 text-[11px] text-gray-500">
+          {current.name} has no streaming API — transcripts arrive only after the
+          caller pauses, so replies start a little later.
+        </p>
+      )}
+      {notIntegrated.length > 0 && (
+        <p className="mt-1 text-[11px] text-gray-500">
+          Not yet available here: {notIntegrated.map((p) => p.name).join(", ")}.
+        </p>
+      )}
+      {stale && !loading && (
+        <p className="mt-1 text-[11px] text-amber-300">
+          Provider list may be outdated — the voice service could not be reached.
+        </p>
+      )}
+    </Field>
   );
 }

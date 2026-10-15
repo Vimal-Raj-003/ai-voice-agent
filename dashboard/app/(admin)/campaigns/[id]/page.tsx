@@ -9,6 +9,7 @@ import {
 } from "../actions";
 import CampaignForm from "@/components/CampaignForm";
 import TargetsUploader from "@/components/TargetsUploader";
+import CampaignRunButton from "@/components/CampaignRunButton";
 
 export default async function CampaignDetailPage({
   params,
@@ -41,9 +42,7 @@ export default async function CampaignDetailPage({
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">{campaign.name}</h1>
         <form action={runNow}>
-          <button className="rounded-lg bg-purple-600 text-white px-4 py-2 text-sm font-medium hover:bg-purple-500">
-            Run now
-          </button>
+          <CampaignRunButton campaignId={id} name={campaign.name} />
         </form>
       </div>
 

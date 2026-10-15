@@ -1,67 +1,56 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import { Users } from "lucide-react";
-import { Badge, outcomeTone } from "@/components/Badge";
-import EmptyState from "@/components/EmptyState";
-import ContactsCsv from "@/components/ContactsCsv";
+import { UserPlus } from "lucide-react";
+import ContactImport from "@/components/ContactImport";
+import SavedToast from "@/components/SavedToast";
+import ContactsList, { type ContactLite } from "@/components/ContactsList";
+
+function parseTags(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const p = JSON.parse(raw);
+    return Array.isArray(p) ? p.map(String) : [];
+  } catch {
+    return [];
+  }
+}
 
 export default async function ContactsPage() {
   const rows = await prisma.contact.findMany({
-    orderBy: { lastCallAt: "desc" },
-    take: 200,
+    orderBy: [{ lastCallAt: "desc" }, { createdAt: "desc" }],
+    take: 500,
   });
+  const contacts: ContactLite[] = rows.map((c) => ({
+    phoneNumber: c.phoneNumber,
+    name: c.name,
+    email: c.email,
+    tags: parseTags(c.tags),
+    isBooked: c.isBooked,
+  }));
+
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
+      <SavedToast />
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold">Contacts</h1>
-          <p className="text-sm text-gray-400 mt-1">
-            CSV header expected: <code className="text-[10px] font-mono">phone,name,email,notes,tags</code>{" "}
-            — only <code className="text-[10px] font-mono">phone</code> is required.
+          <p className="mt-1 text-sm text-gray-400">
+            Your customer / person address book — separate from Phone Numbers
+            (business telephony lines). Add one manually or import a CSV.
           </p>
         </div>
-        <ContactsCsv />
-      </div>
-      {rows.length === 0 ? (
-        <EmptyState
-          icon={Users}
-          title="No contacts yet"
-          description="Contacts are populated automatically when calls happen — once your first call completes, the contact row appears here with full history and memory."
-        />
-      ) : (
-      <div className="glass rounded-2xl divide-y divide-white/5">
-        {rows.map((c) => (
+        <div className="flex flex-wrap items-center gap-2">
           <Link
-            key={c.phoneNumber}
-            href={`/contacts/${encodeURIComponent(c.phoneNumber)}`}
-            className="flex items-center justify-between gap-4 p-4 hover:bg-white/[0.02]"
+            href="/contacts/new"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-300 via-violet-300 to-pink-300 px-3 py-1.5 text-sm font-semibold text-black shadow-[0_0_20px_rgba(167,139,250,0.25)] transition hover:from-cyan-200 hover:via-violet-200 hover:to-pink-200"
           >
-            <div className="min-w-0 flex-1">
-              <div className="font-medium">{c.name || c.phoneNumber}</div>
-              <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                <span className="text-xs text-gray-500">{c.phoneNumber}</span>
-                <span className="text-xs text-gray-500">
-                  · {c.totalCalls} call{c.totalCalls === 1 ? "" : "s"}
-                </span>
-                {c.lastOutcome && (
-                  <Badge tone={outcomeTone(c.lastOutcome)}>
-                    {c.lastOutcome}
-                  </Badge>
-                )}
-              </div>
-            </div>
-            <div className="shrink-0 flex items-center gap-2">
-              {c.isBooked && <Badge tone="success">Booked</Badge>}
-              <span className="text-xs text-gray-500">
-                {c.lastCallAt
-                  ? new Date(c.lastCallAt).toLocaleDateString()
-                  : "—"}
-              </span>
-            </div>
+            <UserPlus size={15} /> New contact
           </Link>
-        ))}
+          <ContactImport />
+        </div>
       </div>
-      )}
+
+      <ContactsList contacts={contacts} />
     </div>
   );
 }

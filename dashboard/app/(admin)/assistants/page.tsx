@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
 import { Bot, Plus } from "lucide-react";
 import EmptyState from "@/components/EmptyState";
+import SavedToast from "@/components/SavedToast";
 
 export default async function AssistantsPage() {
   const { id: orgId } = await getDefaultOrg();
@@ -12,6 +13,7 @@ export default async function AssistantsPage() {
   });
   return (
     <div className="space-y-6">
+      <SavedToast message="Assistant saved successfully" />
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Assistants</h1>
         <Link

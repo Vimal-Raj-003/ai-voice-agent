@@ -79,6 +79,18 @@ def notify_booking_confirmed(caller_name: str, caller_phone: str, booking_time_i
     return sent
 
 
+def notify_appointment_reminder(customer_phone: str, customer_name: str,
+                                business: str, when_readable: str) -> bool:
+    """Send the appointment reminder to the CUSTOMER (WhatsApp). Returns True
+    only when the message was accepted by the provider."""
+    name = customer_name or "there"
+    msg = (
+        f"Hello {name}, this is a reminder for your appointment with {business} "
+        f"on {when_readable}. Please contact us if you need to make any changes."
+    )
+    return send_whatsapp(customer_phone, msg)
+
+
 def notify_call_no_booking(caller_name: str, caller_phone: str, call_summary: str = "",
                            tts_voice: str = "", duration_seconds: int = 0) -> bool:
     msg = (

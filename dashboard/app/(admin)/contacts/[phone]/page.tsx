@@ -52,6 +52,9 @@ export default async function ContactDetail({
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500">
           <span className="font-mono">{c.phoneNumber}</span>
+          {c.email && <span>· {c.email}</span>}
+          {c.company && <span>· {c.company}</span>}
+          <span>· added {new Date(c.createdAt).toLocaleDateString()}</span>
           <span>· {c.totalCalls} call{c.totalCalls === 1 ? "" : "s"}</span>
           {c.lastOutcome && (
             <Badge tone={outcomeTone(c.lastOutcome)}>{c.lastOutcome}</Badge>
@@ -64,7 +67,8 @@ export default async function ContactDetail({
 
       <form
         action={updateContact.bind(null, phone)}
-        className="glass rounded-2xl p-5 space-y-4"
+        id="edit"
+        className="glass rounded-2xl p-5 space-y-4 scroll-mt-20"
       >
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <label className="block">
@@ -87,6 +91,17 @@ export default async function ContactDetail({
               type="email"
               defaultValue={c.email ?? ""}
               placeholder="name@example.com"
+              className={inputCls}
+            />
+          </label>
+          <label className="block">
+            <span className="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">
+              Company
+            </span>
+            <input
+              name="company"
+              defaultValue={c.company ?? ""}
+              placeholder="VIMS Enterprise"
               className={inputCls}
             />
           </label>

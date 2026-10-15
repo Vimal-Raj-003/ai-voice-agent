@@ -59,6 +59,7 @@ enum LlmProvider {
   GROQ
   OPENROUTER
   ANTHROPIC
+  GEMINI
   CUSTOM
 }
 
@@ -68,12 +69,18 @@ enum TtsProvider {
   SARVAM
   CARTESIA
   ELEVENLABS
+  GEMINI
+  RUMIK
+  MURF
 }
 
 enum SttProvider {
   DEEPGRAM
   OPENAI
   SARVAM
+  GOOGLE
+  CARTESIA
+  ELEVENLABS
 }
 
 enum TrunkType {
@@ -125,6 +132,13 @@ enum AppointmentStatus {
   CANCELLED
   COMPLETED
   NO_SHOW
+}
+
+enum ReminderStatus {
+  PENDING
+  SENT
+  FAILED
+  CANCELLED
 }
 
 enum ScheduleType {
@@ -208,6 +222,7 @@ model Organization {
   invites         Invite[]
   dndNumbers      DndNumber[]
   idempotencyKeys IdempotencyKey[]
+  providerCredentials ProviderCredential[]
 
   @@map("organizations")
 }
@@ -246,6 +261,36 @@ model ApiKey {
 
   @@index([organizationId])
   @@map("api_keys")
+}
+
+/// A customer-supplied (BYOK) credential for a speech provider.
+///
+/// Distinct from ApiKey on purpose: ApiKey holds a one-way HASH of a token that
+/// callers present TO the voice-service. This holds a credential the worker must
+/// present to a THIRD PARTY (Deepgram, Sarvam, Murf, ...), so it has to be
+/// recoverable — it is stored AES-256-GCM encrypted, never in plaintext, and is
+/// never serialised to the browser. One row per (organization, provider).
+model ProviderCredential {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  /// Registry provider id, lowercase: "deepgram" | "sarvam" | "murf" | ...
+  provider       String
+  /// AES-256-GCM payload, "v1:<iv>:<ciphertext>:<tag>" (all base64).
+  ciphertext     String
+  /// Last 4 characters of the plaintext, for display only ("…a1b2").
+  hint           String?
+  /// Result of the last real vendor API validation.
+  lastStatus     String?  @map("last_status")
+  lastCheckedAt  DateTime? @map("last_checked_at")
+  lastError      String?  @map("last_error")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, provider])
+  @@index([organizationId])
+  @@map("provider_credentials")
 }
 
 model Invite {
@@ -295,11 +340,15 @@ model Assistant {
   firstMessage   String? @db.Text
   endCallMessage String? @db.Text
 
-  // LLM
-  llmProvider LlmProvider @default(OPENAI)
-  llmModel    String      @default("gpt-4o-mini")
-  temperature Float       @default(0.7)
-  maxTokens   Int?
+  // LLM. The selected provider is the source of truth and controls BOTH models:
+  // llmModel is the primary, llmFallbackModel the per-turn backup. The fallback
+  // stays on the SAME provider unless ALLOW_CROSS_PROVIDER_FALLBACK=true. Null
+  // fallback = use the provider's built-in default (see llm_routing.py).
+  llmProvider      LlmProvider @default(OPENAI)
+  llmModel         String      @default("gpt-4o-mini")
+  llmFallbackModel String?     @map("llm_fallback_model")
+  temperature      Float       @default(0.7)
+  maxTokens        Int?
 
   // STT
   sttProvider SttProvider @default(DEEPGRAM)
@@ -361,7 +410,40 @@ model Assistant {
   tools        AssistantTool[]
 
   @@index([organizationId])
+  humanTransferTargets HumanTransferTarget[]
+
   @@map("assistants")
+}
+
+/// Where a live call is handed to a human, chosen by what the call is about.
+///
+/// Deliberately NOT in SipTrunk/PhoneNumber: those are Vobiz DID/trunk records
+/// that carry inbound calls. These are outbound destinations for a warm
+/// hand-off, owned by one assistant, and changing them must never touch the
+/// telephony config.
+///
+/// The LLM never sees a number — it only picks a category, and the worker
+/// resolves the destination from this table.
+model HumanTransferTarget {
+  id          String   @id @default(cuid())
+  assistantId String   @map("assistant_id")
+  /// "software" | "marketing" | "content" | "other" — fixed set of four.
+  category    String
+  /// Shown in the UI and spoken by the agent ("our software team").
+  label       String
+  /// E.164, validated on write. Never supplied by a caller.
+  phoneE164   String?  @map("phone_e164")
+  enabled     Boolean  @default(true)
+  /// Lower wins when several categories could serve a request.
+  priority    Int      @default(100)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  assistant Assistant @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+
+  @@unique([assistantId, category])
+  @@index([assistantId])
+  @@map("human_transfer_targets")
 }
 
 // =============================================================================
@@ -462,6 +544,31 @@ model Call {
 
   // Recording / artifacts
   recordingUrl     String?
+  // Private-recording fields (LiveKit Egress → R2). recordingObjectKey holds the
+  // R2 object key (the bucket stays private); the dashboard presigns short-lived
+  // playback/download URLs from it. recordingUrl is kept for backward compat /
+  // optional public mode. recordingStatus ∈ NOT_CONFIGURED | STARTING |
+  // RECORDING | PROCESSING | READY | FAILED.
+  recordingStatus          String?
+  recordingObjectKey       String?
+  recordingEgressId        String?
+  recordingDurationSeconds Int?
+  recordingError           String?
+
+  // Telephony-provider (Vobiz) recording. Vobiz records the PSTN leg itself, so
+  // for Vobiz calls that copy is preferred over the locally mixed WAV and the
+  // local recorder becomes the fallback. Identifiers only — no credentials are
+  // ever stored, and providerRecordingUrl still requires the server-side
+  // X-Auth-ID/X-Auth-Token headers to fetch, so it is never handed to a browser.
+  //   recordingSource          ∈ VOBIZ | LOCAL
+  //   providerRecordingStatus  ∈ PROCESSING | READY | FAILED
+  // The join key back to Vobiz is the existing `sipCallId` column, which holds
+  // LiveKit's `sip.callIDFull` (the trunk provider's SIP Call-ID).
+  providerCallId          String?
+  providerRecordingId     String?
+  providerRecordingStatus String?
+  providerRecordingUrl    String?
+  recordingSource         String?
   summary          String?  @db.Text
   transcriptHasPii Boolean  @default(false)
 
@@ -497,6 +604,8 @@ model Call {
   @@index([status])
   @@index([toNumber])
   @@index([toNumber, createdAt])
+  @@index([providerCallId])
+  @@index([providerRecordingId])
   @@map("calls")
 }
 
@@ -746,6 +855,7 @@ model Contact {
   phoneNumber String    @unique @map("phone_number")
   name        String?
   email       String?
+  company     String?
   notes       String?
   tags        String    @default("[]")
   timezone    String?
@@ -789,11 +899,34 @@ model Appointment {
   notes            String?
   createdAt        DateTime          @default(now()) @map("created_at")
 
-  contact Contact? @relation(fields: [phoneNumber], references: [phoneNumber])
+  contact   Contact?              @relation(fields: [phoneNumber], references: [phoneNumber])
+  reminders AppointmentReminder[]
 
   @@index([date, time])
   @@index([phoneNumber])
   @@map("appointments")
+}
+
+// Persistent, restart-safe customer reminders. A background poller in the
+// voice-service sends due PENDING rows (currently via WhatsApp) before the
+// appointment, then marks them SENT/FAILED. One row per appointment.
+model AppointmentReminder {
+  id            String         @id @default(cuid())
+  appointmentId String         @map("appointment_id")
+  customerPhone String         @map("customer_phone")
+  reminderAt    DateTime       @map("reminder_at") @db.Timestamptz(3)
+  channel       String         @default("whatsapp")
+  status        ReminderStatus @default(PENDING)
+  retryCount    Int            @default(0) @map("retry_count")
+  lastError     String?        @map("last_error")
+  sentAt        DateTime?      @map("sent_at") @db.Timestamptz(3)
+  createdAt     DateTime       @default(now()) @map("created_at")
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@index([status, reminderAt])
+  @@index([appointmentId])
+  @@map("appointment_reminders")
 }
 
 // =============================================================================

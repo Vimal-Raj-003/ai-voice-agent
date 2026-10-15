@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import StatCard from "@/components/StatCard";
 import ActiveCallsPanel from "@/components/ActiveCallsPanel";
+import VoicePipelineDiagnostics from "@/components/VoicePipelineDiagnostics";
 import CallsTimeline from "@/components/charts/CallsTimeline";
 import OutcomeDonut from "@/components/charts/OutcomeDonut";
 import BookingGauge from "@/components/charts/BookingGauge";
@@ -328,6 +329,10 @@ export default async function Overview() {
           </div>
         </section>
       </div>
+
+      {/* Realtime voice-pipeline diagnostics — reads the existing Live Logs SSE
+          stream to show exactly where a call breaks. Observability only. */}
+      <VoicePipelineDiagnostics />
     </div>
   );
 }

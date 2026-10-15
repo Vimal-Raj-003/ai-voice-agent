@@ -39,3 +39,27 @@ voice-service/google_creds.json
 # Dashboard
 dashboard/.next/
 dashboard/.turbo/
+
+# Env BACKUPS. .env itself was already ignored, but timestamped copies made
+# before edits (.env.bak-crlf-…, .env.bak-prebyok-…) were NOT, and they hold the
+# same live DATABASE_URL / LIVEKIT_API_SECRET / provider keys /
+# CREDENTIAL_ENCRYPTION_KEY as the original.
+.env.bak*
+.env.*.bak
+*.env.bak*
+
+# Source/config backups left beside the file they shadow.
+*.bak
+*.bak-*
+*.orig
+
+# Generated artifacts: call recordings (REAL customer audio — PII), audio/
+# knowledge fixtures, diagnostic dumps. ~53MB, none of it source.
+output/
+
+# Browser-automation debug snapshots from local debugging sessions.
+.playwright-cli/
+
+# Local scratch files
+dashboard/_tok.txt
+dashboard/_mint.mjs

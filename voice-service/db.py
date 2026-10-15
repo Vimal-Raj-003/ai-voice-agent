@@ -6,42 +6,114 @@ import asyncio
 import hashlib
 import json
 import os
+import threading
 import uuid
+import weakref
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
 
-# ── Pool lifecycle ────────────────────────────────────────────────────────────
+import config
+import provider_registry
 
-_pool: asyncpg.Pool | None = None
-_pool_lock = asyncio.Lock()
+# ── Pool lifecycle ────────────────────────────────────────────────────────────
+#
+# An asyncpg pool is bound to the event loop that created it. The LiveKit worker
+# runs each job on its OWN event loop (often its own thread) inside a single
+# process, and several jobs can be live at once. A single shared pool therefore
+# handed connections created on loop A to coroutines running on loop B, raising
+# "got Future attached to a different loop" / "another operation is in progress".
+#
+# Fix: keep one pool PER event loop in a registry. Each loop creates its pool
+# once and never touches another loop's pool. A WeakKeyDictionary lets a loop's
+# pool entry disappear automatically once that loop is gone, so finished jobs do
+# not leak pools. `_pool` is retained as an explicit override the test-suite
+# injects (db._pool = <mock/real>); when set it wins, preserving existing tests.
+
+_pool: asyncpg.Pool | None = None  # legacy/test override; None in production
+_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncpg.Pool]" = (
+    weakref.WeakKeyDictionary()
+)
+_pool_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+# Guards only the tiny registry get-or-create bookkeeping across job threads —
+# held for microseconds, never around create_pool() or a query, so it does NOT
+# serialize concurrent database calls.
+_registry_lock = threading.Lock()
+
+
+def _loop_lock(loop: asyncio.AbstractEventLoop) -> asyncio.Lock:
+    """Get-or-create this loop's pool-creation lock (thread-safe registry access)."""
+    with _registry_lock:
+        lock = _pool_locks.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _pool_locks[loop] = lock
+        return lock
 
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        async with _pool_lock:
-            if _pool is None:
-                dsn = os.environ.get("DATABASE_URL")
-                if not dsn:
-                    raise RuntimeError("DATABASE_URL environment variable is not set")
-                _pool = await asyncpg.create_pool(
-                    dsn=dsn,
-                    min_size=2,
-                    max_size=10,
-                    command_timeout=30,
-                    statement_cache_size=0,  # Neon pgbouncer doesn't support prepared statements
-                )
-    return _pool
+    """Return the asyncpg pool for the CURRENT running loop, creating it once.
+
+    Pools are keyed per loop so concurrent LiveKit jobs never share a pool or
+    hand a connection from one loop to another. An explicitly injected module
+    `_pool` (used by the test-suite) takes precedence when present.
+    """
+    # Explicit override (tests inject a mock/real pool via db._pool).
+    if _pool is not None:
+        return _pool
+
+    loop = asyncio.get_running_loop()
+    with _registry_lock:
+        pool = _pools.get(loop)
+    if pool is not None:
+        return pool
+
+    # Create under this loop's lock (double-checked to avoid a race between two
+    # coroutines on the SAME loop calling get_pool concurrently).
+    async with _loop_lock(loop):
+        with _registry_lock:
+            pool = _pools.get(loop)
+        if pool is None:
+            dsn = os.environ.get("DATABASE_URL")
+            if not dsn:
+                raise RuntimeError("DATABASE_URL environment variable is not set")
+            pool = await asyncpg.create_pool(
+                dsn=dsn,
+                min_size=2,
+                max_size=10,
+                command_timeout=30,
+                statement_cache_size=0,  # Neon pgbouncer doesn't support prepared statements
+            )
+            with _registry_lock:
+                _pools[loop] = pool
+        return pool
 
 
 async def close_pool() -> None:
+    """Close the pool belonging to the CURRENT loop (and the legacy/test override
+    if set). Only ever closes a pool on the loop that owns it — never another
+    active job's pool."""
     global _pool
     if _pool is not None:
-        await _pool.close()
+        try:
+            await _pool.close()
+        except Exception:
+            pass
         _pool = None
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    with _registry_lock:
+        pool = _pools.pop(loop, None)
+        _pool_locks.pop(loop, None)
+    if isinstance(pool, asyncpg.Pool):
+        await pool.close()
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -61,6 +133,7 @@ KNOWN_SETTING_KEYS = [
     "DEEPGRAM_API_KEY", "SARVAM_API_KEY", "ELEVENLABS_API_KEY", "CARTESIA_API_KEY",
     "VOBIZ_SIP_DOMAIN", "VOBIZ_USERNAME", "VOBIZ_PASSWORD", "VOBIZ_OUTBOUND_NUMBER",
     "OUTBOUND_TRUNK_ID", "INBOUND_TRUNK_ID", "DEFAULT_TRANSFER_NUMBER",
+    "RECORDING_BACKEND", "RECORDINGS_DIR",
     "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET", "R2_ENDPOINT",
     "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "TWILIO_WHATSAPP_NUMBER",
@@ -178,11 +251,58 @@ async def clear_errors() -> None:
     await pool.execute("DELETE FROM error_logs")
 
 
+async def log_events_batch(rows: list[dict]) -> None:
+    """Batch-insert Live Logs rows produced by the observability bridge.
+
+    Best-effort: swallows all errors so a logging/DB hiccup can never surface
+    into — or add latency to — a live call. Each row is {id, source, level,
+    message, detail, timestamp} already normalized by observability.py."""
+    if not rows:
+        return
+    try:
+        pool = await get_pool()
+        await pool.executemany(
+            """INSERT INTO error_logs (id, source, level, message, detail, timestamp)
+               VALUES ($1, $2, $3::"ErrorLevel", $4, $5, $6)""",
+            [
+                (
+                    r["id"], r["source"], r["level"],
+                    (r.get("message") or "")[:500],
+                    (r.get("detail") or None),
+                    r["timestamp"],
+                )
+                for r in rows
+            ],
+        )
+    except Exception:
+        pass  # never let logging break the caller
+
+
 # ── Appointments ──────────────────────────────────────────────────────────────
 
-async def insert_appointment(name: str, phone: str, date: str, time: str, service: str) -> str:
+async def insert_appointment(
+    name: str,
+    phone: str,
+    date: str,
+    time: str,
+    service: str,
+    calcom_uid: str | None = None,
+    email: str | None = None,
+    notes: str | None = None,
+    reminder_at: datetime | None = None,
+    reminder_channel: str = "whatsapp",
+) -> str:
     """Book an appointment; ensures a contacts row exists first since
-    appointments.phone_number FK-references contacts.phone_number."""
+    appointments.phone_number FK-references contacts.phone_number.
+
+    `calcom_uid` persists the external Cal.com booking id so the two systems
+    stay linked (used for cancellation sync). Pass None for local-only bookings.
+
+    When `reminder_at` is a future timestamp a PENDING reminder row is created
+    in the SAME transaction (atomic with the booking), so a persistent poller
+    can send the customer a reminder before the appointment. Exactly one
+    reminder row is created per appointment.
+    """
     booking_id = str(uuid.uuid4())[:8].upper()
     full_id    = str(uuid.uuid4())
     pool = await get_pool()
@@ -200,11 +320,93 @@ async def insert_appointment(name: str, phone: str, date: str, time: str, servic
                 str(uuid.uuid4()), phone, name,
             )
             await conn.execute(
-                """INSERT INTO appointments (id, booking_id, name, phone_number, date, time, service, status, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, 'BOOKED'::"AppointmentStatus", now())""",
-                full_id, booking_id, name, phone, date, time, service,
+                """INSERT INTO appointments
+                       (id, booking_id, name, phone_number, email, date, time, service,
+                        status, calcom_booking_uid, notes, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                        'BOOKED'::"AppointmentStatus", $9, $10, now())""",
+                full_id, booking_id, name, phone, email, date, time, service,
+                calcom_uid, notes,
             )
+            if reminder_at is not None and reminder_at > datetime.now(UTC):
+                await conn.execute(
+                    """INSERT INTO appointment_reminders
+                           (id, appointment_id, customer_phone, reminder_at, channel,
+                            status, retry_count, created_at)
+                       VALUES ($1, $2, $3, $4, $5, 'PENDING'::"ReminderStatus", 0, now())""",
+                    str(uuid.uuid4()), full_id, phone, reminder_at, reminder_channel,
+                )
     return booking_id
+
+
+async def cancel_appointment_by_calcom_uid(calcom_uid: str) -> bool:
+    """Mark the local appointment linked to a Cal.com booking as CANCELLED and
+    cancel any PENDING reminder for it, so a cancelled appointment never fires a
+    reminder. Both updates run in one transaction."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """UPDATE appointments SET status = 'CANCELLED'::"AppointmentStatus"
+                   WHERE calcom_booking_uid = $1 AND status = 'BOOKED'::"AppointmentStatus"
+                   RETURNING id""",
+                calcom_uid,
+            )
+            if row is None:
+                return False
+            await conn.execute(
+                """UPDATE appointment_reminders SET status = 'CANCELLED'::"ReminderStatus"
+                   WHERE appointment_id = $1 AND status = 'PENDING'::"ReminderStatus" """,
+                row["id"],
+            )
+    return True
+
+
+# ── Appointment reminders ───────────────────────────────────────────────────
+
+async def due_reminders(limit: int = 50) -> list[dict]:
+    """PENDING reminders whose time has arrived, whose appointment is still
+    BOOKED. Returns the data needed to send and mark the reminder."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT r.id AS reminder_id, r.customer_phone, r.channel, r.retry_count,
+                  a.name, a.date, a.time, a.service
+             FROM appointment_reminders r
+             JOIN appointments a ON a.id = r.appointment_id
+            WHERE r.status = 'PENDING'::"ReminderStatus"
+              AND r.reminder_at <= now()
+              AND a.status = 'BOOKED'::"AppointmentStatus"
+            ORDER BY r.reminder_at ASC
+            LIMIT $1""",
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def mark_reminder_sent(reminder_id: str) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        """UPDATE appointment_reminders
+              SET status = 'SENT'::"ReminderStatus", sent_at = now()
+            WHERE id = $1""",
+        reminder_id,
+    )
+
+
+async def mark_reminder_failed(reminder_id: str, error: str, max_retries: int) -> None:
+    """Increment retry_count; keep PENDING for another attempt until the retry
+    ceiling is hit, then mark FAILED. Error text is truncated and safe to store."""
+    pool = await get_pool()
+    await pool.execute(
+        """UPDATE appointment_reminders
+              SET retry_count = retry_count + 1,
+                  last_error = $2,
+                  status = CASE WHEN retry_count + 1 >= $3
+                                THEN 'FAILED'::"ReminderStatus"
+                                ELSE 'PENDING'::"ReminderStatus" END
+            WHERE id = $1""",
+        reminder_id, (error or "")[:300], max_retries,
+    )
 
 
 async def check_slot(date: str, time: str) -> bool:
@@ -215,6 +417,23 @@ async def check_slot(date: str, time: str) -> bool:
         date, time,
     )
     return existing is None
+
+
+async def find_booked_appointment(
+    phone: str, date: str, time: str, service: str
+) -> str | None:
+    """Cross-call duplicate guard: return the booking_id of an existing BOOKED
+    appointment for the same customer phone + date + time + service, or None.
+    Unlike the per-call in-memory dedup, this catches a repeat booking across
+    separate calls / worker restarts so the tool firing twice can't create two
+    identical rows."""
+    pool = await get_pool()
+    return await pool.fetchval(
+        """SELECT booking_id FROM appointments
+           WHERE phone_number = $1 AND date = $2 AND time = $3 AND service = $4
+             AND status = 'BOOKED'::"AppointmentStatus" LIMIT 1""",
+        phone, date, time, service,
+    )
 
 
 async def get_next_available(date: str, time: str) -> str:
@@ -267,6 +486,7 @@ async def create_call_row(
     direction: str = "OUTBOUND",
     livekit_room_name: str | None = None,
     from_number: str | None = None,
+    assistant_id: str | None = None,
 ) -> str:
     """Insert a placeholder call row at session start so transcript_messages can FK against it.
 
@@ -281,12 +501,13 @@ async def create_call_row(
     await pool.execute(
         """INSERT INTO calls (
                 id, "organizationId", "fromNumber", "toNumber", direction, status,
-                "livekitRoomName", "createdAt", "updatedAt"
+                "livekitRoomName", "assistantId", "createdAt", "updatedAt"
            ) VALUES (
                 $1, $2, $3, $4, $5::"CallDirection", 'IN_PROGRESS'::"CallStatus",
-                $6, now(), now()
+                $6, $7, now(), now()
            )""",
         call_id, org_id, from_num, phone_number, direction.upper(), livekit_room_name,
+        assistant_id,
     )
     return call_id
 
@@ -547,6 +768,87 @@ async def get_active_calls() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def set_recording_status(
+    room: str,
+    status: str | None = None,
+    egress_id: str | None = None,
+    object_key: str | None = None,
+    duration_seconds: int | None = None,
+    error: str | None = None,
+    url: str | None = None,
+) -> None:
+    """Update the recording fields on the call row matched by LiveKit room name.
+
+    Only non-None arguments are written, so a later partial update (e.g. the
+    egress_ended webhook setting duration + status) never clobbers the object
+    key stored at egress start. No secrets are stored — only the object key,
+    egress id, status, duration and a safe error string.
+    """
+    sets: list[str] = []
+    args: list[object] = []
+    def add(col: str, val: object) -> None:
+        args.append(val)
+        sets.append(f'"{col}" = ${len(args)}')
+    if status is not None: add("recordingStatus", status)
+    if egress_id is not None: add("recordingEgressId", egress_id)
+    if object_key is not None: add("recordingObjectKey", object_key)
+    if duration_seconds is not None: add("recordingDurationSeconds", duration_seconds)
+    if error is not None: add("recordingError", error)
+    if url is not None: add("recordingUrl", url)
+    if not sets:
+        return
+    args.append(room)
+    pool = await get_pool()
+    await pool.execute(
+        f'UPDATE calls SET {", ".join(sets)}, "updatedAt" = now() WHERE "livekitRoomName" = ${len(args)}',
+        *args,
+    )
+
+
+async def set_sip_call_identity(
+    room: str,
+    sip_call_id: str | None = None,
+    provider_call_id: str | None = None,
+) -> None:
+    """Persist the telephony-provider identifiers for the call in ``room``.
+
+    ``sip_call_id`` is LiveKit's ``sip.callIDFull`` — the trunk provider's SIP
+    Call-ID. It is the deterministic join key used after the call to find the
+    Vobiz recording (``GET /cdr?sip_call_id=…`` → ``uuid`` → the recording), so
+    it has to be captured WHILE the call is up: it is not recoverable later, and
+    without it a call can only be matched by number + timestamp.
+
+    Writes are best-effort and only ever touch these two columns, so this can
+    never interfere with the recording columns or the live call. ``sipCallId``
+    is UNIQUE, so a repeat value is swallowed rather than raised.
+    """
+    sets: list[str] = []
+    args: list[object] = []
+    def add(col: str, val: object) -> None:
+        args.append(val)
+        # COALESCE => first write wins. The same id can be offered more than
+        # once (the post-answer sweep and the attributes-changed handler both
+        # report it), so this makes repeat calls genuinely idempotent instead of
+        # rewriting a column that is already correct.
+        sets.append(f'"{col}" = COALESCE("{col}", ${len(args)})')
+    if sip_call_id: add("sipCallId", sip_call_id)
+    if provider_call_id: add("providerCallId", provider_call_id)
+    if not sets:
+        return
+    args.append(room)
+    pool = await get_pool()
+    try:
+        await pool.execute(
+            f'UPDATE calls SET {", ".join(sets)}, "updatedAt" = now() '
+            f'WHERE "livekitRoomName" = ${len(args)}',
+            *args,
+        )
+    except Exception:
+        # A unique violation on a retried/duplicated SIP id must not surface:
+        # the identifiers are post-call bookkeeping, the call itself is live.
+        pass  # never let logging break the caller
+
+
 # ── Real-time transcript ──────────────────────────────────────────────────────
 
 async def insert_transcript_message(
@@ -622,6 +924,100 @@ async def get_phone_number_routing(dialed_number: str) -> dict | None:
     return dict(row) if row else None
 
 
+async def get_provider_credentials(org_id: str) -> list[dict]:
+    """Ciphertext rows for one organisation's BYOK provider credentials.
+
+    Returns ciphertext only — decryption belongs to provider_credentials.py, so
+    this layer never holds a plaintext key. Ordered by provider for stable logs.
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        '''SELECT provider, ciphertext
+             FROM provider_credentials
+            WHERE organization_id = $1
+            ORDER BY provider''',
+        org_id,
+    )
+    return [dict(r) for r in rows]
+
+
+async def record_credential_check(org_id: str, provider: str, status: str,
+                                  error: str | None = None) -> None:
+    """Store the outcome of a REAL vendor validation call.
+
+    Kept separate from the dashboard's own write path so the worker can also
+    mark a credential bad when a live call gets a 401 from the vendor.
+    """
+    pool = await get_pool()
+    await pool.execute(
+        '''UPDATE provider_credentials
+              SET last_status = $3, last_error = $4, last_checked_at = NOW()
+            WHERE organization_id = $1 AND provider = $2''',
+        org_id, provider.lower(), status, (error or None),
+    )
+
+
+# ── Human call forwarding ─────────────────────────────────────────────────────
+# The four supported categories. The LLM only ever selects one of these names;
+# it never sees or supplies a phone number.
+HUMAN_TRANSFER_CATEGORIES = ("software", "marketing", "content", "other")
+HUMAN_TRANSFER_LABELS = {
+    "software": "Software",
+    "marketing": "Marketing",
+    "content": "Content",
+    "other": "Other / General",
+}
+
+
+async def get_human_transfer_targets(assistant_id: str) -> dict[str, dict]:
+    """Forwarding destinations for one assistant, keyed by category.
+
+    Returns only ENABLED rows that actually have a number, because a row with
+    neither is indistinguishable from "not configured" at call time. Ordered by
+    priority so the caller-facing resolution is deterministic.
+    """
+    if not assistant_id:
+        return {}
+    pool = await get_pool()
+    rows = await pool.fetch(
+        '''SELECT category, label, phone_e164, enabled, priority
+             FROM human_transfer_targets
+            WHERE assistant_id = $1
+            ORDER BY priority ASC, category ASC''',
+        assistant_id,
+    )
+    out: dict[str, dict] = {}
+    for r in rows:
+        cat = (r["category"] or "").strip().lower()
+        if cat not in HUMAN_TRANSFER_CATEGORIES:
+            continue
+        if not r["enabled"] or not (r["phone_e164"] or "").strip():
+            continue
+        out[cat] = {
+            "category": cat,
+            "label": (r["label"] or HUMAN_TRANSFER_LABELS.get(cat, cat)).strip(),
+            "phone": r["phone_e164"].strip(),
+            "priority": int(r["priority"] or 100),
+        }
+    return out
+
+
+def _resolve_tts_provider(stored: str | None) -> str:
+    """Map the stored TtsProvider value onto a registry provider id.
+
+    Returns the operator's choice whenever the registry has a TTS row for it.
+    Only an empty value, or a name the registry has never heard of, falls back
+    to the platform default — and that is a genuine "nothing was chosen", not a
+    substitution of one working provider for another.
+    """
+    name = (stored or "").strip().lower()
+    if not name:
+        return config.DEFAULT_TTS_PROVIDER
+    if provider_registry.get(name, "TTS") is not None:
+        return name
+    return config.DEFAULT_TTS_PROVIDER
+
+
 async def get_assistant_as_profile(assistant_id: str) -> dict | None:
     """Load an Assistant row and shape it as the profile dict the agent expects.
 
@@ -630,9 +1026,9 @@ async def get_assistant_as_profile(assistant_id: str) -> dict | None:
     """
     pool = await get_pool()
     row = await pool.fetchrow(
-        '''SELECT id, name,
+        '''SELECT id, name, "organizationId",
                   "systemPrompt", "firstMessage", "endCallMessage",
-                  "llmProvider", "llmModel", temperature, "maxTokens",
+                  "llmProvider", "llmModel", "llm_fallback_model", temperature, "maxTokens",
                   "sttProvider", "sttModel", "sttLanguage",
                   "ttsProvider", "ttsModel", "voiceId",
                   "silenceTimeoutSeconds", "maxDurationSeconds",
@@ -653,17 +1049,28 @@ async def get_assistant_as_profile(assistant_id: str) -> dict | None:
     return {
         "id": r["id"],
         "name": r["name"],
+        # Whose BYOK provider credentials apply to this call.
+        "organization_id": r["organizationId"],
         "system_prompt": r["systemPrompt"],
         "first_message": r["firstMessage"],
         "end_call_message": r["endCallMessage"],
         "llm_provider": (r["llmProvider"] or "OPENAI").lower(),
         "model": r["llmModel"],
+        # Operator-chosen fallback model. None = use the provider's default.
+        "fallback_model": r["llm_fallback_model"],
         "temperature": float(r["temperature"]) if r["temperature"] is not None else 0.7,
         "max_tokens": r["maxTokens"],
         "stt_provider": (r["sttProvider"] or "DEEPGRAM").lower(),
         "stt_model": r["sttModel"],
         "stt_language": r["sttLanguage"],
-        "tts_provider": (r["ttsProvider"] or "DEEPGRAM").lower(),
+        # Honour whatever the operator chose, as long as the registry knows it.
+        # This used to be a four-name whitelist that rewrote everything else to
+        # the platform default — a silent substitution that made Deepgram,
+        # Gemini, Rumik and Murf unselectable no matter what the UI showed.
+        # Validity is now the registry's call; whether the provider can actually
+        # carry a call (adapter + credential) is decided in agent.py, which logs
+        # and explains any fallback instead of hiding it here.
+        "tts_provider": _resolve_tts_provider(r["ttsProvider"]),
         "tts_model": r["ttsModel"],
         "voice": r["voiceId"],
         "silence_timeout_seconds": r["silenceTimeoutSeconds"],
@@ -682,6 +1089,10 @@ async def get_assistant_as_profile(assistant_id: str) -> dict | None:
         "recording_consent_message": r["recordingConsentMessage"],
         "redaction_enabled": bool(r["redactionEnabled"]),
         "enabled_tools": "[]",  # populated by get_assistant_tools later
+        # Marks that this profile's `id` is a real assistants.id (valid FK for
+        # calls.assistantId). agent_profiles/default profiles omit this so the
+        # call row's assistantId stays NULL rather than violating the FK.
+        "_profile_source": "assistant",
     }
 
 

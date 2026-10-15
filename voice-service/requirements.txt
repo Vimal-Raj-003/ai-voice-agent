@@ -1,60 +1,64 @@
-# LiveKit
-livekit-agents>=1.4,<2.0
-livekit-api>=1.1,<2.0
-livekit-protocol>=1.1,<2.0
-livekit-plugins-google>=1.4,<2.0
-livekit-plugins-openai>=1.4,<2.0
-livekit-plugins-deepgram>=1.4,<2.0
-livekit-plugins-cartesia>=1.4,<2.0
-livekit-plugins-elevenlabs>=1.4,<2.0
-livekit-plugins-sarvam>=1.4,<2.0
-livekit-plugins-silero>=1.4,<2.0
-livekit-plugins-noise-cancellation>=0.2,<1.0
+# JillJill Voice — curated runtime requirements for the voice-service
+# (FastAPI dispatch API in server.py + LiveKit Agents worker in agent.py).
+#
+# Pins match the known-working WSL venv (~/venvs/jilljill-voice, Ubuntu 26.04,
+# Python 3.14, LiveKit Agents 1.8.4). For an EXACT reproducible environment use
+# requirements.lock.txt (full `pip freeze` snapshot); this file is the curated
+# top-level set the application actually imports. Transitive deps (livekit,
+# livekit-protocol, google-*, numpy, protobuf, starlette, anyio, …) are resolved
+# from these and pinned precisely in requirements.lock.txt.
+#
+# IMPORTANT: PyAV (av) needs native FFmpeg libs and is blocked by Windows Smart
+# App Control — install and run this ONLY inside WSL/Linux, never native Windows.
 
-# Web framework
-fastapi>=0.110,<1.0
-uvicorn[standard]>=0.29,<1.0
-python-multipart>=0.0.9,<1.0
-sse-starlette>=2.0,<3.0
-slowapi>=0.1.9,<1.0
+# ── Realtime voice stack (LiveKit Agents 1.8.4) ──────────────────────────────
+livekit-agents==1.8.4
+livekit-api==1.2.1
+av==19.0.1                      # PyAV — audio codecs (WSL/Linux only)
 
-# Database
-asyncpg>=0.29,<1.0
+# LiveKit plugins actually imported by agent.py
+livekit-plugins-silero==1.8.4               # VAD / turn detection helpers
+livekit-plugins-deepgram==1.8.4             # STT (primary realtime path)
+livekit-plugins-openai==1.8.4               # Groq (OpenAI-compatible) + OpenAI LLM/TTS
+livekit-plugins-sarvam==1.8.4               # TTS (default) + Indic STT fallback
+livekit-plugins-google==1.8.4               # Gemini realtime / Google TTS fallback
+livekit-plugins-elevenlabs==1.8.4           # optional TTS provider
+livekit-plugins-cartesia==1.8.4             # optional TTS provider
+livekit-plugins-noise-cancellation==0.3.2   # BVCTelephony (opt-in)
 
-# Scheduler
-APScheduler>=3.10,<4.0
+# ── FastAPI dispatch API (server.py) ─────────────────────────────────────────
+fastapi==0.142.2
+uvicorn==0.54.0
+sse-starlette==2.4.1            # Live Logs SSE stream
+slowapi==0.1.10                # per-endpoint rate limiting
+prometheus-client==0.26.0      # /metrics
+APScheduler==3.11.3            # campaign scheduler + reminder/webhook pollers
+pydantic==2.13.5
 
-# AI providers
-google-generativeai>=0.8,<1.0
-openai>=1.40,<3.0
-anthropic>=0.34,<1.0
+# ── Database ─────────────────────────────────────────────────────────────────
+asyncpg==0.31.0                # Postgres (Supabase) async pool
 
-# HTTP / utilities
-httpx>=0.27,<1.0
-python-dotenv>=1.0,<2.0
-certifi>=2024.0
-pytz>=2024.1
-tiktoken>=0.7
-jsonschema>=4.0,<5.0  # validates custom HTTP tool args before each invocation
+# ── HTTP / integrations ──────────────────────────────────────────────────────
+httpx==0.28.1                  # Cal.com, provider rates, custom HTTP tools, notify
+requests==2.34.2               # Twilio/webhook sync calls, calendar_tools
 
-# Calendar
-google-api-python-client>=2.100,<3.0
-google-auth>=2.30,<3.0
-google-auth-httplib2>=0.2,<1.0
+# ── Core utilities ───────────────────────────────────────────────────────────
+python-dotenv==1.2.4           # loads voice-service/.env
+pytz==2026.5                   # IST time context for prompts/booking
+structlog==25.5.0              # structured logs → Live Logs bridge
+sentry-sdk==2.71.0             # error reporting (no-op without SENTRY_DSN)
+certifi==2026.7.22             # TLS CA bundle (LiveKit/SIP)
 
-# Notifications
-twilio>=8.0,<10.0
-
-# Storage (Cloudflare R2 via boto3)
-boto3>=1.34,<2.0
-
-# Observability
-sentry-sdk[fastapi]>=2.0,<3.0
-prometheus-client>=0.20,<1.0
-structlog>=24.0,<26.0
-
-# Testing
-pytest>=8.0,<9.0
-pytest-asyncio>=0.23,<1.0
-pytest-mock>=3.12,<4.0
-respx>=0.21,<1.0
+# ── Knowledge base (URL + file ingestion, retrieval) ─────────────────────────
+# These were previously installed ad-hoc into one venv only, which left the
+# other unable to embed: knowledge.search() then swallowed the ImportError and
+# returned no results, so a live call silently had no knowledge at all.
+fastembed
+beautifulsoup4
+PyMuPDF
+python-docx
+openpyxl
+rapidocr-onnxruntime
+# Playwright is needed for JavaScript (SPA) sites; the browser itself is
+# installed separately with `playwright install chromium`.
+playwright

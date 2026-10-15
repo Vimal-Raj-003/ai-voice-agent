@@ -55,12 +55,32 @@ async function main() {
   });
   console.log("Seeded default org:", org.id);
 
+  // Seed a `users` row for the env-based admin login (ADMIN_EMAIL/ADMIN_PASSWORD_HASH).
+  // Without this, `authorize()` in lib/auth.ts succeeds (it only checks env vars)
+  // but every server action calling `requireRole()` throws UNAUTHENTICATED,
+  // because it looks the session email up in this table and finds nothing.
+  const adminEmail = (process.env.ADMIN_EMAIL || "admin@example.com").toLowerCase();
+  await prisma.user.upsert({
+    where: { email: adminEmail },
+    update: { role: "OWNER", isActive: true, organizationId: org.id },
+    create: {
+      email: adminEmail,
+      name: "Admin",
+      organizationId: org.id,
+      role: "OWNER",
+      isActive: true,
+    },
+  });
+  console.log("✓ Seeded admin user row:", adminEmail);
+
   const existing = await prisma.agentProfile.findFirst({ where: { isDefault: true } });
   if (!existing) {
     await prisma.agentProfile.create({
       data: {
         name: "Priya — Default Booker",
-        voice: "Aoede",
+        // Sarvam bulbul:v3 speaker (the pipeline TTS). "Aoede" is a Gemini
+        // realtime voice and is not a valid Sarvam speaker.
+        voice: "kavya",
         model: "gemini-3.1-flash-live-preview",
         systemPrompt: null,
         enabledTools: JSON.stringify([

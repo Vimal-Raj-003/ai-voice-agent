@@ -29,17 +29,17 @@ export default function CallsTimeline({ data }: { data: Point[] }) {
             <stop offset="95%" stopColor="#34d399" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
         <XAxis
           dataKey="date"
-          stroke="rgba(255,255,255,0.4)"
+          stroke="var(--text-muted)"
           fontSize={10}
           tickLine={false}
           axisLine={false}
           tickFormatter={(d: string) => d.slice(5)}
         />
         <YAxis
-          stroke="rgba(255,255,255,0.4)"
+          stroke="var(--text-muted)"
           fontSize={10}
           tickLine={false}
           axisLine={false}
@@ -53,8 +53,8 @@ export default function CallsTimeline({ data }: { data: Point[] }) {
             backdropFilter: "blur(8px)",
             fontSize: 12,
           }}
-          labelStyle={{ color: "#a78bfa", fontWeight: 600 }}
-          itemStyle={{ color: "#f0f4ff" }}
+          labelStyle={{ color: "var(--text-primary)", fontWeight: 600 }}
+          itemStyle={{ color: "var(--text-primary)" }}
         />
         <Area
           type="monotone"

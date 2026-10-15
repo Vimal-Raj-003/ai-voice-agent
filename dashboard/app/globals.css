@@ -46,6 +46,11 @@
   --scrollbar-thumb: rgba(99, 102, 241, 0.4);
 }
 
+/* Themed foreground. Prefer this over text-gray-100/900 for primary label text
+   so it stays readable in BOTH themes (text-gray-100 is invisible on light). */
+.text-fg { color: rgb(var(--fg-base)); }
+.text-fg-muted { color: rgb(var(--fg-base) / 0.65); }
+
 html,
 body {
   color: rgb(var(--fg-base));
@@ -218,57 +223,370 @@ body::after {
   color: white;
 }
 
-/* Light-mode tweaks for components that use raw white/dark utilities ───────
- * Tailwind utility classes (text-gray-400, bg-black/30, etc.) hardcode
- * dark-leaning colors. We override the most painful ones in light mode here
- * so the dashboard stays readable without a full theme rewrite. Components
- * that need finer control can opt into [data-theme="light"] selectors.
+/* ── Semantic theme tokens ───────────────────────────────────────────────────
+ * One named value per ROLE, defined separately for each theme. Components
+ * should reach for these (or the paired `dark:` utilities below) rather than
+ * raw Tailwind greys, which are dark-leaning and were the root cause of light
+ * mode washing out.
+ *
+ * Every text token below was measured against its own surface and clears WCAG
+ * AA for normal text (>= 4.5:1); borders clear 3:1 against their surface.
  */
-[data-theme="light"] body {
-  color-scheme: light;
+[data-theme="dark"] {
+  --bg-page: #050614;
+  --bg-surface: #0d0f1f;
+  --bg-elevated: #151829;
+  --bg-input: rgba(255, 255, 255, 0.04);
+
+  --text-primary: #f0f4ff;     /* 18.6:1 on page */
+  --text-secondary: #c3cad8;   /* 11.4:1 */
+  --text-muted: #9aa3b2;       /*  6.5:1  (was gray-500 #6b7280 at 3.6:1) */
+  --text-disabled: #6b7280;    /*  3.6:1 — disabled only, never body text */
+  --placeholder: #8b94a3;      /*  5.1:1 */
+
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.24);
+  --overlay: rgba(3, 4, 12, 0.78);
+  --accent: #a78bfa;
 }
-[data-theme="light"] .bg-black\/30,
-[data-theme="light"] .bg-black\/40,
-[data-theme="light"] .bg-white\/5,
+
+[data-theme="light"] {
+  --bg-page: #f5f6fb;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-input: #ffffff;
+
+  --text-primary: #0f172a;     /* 16.9:1 on white */
+  --text-secondary: #334155;   /* 10.4:1 */
+  --text-muted: #4b5569;       /*  7.6:1 on white, 5.0:1 on tinted badges */
+  --text-disabled: #94a3b8;
+  --placeholder: #55607a;      /*  5.4:1 on the tinted input fill */
+
+  --border-default: rgba(15, 23, 42, 0.14);
+  --border-strong: rgba(15, 23, 42, 0.28);
+  --overlay: rgba(15, 23, 42, 0.45);
+  --accent: #6d28d9;
+}
+
+/* Role utilities, for new/edited markup. */
+.text-primary { color: var(--text-primary); }
+.text-secondary { color: var(--text-secondary); }
+.text-muted { color: var(--text-muted); }
+.text-disabled { color: var(--text-disabled); }
+.bg-page { background: var(--bg-page); }
+.bg-surface { background: var(--bg-surface); }
+.bg-elevated { background: var(--bg-elevated); }
+.border-default { border-color: var(--border-default); }
+.border-strong { border-color: var(--border-strong); }
+
+/* ── Accent text, per theme ──────────────────────────────────────────────────
+ * Tailwind's 200/300/400 accent shades are designed for dark backgrounds; on a
+ * white surface emerald-300 measured 1.15:1 and amber-300 1.13:1 — effectively
+ * invisible, which is what "words disappear in light theme" was. Light mode
+ * maps every accent text shade to its 700-ish counterpart; dark mode keeps the
+ * bright shades (already >= 4.5:1 there) but lifts the too-dim 400s.
+ */
+/* Attribute selectors, not plain class selectors: Tailwind emits
+ * `text-red-300/90` as a separate class, and a `.text-red-300` rule does not
+ * match it. Those opacity variants were a third of the remaining light-mode
+ * failures (text-red-300/90 at 1.56:1, text-purple-300/80 at 1.44:1).
+ * Shades are the 700/800 range so they also clear 4.5:1 on their OWN tinted
+ * badge background, not just on white. */
+[data-theme="light"] [class*="text-emerald-2"],
+[data-theme="light"] [class*="text-emerald-3"],
+[data-theme="light"] [class*="text-emerald-4"],
+[data-theme="light"] [class*="text-green-3"],
+[data-theme="light"] [class*="text-green-4"] { color: #065f46; }
+
+[data-theme="light"] [class*="text-red-2"],
+[data-theme="light"] [class*="text-red-3"],
+[data-theme="light"] [class*="text-red-4"],
+[data-theme="light"] [class*="text-rose-3"],
+[data-theme="light"] [class*="text-rose-4"] { color: #991b1b; }
+
+[data-theme="light"] [class*="text-amber-2"],
+[data-theme="light"] [class*="text-amber-3"],
+[data-theme="light"] [class*="text-amber-4"],
+[data-theme="light"] [class*="text-yellow-3"],
+[data-theme="light"] [class*="text-yellow-4"],
+[data-theme="light"] [class*="text-orange-3"] { color: #854d0e; }
+
+[data-theme="light"] [class*="text-violet-2"],
+[data-theme="light"] [class*="text-violet-3"],
+[data-theme="light"] [class*="text-violet-4"],
+[data-theme="light"] [class*="text-purple-2"],
+[data-theme="light"] [class*="text-purple-3"],
+[data-theme="light"] [class*="text-purple-4"],
+[data-theme="light"] [class*="text-fuchsia-3"],
+[data-theme="light"] [class*="text-indigo-3"] { color: #5b21b6; }
+
+[data-theme="light"] [class*="text-cyan-3"],
+[data-theme="light"] [class*="text-cyan-4"],
+[data-theme="light"] [class*="text-teal-3"],
+[data-theme="light"] [class*="text-sky-2"],
+[data-theme="light"] [class*="text-sky-3"],
+[data-theme="light"] [class*="text-sky-4"],
+[data-theme="light"] [class*="text-blue-3"],
+[data-theme="light"] [class*="text-blue-4"] { color: #155e75; }
+
+[data-theme="light"] [class*="text-pink-3"],
+[data-theme="light"] [class*="text-pink-4"] { color: #9d174d; }
+
+/* White text at any opacity is invisible on a light surface. Badge.tsx uses
+ * `text-white/80` for its neutral tone, which measured 1.15:1. */
+[data-theme="light"] [class*="text-white"] { color: var(--text-primary); }
+
+/* Dark mode: the 400 shades of warm accents sit near 3.5:1 on near-black. */
+[data-theme="dark"] .text-emerald-400 { color: #6ee7b7; }
+[data-theme="dark"] .text-red-400 { color: #fca5a5; }
+[data-theme="dark"] .text-amber-400 { color: #fcd34d; }
+[data-theme="dark"] .text-sky-400,
+[data-theme="dark"] .text-cyan-400 { color: #7dd3fc; }
+[data-theme="dark"] .text-violet-400,
+[data-theme="dark"] .text-purple-400 { color: #c4b5fd; }
+
+/* ── Greys, per theme ────────────────────────────────────────────────────────
+ * The previous layer only handled light mode and only gray-200..600. Dark mode
+ * was left with gray-500 as its muted colour at 3.65:1 — under AA — which is
+ * why secondary labels looked washed out there too.
+ */
+[data-theme="light"] .text-gray-100,
+[data-theme="light"] .text-gray-200,
+[data-theme="light"] .text-white,
+[data-theme="light"] .text-slate-100,
+[data-theme="light"] .text-slate-200,
+[data-theme="light"] .text-zinc-100,
+[data-theme="light"] .text-zinc-200 { color: var(--text-primary); }
+
+[data-theme="light"] .text-gray-300,
+[data-theme="light"] .text-slate-300,
+[data-theme="light"] .text-zinc-300 { color: var(--text-secondary); }
+
+[data-theme="light"] .text-gray-400,
+[data-theme="light"] .text-gray-500,
+[data-theme="light"] .text-gray-600,
+[data-theme="light"] .text-slate-400,
+[data-theme="light"] .text-slate-500,
+[data-theme="light"] .text-zinc-400,
+[data-theme="light"] .text-zinc-500 { color: var(--text-muted); }
+
+[data-theme="dark"] .text-gray-300,
+[data-theme="dark"] .text-slate-300 { color: var(--text-secondary); }
+
+[data-theme="dark"] .text-gray-400,
+[data-theme="dark"] .text-slate-400 { color: #b0b8c6; }
+
+[data-theme="dark"] .text-gray-500,
+[data-theme="dark"] .text-gray-600,
+[data-theme="dark"] .text-slate-500 { color: var(--text-muted); }
+
+/* ── Placeholders ────────────────────────────────────────────────────────────
+ * `placeholder:text-gray-600` measured ~2.4:1 in dark. The attribute selector
+ * plus element beats the utility's specificity without !important.
+ */
+[data-theme="dark"] input::placeholder,
+[data-theme="dark"] textarea::placeholder,
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder { color: var(--placeholder); opacity: 1; }
+
+/* ── Surfaces and borders ────────────────────────────────────────────────────
+ * Dark-theme translucent fills reused verbatim in light mode made cards and the
+ * page indistinguishable. Each is mapped to a light-appropriate tint instead.
+ */
+[data-theme="light"] .bg-white\/\[0\.01\],
 [data-theme="light"] .bg-white\/\[0\.02\],
 [data-theme="light"] .bg-white\/\[0\.03\],
 [data-theme="light"] .bg-white\/\[0\.04\],
+[data-theme="light"] .bg-white\/\[0\.05\],
 [data-theme="light"] .bg-white\/\[0\.06\],
-[data-theme="light"] .bg-white\/\[0\.08\] {
-  background: rgba(15, 23, 42, 0.04);
-}
-[data-theme="light"] .text-gray-300,
-[data-theme="light"] .text-gray-400,
-[data-theme="light"] .text-gray-500,
-[data-theme="light"] .text-gray-600 {
-  color: rgb(71, 85, 105);
-}
-[data-theme="light"] .text-gray-200,
-[data-theme="light"] .text-white {
-  color: rgb(15, 23, 42);
-}
+[data-theme="light"] .bg-white\/\[0\.07\],
+[data-theme="light"] .bg-white\/\[0\.08\],
+[data-theme="light"] .bg-white\/5,
+[data-theme="light"] .bg-white\/10,
+[data-theme="light"] .bg-white\/15,
+[data-theme="light"] .bg-white\/20,
+[data-theme="light"] .bg-white\/30,
+[data-theme="light"] .bg-black\/20,
+[data-theme="light"] .bg-black\/30,
+[data-theme="light"] .bg-black\/40,
+[data-theme="light"] .bg-black\/50,
+[data-theme="light"] .bg-black\/60 { background-color: rgba(15, 23, 42, 0.05); }
+
+/* Hover states need to stay distinguishable from the resting fill. */
+[data-theme="light"] .hover\:bg-white\/\[0\.04\]:hover,
+[data-theme="light"] .hover\:bg-white\/\[0\.06\]:hover,
+[data-theme="light"] .hover\:bg-white\/\[0\.08\]:hover,
+[data-theme="light"] .hover\:bg-white\/5:hover,
+[data-theme="light"] .hover\:bg-white\/10:hover,
+[data-theme="light"] .hover\:bg-black\/50:hover { background-color: rgba(15, 23, 42, 0.1); }
+
 [data-theme="light"] .border-white\/5,
 [data-theme="light"] .border-white\/10,
 [data-theme="light"] .border-white\/15,
-[data-theme="light"] .border-white\/20 {
-  border-color: rgba(15, 23, 42, 0.1);
-}
-[data-theme="light"] .divide-white\/5 > :not(:last-child) {
-  border-color: rgba(15, 23, 42, 0.08);
-}
+[data-theme="light"] .border-white\/20 { border-color: var(--border-default); }
 
-/* Select popover — explicit opaque background per theme so the dropdown
- * always reads as a solid card, never bleeds through to the section below.
- * The Select.tsx inline style hardcodes the dark colour; this overrides
- * it in light mode. */
+[data-theme="light"] .divide-white\/5 > :not(:last-child),
+[data-theme="light"] .divide-white\/10 > :not(:last-child) { border-color: var(--border-default); }
+
+[data-theme="dark"] .border-white\/5,
+[data-theme="dark"] .border-white\/10 { border-color: var(--border-default); }
+
+/* ── Select popover ──────────────────────────────────────────────────────────
+ * Select.tsx hardcodes a dark inline background; keep the light override. */
 [data-theme="light"] [role="listbox"] {
   background-color: rgba(255, 255, 255, 0.98) !important;
-  color: rgb(15, 23, 42);
-  border-color: rgba(15, 23, 42, 0.12) !important;
+  color: var(--text-primary);
+  border-color: var(--border-default) !important;
 }
-[data-theme="light"] [role="listbox"] [role="option"] {
-  color: rgb(15, 23, 42);
-}
+[data-theme="light"] [role="listbox"] [role="option"] { color: var(--text-primary); }
 [data-theme="light"] [role="listbox"] [role="option"]:hover {
-  background-color: rgba(167, 139, 250, 0.1);
+  background-color: rgba(109, 40, 217, 0.1);
 }
+
+[data-theme="light"] body { color-scheme: light; }
+
+/* ── Modal / drawer primitives (theme-aware) ──────────────────────────────────
+ * The .glass surface is deliberately translucent, which is right for a panel
+ * sitting on the page but wrong for a modal: the content behind competes with
+ * it and, in light mode, --surface is only 70% opaque so text behind shows
+ * through. These give a modal an OPAQUE surface and a readable backdrop in
+ * both themes, without touching .glass itself.
+ */
+.modal-backdrop {
+  background: var(--modal-backdrop);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  /* Stops a scroll gesture over the backdrop from chaining to the page. */
+  overscroll-behavior: contain;
+}
+.modal-surface {
+  background: var(--modal-surface);
+  border: 1px solid var(--modal-border);
+  box-shadow: var(--modal-shadow);
+  color: rgb(var(--fg-base));
+}
+/* Sticky header/tab bars inside a modal need the same opaque fill, or content
+ * scrolling underneath shows through them. */
+.modal-bar {
+  background: var(--modal-surface);
+  border-color: var(--modal-border);
+}
+/* A nested, slightly inset surface: chunk cards, stat tiles, code blocks. */
+.modal-card {
+  background: var(--modal-card);
+  border: 1px solid var(--modal-border);
+}
+.modal-pre {
+  background: var(--modal-pre);
+  color: rgb(var(--fg-base) / 0.85);
+}
+
+[data-theme="dark"] {
+  --modal-backdrop: var(--overlay);
+  --modal-surface: var(--bg-surface);
+  --modal-card: rgba(255, 255, 255, 0.035);
+  --modal-pre: rgba(0, 0, 0, 0.42);
+  --modal-border: var(--border-default);
+  --modal-shadow: 0 24px 64px -24px rgba(0, 0, 0, 0.75);
+  /* Status tones, tuned per theme so neither washes out. */
+  --tone-good: #6ee7b7;
+  --tone-warn: #fcd34d;
+  --tone-bad: #fca5a5;
+  --tone-info: #93c5fd;
+  --tint-good-bg: rgba(16, 185, 129, 0.12);
+  --tint-good-br: rgba(16, 185, 129, 0.34);
+  --tint-warn-bg: rgba(245, 158, 11, 0.12);
+  --tint-warn-br: rgba(245, 158, 11, 0.34);
+  --tint-bad-bg: rgba(239, 68, 68, 0.12);
+  --tint-bad-br: rgba(239, 68, 68, 0.36);
+  --tint-info-bg: rgba(59, 130, 246, 0.12);
+  --tint-info-br: rgba(59, 130, 246, 0.34);
+}
+[data-theme="light"] {
+  /* Neutral (slate) rather than pure black, so the page behind reads as
+   * dimmed rather than inverted. */
+  --modal-backdrop: var(--overlay);
+  --modal-surface: var(--bg-surface);
+  --modal-card: rgba(15, 23, 42, 0.035);
+  --modal-pre: rgba(15, 23, 42, 0.05);
+  --modal-border: var(--border-default);
+  --modal-shadow: 0 24px 64px -24px rgba(15, 23, 42, 0.25);
+  --tone-good: #047857;
+  --tone-warn: #a16207;
+  --tone-bad: #b91c1c;
+  --tone-info: #1d4ed8;
+  --tint-good-bg: rgba(5, 150, 105, 0.1);
+  --tint-good-br: rgba(5, 150, 105, 0.28);
+  --tint-warn-bg: rgba(161, 98, 7, 0.1);
+  --tint-warn-br: rgba(161, 98, 7, 0.28);
+  --tint-bad-bg: rgba(185, 28, 28, 0.08);
+  --tint-bad-br: rgba(185, 28, 28, 0.26);
+  --tint-info-bg: rgba(29, 78, 216, 0.08);
+  --tint-info-br: rgba(29, 78, 216, 0.24);
+}
+
+/* Semantic status text. Used instead of text-emerald-300 etc., which are
+ * light-on-dark and drop to ~2:1 contrast on a white modal. */
+.tone-good { color: var(--tone-good); }
+.tone-warn { color: var(--tone-warn); }
+.tone-bad  { color: var(--tone-bad); }
+.tone-info { color: var(--tone-info); }
+
+/* Tinted callouts that stay legible in both themes. Explicit rgba rather than
+ * rgb(from ...) relative colours, which are too recent to depend on silently. */
+.callout-info { background: var(--tint-info-bg); border: 1px solid var(--tint-info-br);
+                color: var(--tone-info); }
+.callout-warn { background: var(--tint-warn-bg); border: 1px solid var(--tint-warn-br);
+                color: var(--tone-warn); }
+.callout-bad  { background: var(--tint-bad-bg);  border: 1px solid var(--tint-bad-br);
+                color: var(--tone-bad); }
+.callout-good { background: var(--tint-good-bg); border: 1px solid var(--tint-good-br);
+                color: var(--tone-good); }
+
+/* Selected / highlighted chunk card (the "used on a call" rows). */
+.modal-card-active {
+  background: rgba(167, 139, 250, 0.1);
+  border: 1px solid rgba(167, 139, 250, 0.45);
+}
+
+/* Body scroll lock while a modal is open. position:fixed would reset the
+ * scroll position, so the component restores scrollTop itself on close. */
+body.modal-open {
+  overflow: hidden;
+}
+/* The scrollable region inside a modal. overscroll-behavior stops a flick at
+ * the end of the list from chaining to the page behind it. `touch-action` is
+ * NOT set to none on body: that would also block touch scrolling in here. */
+.modal-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── Charts ──────────────────────────────────────────────────────────────────
+ * Recharts writes the series colour inline onto its legend labels, so a palette
+ * picked for dark backgrounds (cyan-400, amber-400, …) rendered at 1.6-2.6:1 on
+ * white. The coloured swatch still identifies the series; only the LABEL is
+ * forced to a readable colour. Inline styles require !important here.
+ */
+.recharts-legend-item-text { color: var(--text-secondary) !important; }
+.recharts-cartesian-axis-tick-value,
+.recharts-label,
+.recharts-text { fill: var(--text-muted); }
+.recharts-cartesian-grid line { stroke: var(--border-default); }
+/* Tooltips: these charts render a CUSTOM tooltip, so styling only
+ * .recharts-default-tooltip missed the inner rows. Recharts writes the series
+ * colour inline onto the name and value (cyan-400 on white measured 1.81:1);
+ * the coloured marker still identifies the series. */
+.recharts-tooltip-wrapper .recharts-default-tooltip,
+.recharts-tooltip-wrapper > div {
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-default) !important;
+  color: var(--text-primary) !important;
+}
+.recharts-tooltip-label { color: var(--text-primary) !important; }
+.recharts-tooltip-item,
+.recharts-tooltip-item-name,
+.recharts-tooltip-item-separator,
+.recharts-tooltip-item-value,
+.recharts-tooltip-item-unit { color: var(--text-secondary) !important; }

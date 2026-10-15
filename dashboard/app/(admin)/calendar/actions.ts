@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/require-role";
+import { calcomCancel, calcomConfigured } from "@/lib/calcom";
 
 // Server actions for manual calendar management — admin can create a
 // booking outside an agent flow (useful for filling no-shows / walk-ins),
@@ -78,10 +79,28 @@ export async function createBooking(formData: FormData): Promise<CreateBookingRe
 
 export async function cancelBooking(id: string): Promise<void> {
   await requireRole("AGENT");
-  await prisma.appointment.update({
-    where: { id },
-    data: { status: "CANCELLED" },
-  });
+  const appt = await prisma.appointment.findUnique({ where: { id } });
+  if (!appt) return;
+  // If this appointment is linked to Cal.com and Cal.com is configured, cancel
+  // it externally FIRST. Only mark the local row cancelled when that succeeds,
+  // so the two systems never drift out of sync.
+  if (appt.calcomBookingUid && calcomConfigured()) {
+    const res = await calcomCancel(appt.calcomBookingUid, "Cancelled from dashboard");
+    if (!res.ok) {
+      throw new Error(
+        `Could not cancel the Cal.com booking (${res.error}); local booking left unchanged.`,
+      );
+    }
+  }
+  // Cancel the appointment and any pending reminder together, so a cancelled
+  // appointment never fires a customer reminder.
+  await prisma.$transaction([
+    prisma.appointment.update({ where: { id }, data: { status: "CANCELLED" } }),
+    prisma.appointmentReminder.updateMany({
+      where: { appointmentId: id, status: "PENDING" },
+      data: { status: "CANCELLED" },
+    }),
+  ]);
   revalidatePath("/calendar");
 }
 

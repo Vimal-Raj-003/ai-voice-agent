@@ -14,9 +14,11 @@
     "db:generate": "prisma generate"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1147.0",
+    "@aws-sdk/s3-request-presigner": "^3.1147.0",
     "@prisma/client": "^6.1.0",
     "bcryptjs": "^3.0.3",
-    "livekit-client": "^2.17.0",
+    "livekit-client": "^2.22.4",
     "livekit-server-sdk": "^2.15.0",
     "lucide-react": "^0.563.0",
     "next": "16.1.6",

@@ -9,6 +9,7 @@ import {
   statusTone,
 } from "@/components/Badge";
 import CallsFilters from "@/components/CallsFilters";
+import PhoneDialer from "@/components/PhoneDialer";
 
 export const dynamic = "force-dynamic";
 
@@ -38,10 +39,10 @@ export default async function CallsPage({
     const rows: { call_id: string; snippet: string }[] = await prisma.$queryRaw`
       SELECT DISTINCT ON ("callId")
         "callId" AS call_id,
-        substring(content from greatest(1, position(${q} in lower(content)) - 30) for 120) AS snippet
+        substring(content from greatest(1, position(lower(${q}) in lower(content)) - 30) for 120) AS snippet
       FROM transcript_messages
-      WHERE content ILIKE '%' || ${q} || '%' OR content % ${q}
-      ORDER BY "callId", similarity(content, ${q}) DESC
+      WHERE content ILIKE '%' || ${q} || '%'
+      ORDER BY "callId"
       LIMIT 200
     `;
     idFilter = rows.map((r) => r.call_id);
@@ -63,7 +64,7 @@ export default async function CallsPage({
   }
   if (idFilter) where.id = { in: idFilter };
 
-  const [calls, total, assistants] = await Promise.all([
+  const [calls, total, dialerAssistants] = await Promise.all([
     prisma.call.findMany({
       where,
       orderBy: { createdAt: "desc" },
@@ -71,10 +72,19 @@ export default async function CallsPage({
       take: PAGE_SIZE,
     }),
     prisma.call.count({ where }),
+    // Active assistants for the dialer dropdown, with the fields it shows as a
+    // secondary label (provider · model · tts/voice).
     prisma.assistant.findMany({
-      where: { organizationId: orgId },
+      where: { organizationId: orgId, isActive: true },
       orderBy: { name: "asc" },
-      select: { id: true, name: true },
+      select: {
+        id: true,
+        name: true,
+        llmProvider: true,
+        llmModel: true,
+        ttsProvider: true,
+        voiceId: true,
+      },
     }),
   ]);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -82,7 +92,8 @@ export default async function CallsPage({
   return (
     <div className="space-y-4">
       <h1 className="text-3xl font-bold">Calls</h1>
-      <CallsFilters assistants={assistants} />
+      <CallsFilters />
+      {direction === "INBOUND" && <PhoneDialer assistants={dialerAssistants} />}
       <div className="text-xs text-gray-500">
         {total} call{total === 1 ? "" : "s"}
         {q && ` matching "${q}"`}
@@ -97,7 +108,8 @@ export default async function CallsPage({
           const cost = Number(c.costUsd ?? 0);
           return (
             <li key={c.id} className="p-3 hover:bg-white/[0.02]">
-              <Link href={`/calls/${c.id}`} className="block">
+             <div className="flex items-start gap-3">
+              <Link href={`/calls/${c.id}`} className="block min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="font-mono text-sm">{c.toNumber}</div>
@@ -128,6 +140,15 @@ export default async function CallsPage({
                   />
                 )}
               </Link>
+              {/* Per-call logs: recording, flow, breakpoint, timeline. Kept
+                  OUTSIDE the row <Link> so anchors are never nested. */}
+              <Link
+                href={`/calls/${c.id}/logs`}
+                className="shrink-0 self-center rounded-lg border border-white/15 px-2.5 py-1 text-[11px] text-gray-300 hover:bg-white/10 hover:text-white"
+              >
+                View Logs
+              </Link>
+             </div>
             </li>
           );
         })}

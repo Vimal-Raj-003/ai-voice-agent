@@ -14,6 +14,11 @@ export async function quickDispatchAction(
   const leadName = String(formData.get("lead_name") || "").trim() || undefined;
   const languagePreset =
     String(formData.get("language_preset") || "").trim() || undefined;
+  // Selected assistant from the dialer. Forwarded as agent_profile_id — the
+  // worker's _resolve_profile tries agent_profiles then falls through to the
+  // assistants table, so an Assistant.id resolves correctly.
+  const assistantId =
+    String(formData.get("assistant_id") || "").trim() || undefined;
   if (!rawPhone) {
     return { ok: false, error: "Phone number is required." };
   }
@@ -27,6 +32,7 @@ export async function quickDispatchAction(
   try {
     const r = await voiceService.dispatchSingle({
       phone,
+      agent_profile_id: assistantId,
       lead_name: leadName,
       language_preset: languagePreset,
     });

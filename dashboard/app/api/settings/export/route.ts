@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
+import { requireRole } from "@/lib/require-role";
 
 // Streams the stored settings table out as a `.env`-style file. Sensitive
-// values are redacted by default — pass `?include=secrets` (and be signed in)
-// to download the unredacted version. The middleware excludes /api/* from the
-// auth check so this route enforces auth inline like the other admin
+// values are redacted by default. `?include=secrets` returns the unredacted
+// values and requires ADMIN or higher. The middleware excludes /api/* from the
+// auth check, so this route enforces auth inline like the other admin
 // downloads.
 
 function shellEscape(v: string): string {
@@ -22,6 +23,13 @@ export async function GET(request: Request) {
   }
   const url = new URL(request.url);
   const includeSecrets = url.searchParams.get("include") === "secrets";
+  if (includeSecrets) {
+    try {
+      await requireRole("ADMIN");
+    } catch {
+      return new NextResponse("forbidden", { status: 403 });
+    }
+  }
 
   const rows = await prisma.setting.findMany({
     orderBy: { key: "asc" },

@@ -1,0 +1,18 @@
+[Unit]
+Description=JillJill Voice Worker (LiveKit Agents realtime voice)
+After=network-online.target jilljill-voice-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jilljill2023
+WorkingDirectory=/mnt/c/Users/CT/Voice Agent/ai-voice-agent/voice-service
+# One main worker process (LiveKit forkserver manages its own job subprocesses).
+# Restart=on-failure brings exactly one back if it crashes — no duplicates.
+ExecStart=/home/jilljill2023/venvs/jilljill-voice/bin/python agent.py start
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

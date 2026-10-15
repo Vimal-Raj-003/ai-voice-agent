@@ -33,17 +33,17 @@ export default function TokensTimeline({ data }: { data: Point[] }) {
             <stop offset="95%" stopColor="#a78bfa" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
         <XAxis
           dataKey="date"
-          stroke="rgba(255,255,255,0.4)"
+          stroke="var(--text-muted)"
           fontSize={10}
           tickLine={false}
           axisLine={false}
           tickFormatter={(d: string) => d.slice(5)}
         />
         <YAxis
-          stroke="rgba(255,255,255,0.4)"
+          stroke="var(--text-muted)"
           fontSize={10}
           tickLine={false}
           axisLine={false}
@@ -57,7 +57,7 @@ export default function TokensTimeline({ data }: { data: Point[] }) {
             backdropFilter: "blur(8px)",
             fontSize: 12,
           }}
-          labelStyle={{ color: "#a78bfa", fontWeight: 600 }}
+          labelStyle={{ color: "var(--text-primary)", fontWeight: 600 }}
           formatter={(v) => fmtTokens(Number(v))}
         />
         <Legend wrapperStyle={{ fontSize: 10, paddingTop: 4 }} iconType="circle" />

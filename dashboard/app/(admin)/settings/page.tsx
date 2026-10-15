@@ -158,11 +158,13 @@ export default async function SettingsPage({
             {defs.map((def) => {
               const row = storedMap.get(def.key);
               const envInfo = envMap.get(def.key);
+              // Secret values never leave the server: sensitive rows only get a "stored" flag.
               return (
                 <SettingRow
                   key={def.key}
                   def={def}
-                  storedValue={row?.value ?? null}
+                  storedValue={def.sensitive ? null : row?.value ?? null}
+                  hasStored={!!row}
                   configuredViaEnv={envInfo?.configured ?? false}
                 />
               );

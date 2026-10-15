@@ -63,7 +63,7 @@ export default async function CallDetail({
         </div>
       </div>
 
-      <CallRecording url={c.recordingUrl} durationSeconds={c.durationSeconds} />
+      <CallRecording callId={c.id} durationSeconds={c.durationSeconds} />
 
       <CallCostBreakdown breakdown={breakdown} />
 

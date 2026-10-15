@@ -5,7 +5,6 @@ import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/require-role";
 
 export async function upsertSetting(formData: FormData) {
-  await requireRole("OWNER");
   const key = String(formData.get("key") || "").trim();
   const value = String(formData.get("value") || "");
   if (!key) return;
@@ -13,6 +12,11 @@ export async function upsertSetting(formData: FormData) {
   // hint for ad-hoc keys that aren't in KNOWN_SETTINGS.
   const known = KNOWN_SETTINGS.find((s) => s.key === key);
   const sensitive = known?.sensitive ?? formData.get("sensitive") === "on";
+  // Secrets are ADMIN-or-higher; other settings keep the existing OWNER-only rule.
+  await requireRole(sensitive ? "ADMIN" : "OWNER");
+  // Secret inputs are never pre-filled, so a blank submit means "keep the stored value".
+  // Clearing a secret is done with the Revert action.
+  if (sensitive && value === "") return;
   await prisma.setting.upsert({
     where: { key },
     update: { value, isSensitive: sensitive },

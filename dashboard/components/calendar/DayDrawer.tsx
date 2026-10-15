@@ -1,12 +1,15 @@
-import { CalendarCheck, Clock } from "lucide-react";
+import { CalendarCheck } from "lucide-react";
 import { Badge } from "@/components/Badge";
 import BookingRowActions from "./BookingRowActions";
 
+// Mirrors the Appointment columns the Calendar page selects. `email` is now
+// surfaced (voice bookings and the manual form both may set it).
 type Appt = {
   id: string;
   bookingId: string;
   name: string;
   phoneNumber: string;
+  email: string | null;
   date: string;
   time: string;
   service: string;
@@ -57,35 +60,54 @@ export default function DayDrawer({
       {appts.length === 0 ? (
         <p className="text-sm text-gray-500">No bookings on this day.</p>
       ) : (
-        <ul className="space-y-2">
-          {appts.map((a) => (
-            <li
-              key={a.id}
-              className="rounded-xl border border-white/5 bg-white/[0.02] p-3"
-            >
-              <div className="flex items-center justify-between mb-1 gap-2">
-                <span className="font-medium tabular-nums flex items-center gap-1.5">
-                  <Clock size={12} className="text-cyan-300" />
-                  {a.time}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <Badge tone={statusTone(a.status)}>{a.status}</Badge>
-                  <BookingRowActions
-                    appointmentId={a.id}
-                    status={a.status}
-                  />
-                </div>
-              </div>
-              <div className="text-sm">{a.name}</div>
-              <div className="text-xs text-gray-500 font-mono">
-                {a.phoneNumber} · {a.service}
-              </div>
-              <div className="text-[10px] font-mono text-gray-600 mt-1">
-                {a.bookingId}
-              </div>
-            </li>
-          ))}
-        </ul>
+        // Clean appointment table: Time · Customer · Phone · Email · Service ·
+        // Status · Actions. Appointments are already ordered by time (page
+        // query). Horizontal scroll keeps all columns readable in the drawer.
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[620px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-white/10 text-[10px] uppercase tracking-widest text-gray-500">
+                <th className="py-2 pr-3 font-medium">Time</th>
+                <th className="py-2 pr-3 font-medium">Customer</th>
+                <th className="py-2 pr-3 font-medium">Phone</th>
+                <th className="py-2 pr-3 font-medium">Email</th>
+                <th className="py-2 pr-3 font-medium">Service</th>
+                <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {appts.map((a) => (
+                <tr key={a.id} className="align-top">
+                  <td className="py-2.5 pr-3 font-medium tabular-nums whitespace-nowrap">
+                    {a.time}
+                  </td>
+                  <td className="py-2.5 pr-3">
+                    <div className="whitespace-nowrap">{a.name}</div>
+                    <div className="text-[10px] font-mono text-gray-600">
+                      {a.bookingId}
+                    </div>
+                  </td>
+                  <td className="py-2.5 pr-3 font-mono text-xs text-gray-400 whitespace-nowrap">
+                    {a.phoneNumber}
+                  </td>
+                  <td className="py-2.5 pr-3 font-mono text-xs text-gray-400">
+                    {a.email ? a.email : <span className="text-gray-600">—</span>}
+                  </td>
+                  <td className="py-2.5 pr-3 text-gray-300 whitespace-nowrap">
+                    {a.service}
+                  </td>
+                  <td className="py-2.5 pr-3">
+                    <Badge tone={statusTone(a.status)}>{a.status}</Badge>
+                  </td>
+                  <td className="py-2.5">
+                    <BookingRowActions appointmentId={a.id} status={a.status} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

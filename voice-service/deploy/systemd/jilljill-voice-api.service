@@ -1,0 +1,18 @@
+[Unit]
+Description=JillJill Voice API (FastAPI dispatch + Live Logs SSE)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jilljill2023
+WorkingDirectory=/mnt/c/Users/CT/Voice Agent/ai-voice-agent/voice-service
+# agent.py/server.py load voice-service/.env themselves (python-dotenv), so no
+# secrets are duplicated here — keep WorkingDirectory correct and .env present.
+ExecStart=/home/jilljill2023/venvs/jilljill-voice/bin/python -m uvicorn server:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
