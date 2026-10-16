@@ -415,8 +415,12 @@ async def _diag_calcom(action: str) -> dict:
     m = _missing_creds(d, bool(key), "CALCOM_API_KEY", "Booking/availability tools unavailable.")
     if m:
         return m
-    return await _http_probe(d, method="GET", url="https://api.cal.com/v1/me",
-                             params={"apiKey": key},
+    # Cal.com v1 is decommissioned (every v1 call returns HTTP 410), which made
+    # this probe report Cal.com as permanently down. v2 uses Bearer auth plus a
+    # pinned version header instead of an `apiKey` query parameter.
+    return await _http_probe(d, method="GET", url="https://api.cal.com/v2/me",
+                             headers={"Authorization": f"Bearer {key}",
+                                      "cal-api-version": "2026-06-12"},
                              impact="Availability/booking would fail.")
 
 

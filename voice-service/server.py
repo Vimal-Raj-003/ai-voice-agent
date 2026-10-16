@@ -8,6 +8,8 @@ import hmac
 import json
 import os
 import random
+import uuid
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -42,7 +44,9 @@ import idempotency  # noqa: E402
 import knowledge  # noqa: E402
 import model_catalog  # noqa: E402
 import notify  # noqa: E402
+import campaign_capacity  # noqa: E402
 import provider_registry  # noqa: E402
+import vobiz  # noqa: E402
 from compliance import check_dispatch_allowed  # noqa: E402
 from observability import (  # noqa: E402
     get_logger,
@@ -642,47 +646,101 @@ async def _run_campaign_internal(campaign_id: str) -> None:
     )
     if not row or row["status"] not in ("RUNNING", "DRAFT"):
         return
-    targets = await pool.fetch(
-        """SELECT id, "phoneNumber", "leadName" FROM campaign_targets
-            WHERE "campaignId" = $1 AND status = 'PENDING'::"CampaignTargetStatus" """,
-        campaign_id,
-    )
+    # ── Parallel, capacity-governed dialing ──────────────────────────────────
+    # Replaces the previous strictly sequential "for every PENDING target:
+    # dispatch, sleep(callDelaySeconds)" loop. Three independent controls now
+    # decide whether the next call may start:
+    #
+    #   1. CONCURRENCY - campaign_capacity.resolve() takes the strictest of the
+    #      Vobiz account limit, the outbound trunk limit, the inbound reserve
+    #      and the campaign's own request, minus calls already live (counted
+    #      from the shared active_calls registry, so inbound and single dials
+    #      consume the same budget).
+    #   2. DIAL RATE - maxStartsPerMinute, counted from the calls table so it
+    #      survives restarts and is shared across processes. Call duration is
+    #      never used as a proxy for rate.
+    #   3. CLAIM - one target at a time via FOR UPDATE SKIP LOCKED, so two
+    #      dispatchers can never take the same customer.
+    #
+    # Slots are released implicitly: a finished call is removed from
+    # active_calls by the worker, which lowers live_calls on the next poll. The
+    # dispatcher never has to guess that a call ended.
     delay = float(row["callDelaySeconds"] or 3)
     profile_id = row["agentProfileId"]
     dispatched = 0
     failed = 0
     blocked = 0
     deferred = 0
-    # ── Compliance org_id (Feature Pack 4 / Task 8) ───────────────────────────
     campaign_org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
+
+    # Bounds so one run can never spin forever: it exits when the queue drains,
+    # the campaign leaves RUNNING, or this budget is spent (the scheduler calls
+    # us again, so work simply continues on the next tick).
+    run_deadline = time.monotonic() + float(os.getenv("CAMPAIGN_RUN_BUDGET_S", "600"))
+    idle_poll = float(os.getenv("CAMPAIGN_POLL_S", "3"))
+
     lk = _lk_client()
     try:
-        for t in targets:
+        while True:
+            if time.monotonic() > run_deadline:
+                logger.info("campaign_run_budget_reached", campaign_id=campaign_id,
+                            dispatched=dispatched, source="CAMPAIGN")
+                break
+
+            # Pause / Stop / Cancel take effect here: the status is re-read every
+            # iteration, so no NEW call starts once it changes. Calls already in
+            # progress are deliberately left alone.
+            cfg = await db.get_campaign_dispatch_config(campaign_id)
+            if not cfg or cfg["status"] not in ("RUNNING", "DRAFT"):
+                logger.info("campaign_dispatch_halted", campaign_id=campaign_id,
+                            status=(cfg or {}).get("status"), dispatched=dispatched,
+                            source="CAMPAIGN")
+                break
+
+            cap = await campaign_capacity.resolve(int(cfg["maxConcurrent"] or 3))
+            if cap.free <= 0:
+                logger.info("campaign_waiting_for_slot", campaign_id=campaign_id,
+                            **cap.as_log(), source="CAMPAIGN")
+                await asyncio.sleep(idle_poll)
+                continue
+
+            rate_ok, started_in_window = await campaign_capacity.rate_allows(
+                campaign_id, int(cfg["maxStartsPerMinute"] or 10))
+            if not rate_ok:
+                logger.info("campaign_rate_limited", campaign_id=campaign_id,
+                            started_in_window=started_in_window,
+                            max_per_minute=int(cfg["maxStartsPerMinute"] or 10),
+                            source="CAMPAIGN")
+                await asyncio.sleep(idle_poll)
+                continue
+
+            attempt_id = str(uuid.uuid4())
+            t = await db.claim_campaign_target(campaign_id, attempt_id)
+            if t is None:
+                logger.info("campaign_queue_drained", campaign_id=campaign_id,
+                            dispatched=dispatched, source="CAMPAIGN")
+                break
+
             phone = (t["phoneNumber"] or "").strip()
             if not phone.startswith("+"):
+                await db.release_campaign_claim(t["id"], "FAILED",
+                                                "phone number is not E.164")
                 failed += 1
                 continue
 
-            # Compliance check: DND + quiet-hours before any SIP dispatch
+            # Compliance runs before EVERY dispatch, unchanged in behaviour.
             decision = await check_dispatch_allowed(campaign_org_id, phone, None)
             if not decision.allowed:
                 if decision.reason == "DND":
-                    await pool.execute(
-                        """UPDATE campaign_targets
-                              SET status = 'BLOCKED'::"CampaignTargetStatus",
-                                  "lastError" = 'On DND list',
-                                  "updatedAt" = now()
-                            WHERE id = $1""",
-                        t["id"],
-                    )
+                    await db.release_campaign_claim(t["id"], "BLOCKED", "DND / opt-out")
                     blocked += 1
                 else:
                     await pool.execute(
-                        """UPDATE campaign_targets
-                              SET status = 'DEFERRED'::"CampaignTargetStatus",
-                                  "dispatchAfter" = $1,
-                                  "updatedAt" = now()
-                            WHERE id = $2""",
+                        'UPDATE campaign_targets '
+                        '   SET status = \'DEFERRED\'::"CampaignTargetStatus", '
+                        '       "dispatchAfter" = $1, "claimedAt" = NULL, '
+                        '       "updatedAt" = now() '
+                        ' WHERE id = $2',
                         decision.next_allowed_at, t["id"],
                     )
                     deferred += 1
@@ -697,30 +755,27 @@ async def _run_campaign_internal(campaign_id: str) -> None:
                         metadata=json.dumps({
                             "phone_number": phone, "lead_name": t["leadName"],
                             "agent_profile_id": profile_id, "campaign_id": campaign_id,
+                            # Carried so a duplicate dispatch is identifiable.
+                            "campaign_target_id": t["id"], "attempt_id": attempt_id,
                         }),
                     ),
                 )
-                await pool.execute(
-                    """UPDATE campaign_targets
-                          SET status = 'DISPATCHED'::"CampaignTargetStatus",
-                              "dispatchedAt" = now(),
-                              "dispatchId" = $1,
-                              "updatedAt" = now()
-                        WHERE id = $2""",
-                    d.id, t["id"],
-                )
+                await db.mark_campaign_target_dispatched(t["id"], room, d.id)
                 dispatched += 1
-                await asyncio.sleep(delay)
+                logger.info("campaign_target_dispatched", campaign_id=campaign_id,
+                            room=room, attempt=t["attempts"],
+                            allowed=cap.allowed, live=cap.live_calls,
+                            started_in_window=started_in_window + 1, source="CAMPAIGN")
+                # Small spacing between dials so a burst cannot breach the
+                # trunk's calls-per-second ceiling; the per-minute cap above is
+                # the real rate control.
+                await asyncio.sleep(min(delay, 2.0))
             except Exception as exc:
-                logger.warning("campaign_target_failed", error=str(exc), phone=phone)
-                await pool.execute(
-                    """UPDATE campaign_targets
-                          SET status = 'FAILED'::"CampaignTargetStatus",
-                              "lastError" = $1,
-                              "updatedAt" = now()
-                        WHERE id = $2""",
-                    str(exc), t["id"],
-                )
+                # A FAILED dispatch never counted as an active call, so no slot
+                # has to be released - nothing was ever occupied.
+                logger.warning("campaign_target_failed", error=str(exc)[:200],
+                               phone=phone, campaign_id=campaign_id, source="CAMPAIGN")
+                await db.release_campaign_claim(t["id"], "FAILED", str(exc)[:300])
                 failed += 1
     finally:
         await lk.aclose()
@@ -795,6 +850,20 @@ async def _refresh_rates_safely() -> None:
         logger.info("provider_rates_refresh_done", **result)
     except Exception as exc:
         logger.error("provider_rates_refresh_failed", error=str(exc))
+
+
+async def _sweep_vobiz_recordings() -> None:
+    """Scheduler tick: start a bounded retry chain per newly-completed call.
+
+    Wrapped so a transient Vobiz/DB hiccup can never kill the scheduler job —
+    an exception escaping here would stop every later tick.
+    """
+    try:
+        started = await vobiz.sweep_completed_calls()
+        if started:
+            logger.info("vobiz_sweep_started_chains", count=started, source="VOBIZ")
+    except Exception as exc:
+        logger.warning("vobiz_sweep_failed", error=str(exc)[:200], source="VOBIZ")
 
 
 async def _prune_idempotency() -> None:
@@ -920,6 +989,31 @@ async def _start_scheduler() -> None:
             coalesce=True,
             max_instances=1,
         )
+    # Vobiz recording sweeper — every 10 s, finds calls that have just ENDED on
+    # the Vobiz trunk and still need their carrier recording, and starts ONE
+    # bounded retry chain each (5s/10s/20s/30s/30s, then stop).
+    #
+    # This is the webhook-free synchronisation path used while there is no
+    # public HTTPS domain for Vobiz to call back to. The tick is a single
+    # indexed query; the waiting happens inside each call's own chain, so this
+    # is not a per-call polling loop. Registered only when the account API
+    # credentials are present, so an unconfigured install does no work at all.
+    if vobiz.configured():
+        _scheduler.add_job(
+            _sweep_vobiz_recordings,
+            "interval",
+            seconds=10,
+            id="vobiz_recording_sweep",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        logger.info("vobiz_recording_sweep_registered",
+                    retry_delays=list(vobiz.RETRY_DELAYS), source="VOBIZ")
+    else:
+        logger.info("vobiz_recording_sweep_disabled",
+                    reason="VOBIZ_AUTH_ID/VOBIZ_AUTH_TOKEN not set", source="VOBIZ")
+
     # Retain the boot task in _bg_tasks so it isn't GC'd before completing
     # (Python 3.11+ otherwise drops the reference and may cancel mid-fetch).
     boot_task = asyncio.create_task(_refresh_rates_safely())
@@ -939,6 +1033,99 @@ async def campaign_run_now(campaign_id: str) -> dict:
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
     return {"status": "started", "campaign_id": campaign_id}
+
+
+@app.post("/api/active-calls/reconcile", dependencies=[Depends(require_token)])
+async def reconcile_active_calls(apply: bool = False, min_age_seconds: int = 1800) -> dict:
+    """Reconcile the active_calls registry against real LiveKit room state.
+
+    WHY THIS IS NEEDED: a row is written when a call starts and removed by the
+    shutdown hook when it ends. If the worker process is KILLED (crash, host
+    restart, a stopped dev process) the hook never runs and the row is orphaned
+    forever — nothing cleaned them up. Capacity accounting already ignores rows
+    older than ACTIVE_CALL_STALE_SECONDS, so this is cosmetic for dialling, but
+    the registry itself keeps reporting calls that ended days ago.
+
+    Safety: a row is only ever a candidate when its room is ABSENT from
+    LiveKit *and* it is older than `min_age_seconds`. A row whose room is still
+    live is never touched, whatever its age. Dry run by default — nothing is
+    deleted unless `apply=true` is passed explicitly.
+    """
+    import db as _db
+    from datetime import datetime, timedelta
+
+    rows = await _db.get_active_calls()
+    lk = lkapi.LiveKitAPI(os.getenv("LIVEKIT_URL"), os.getenv("LIVEKIT_API_KEY"),
+                          os.getenv("LIVEKIT_API_SECRET"))
+    try:
+        resp = await lk.room.list_rooms(lkapi.ListRoomsRequest())
+        live = {r.name for r in resp.rooms}
+    finally:
+        await lk.aclose()
+
+    cutoff = datetime.utcnow() - timedelta(seconds=max(0, min_age_seconds))
+    orphans, live_rows, too_recent = [], [], []
+    for r in rows:
+        room = r.get("room_id")
+        started = r.get("started_at")
+        if room in live:
+            live_rows.append(room)
+        elif started is not None and started > cutoff:
+            # Absent from LiveKit but very recent: could be a call that has not
+            # registered its room yet. Left alone.
+            too_recent.append(room)
+        else:
+            orphans.append(room)
+
+    deleted = 0
+    if apply and orphans:
+        # Pass the same cutoff the inspection used, so a row recreated for an
+        # identical room id in the meantime is NOT deleted.
+        deleted = await _db.delete_active_calls(orphans, older_than=cutoff)
+        logger.info("active_calls_reconciled", deleted=deleted,
+                    live=len(live_rows), source="WORKER")
+
+    return {
+        "registry_rows": len(rows),
+        "livekit_live_rooms": len(live),
+        "live_and_kept": live_rows,
+        "too_recent_kept": too_recent,
+        "verified_orphans": orphans,
+        "applied": bool(apply),
+        "deleted": deleted,
+    }
+
+
+@app.post("/api/calcom/bookings/{booking_uid}/cancel", dependencies=[Depends(require_token)])
+async def calcom_cancel_booking(booking_uid: str, body: dict | None = None) -> dict:
+    """Cancel a Cal.com booking by uid, on behalf of the dashboard.
+
+    The dashboard has no Cal.com credentials of its own and must not get a
+    duplicate copy of the key. It calls this endpoint instead, so there is ONE
+    place the key lives (voice-service env) and ONE cancellation code path
+    (tools.calcom_cancel, Cal.com API v2) shared by the agent and the
+    dashboard. Returns the same {success, message} shape tools does.
+    """
+    # Local import keeps tools (and the LiveKit agent stack it pulls in) off
+    # the server's cold path, matching how provider_rates is imported.
+    import tools
+    reason = str((body or {}).get("reason") or "")
+    if not tools._calcom_cfg()["api_key"]:
+        return {"success": False, "message": "Cal.com not configured"}
+    return await tools.calcom_cancel(booking_uid, reason)
+
+
+@app.get("/api/calcom/status", dependencies=[Depends(require_token)])
+async def calcom_status() -> dict:
+    """Whether Cal.com is usable, without revealing the key."""
+    import tools
+    c = tools._calcom_cfg()
+    return {
+        "configured": tools.calcom_enabled(),
+        "has_api_key": bool(c["api_key"]),
+        "event_type_id": c["event_id"] or None,
+        "timezone": c["tz"],
+    }
 
 
 @app.post("/api/campaigns/scheduler/reload", dependencies=[Depends(require_token)])
@@ -983,6 +1170,132 @@ async def campaign_status() -> dict:
 def _recording_file(key: str):
     import recorder
     return recorder.resolve_recording_path(key)
+
+
+# ── Vobiz (carrier) recording proxy ─────────────────────────────────────────
+# MUST be declared BEFORE the /api/recordings/{key:path} catch-all below, or
+# FastAPI matches "vobiz/<id>" as a local file key and always 404s.
+#
+# Vobiz's `recording_url` requires the account's X-Auth-ID/X-Auth-Token headers,
+# so the audio cannot be handed to a browser as a link. Those credentials exist
+# only in this process; the dashboard proxies this endpoint with its service
+# token after session-gating the user, exactly as it does for local files. The
+# result: no Vobiz credential in the dashboard, and none in the browser.
+_VOBIZ_MAX_SLICE = 64 * 1024 * 1024
+
+
+@app.get("/api/recordings/vobiz/{call_id}", dependencies=[Depends(require_token)])
+async def get_vobiz_recording(call_id: str, request: Request):
+    """Stream the carrier's recording for one call, with Range support."""
+    if not vobiz.configured():
+        raise HTTPException(503, "vobiz api not configured")
+    row = await db.get_call_vobiz_recording(call_id)
+    url = (row or {}).get("providerRecordingUrl")
+    if not url:
+        raise HTTPException(404, "no vobiz recording for this call")
+
+    rng = request.headers.get("range") or request.headers.get("Range")
+    try:
+        client, upstream = await vobiz.open_audio_stream(str(url), rng)
+    except Exception as exc:
+        logger.warning("vobiz_audio_open_failed", call_id=call_id,
+                       error=str(exc)[:160], source="VOBIZ")
+        raise HTTPException(502, "vobiz recording fetch failed") from None
+
+    if upstream.status_code not in (200, 206):
+        code = upstream.status_code
+        await upstream.aclose()
+        await client.aclose()
+        raise HTTPException(404 if code == 404 else 502, "vobiz recording unavailable")
+
+    # Vobiz serves recordings as `binary/octet-stream`, which an <audio> element
+    # will not play, so a generic upstream type is replaced with a real audio
+    # type. Trunk recordings are WAV (verified: RIFF, stereo, 8 kHz), and the
+    # media URL carries no extension, so WAV is the default.
+    up_ctype = (upstream.headers.get("content-type") or "").lower()
+    if up_ctype.startswith("audio/"):
+        ctype = up_ctype
+    elif str(url).lower().endswith(".mp3"):
+        ctype = "audio/mpeg"
+    else:
+        ctype = "audio/wav"
+
+    # Upstream honoured the Range: stream it straight through, nothing buffered.
+    if upstream.status_code == 206:
+        headers = {"Accept-Ranges": "bytes", "Cache-Control": "no-store"}
+        for h in ("content-length", "content-range"):
+            if upstream.headers.get(h):
+                headers[h.title()] = upstream.headers[h]
+
+        async def _pass():
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        return StreamingResponse(_pass(), status_code=206, media_type=ctype, headers=headers)
+
+    # No Range asked for: stream the whole file, advertising Range support.
+    if not rng:
+        headers = {"Accept-Ranges": "bytes", "Cache-Control": "no-store"}
+        if upstream.headers.get("content-length"):
+            headers["Content-Length"] = upstream.headers["content-length"]
+
+        async def _full():
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        return StreamingResponse(_full(), status_code=200, media_type=ctype, headers=headers)
+
+    # A Range was requested but Vobiz ignored it. Satisfy it here so seeking
+    # still works — bounded, and an 8 kHz call recording is nowhere near the cap.
+    declared = int(upstream.headers.get("content-length") or 0)
+    if declared and declared > _VOBIZ_MAX_SLICE:
+        async def _too_big():
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+        return StreamingResponse(_too_big(), status_code=200, media_type=ctype,
+                                 headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
+    try:
+        body = await upstream.aread()
+    finally:
+        await upstream.aclose()
+        await client.aclose()
+
+    size = len(body)
+    start, end, status = 0, size - 1, 200
+    if rng.startswith("bytes="):
+        try:
+            a, _, b = rng[6:].partition("-")
+            if a == "" and b:                    # suffix form: bytes=-N
+                start, end = max(0, size - int(b)), size - 1
+            else:
+                start = int(a) if a else 0
+                end = int(b) if b else size - 1
+            start = max(0, min(start, size - 1))
+            end = max(start, min(end, size - 1))
+            status = 206
+        except Exception:
+            start, end, status = 0, size - 1, 200
+    chunk = body[start:end + 1]
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+        "Content-Length": str(len(chunk)),
+    }
+    if status == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return Response(content=chunk, status_code=status, media_type=ctype, headers=headers)
 
 
 @app.get("/api/recordings/{key:path}", dependencies=[Depends(require_token)])
@@ -1079,7 +1392,18 @@ async def logs_stream(request: Request, level: str | None = None,
     # does not get flooded with historical events (req 14). Omitted → the old
     # behaviour (seed from the latest existing row so only genuinely-new rows flow).
     async def event_gen():
+        # Normalise the client cursor to the same shape as ts_iso above, so the
+        # string comparison below stays apples-to-apples.
         last_seen: str | None = (since.strip() if since else None)
+        if last_seen and not last_seen.endswith("Z") and "+" not in last_seen[10:]:
+            last_seen += "Z"
+        # Ids already emitted AT last_seen. error_logs.timestamp has millisecond
+        # precision, so sibling events routinely share one value; a cursor of
+        # `ts <= last_seen` then delivered only the FIRST of each group and
+        # silently dropped the rest — losing exactly the burst traffic (STT →
+        # LLM → TTS) a call timeline is made of. Pairing the timestamp with the
+        # row ids seen at it keeps the cursor monotonic without dropping ties.
+        seen_at_cursor: set[str] = set()
         seeded = last_seen is not None
         hb_ticks = 0
         # Immediate heartbeat so the client gets `open` + first bytes right away
@@ -1103,9 +1427,25 @@ async def logs_stream(request: Request, level: str | None = None,
                 for r in rows:
                     ts = r.get("timestamp")
                     ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-                    if last_seen is not None and ts_iso <= last_seen:
-                        continue
+                    # error_logs stores NAIVE UTC, so isoformat() yields
+                    # "2026-10-16T06:24:35.123456" with no zone. JavaScript
+                    # parses that as LOCAL time, which shifted every event by
+                    # the host's UTC offset in the browser (on IST, 5.5h into
+                    # the past) and the Live Logs session-boundary filter then
+                    # discarded all of them — CONNECTED, EVENTS 0. Mark it UTC
+                    # explicitly so the wire format is unambiguous.
+                    if ts_iso and not ts_iso.endswith("Z") and "+" not in ts_iso[10:]:
+                        ts_iso += "Z"
+                    row_id = str(r.get("id") or "")
+                    if last_seen is not None:
+                        if ts_iso < last_seen:
+                            continue
+                        if ts_iso == last_seen and row_id in seen_at_cursor:
+                            continue
+                    if ts_iso != last_seen:
+                        seen_at_cursor = set()
                     last_seen = ts_iso
+                    seen_at_cursor.add(row_id)
                     sent += 1
                     yield {"event": "log", "data": json.dumps({
                         "id": r.get("id"), "source": r.get("source"),

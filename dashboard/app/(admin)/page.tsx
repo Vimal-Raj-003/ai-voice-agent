@@ -10,13 +10,18 @@ import {
 } from "lucide-react";
 import StatCard from "@/components/StatCard";
 import ActiveCallsPanel from "@/components/ActiveCallsPanel";
-import VoicePipelineDiagnostics from "@/components/VoicePipelineDiagnostics";
 import CallsTimeline from "@/components/charts/CallsTimeline";
 import OutcomeDonut from "@/components/charts/OutcomeDonut";
 import BookingGauge from "@/components/charts/BookingGauge";
 import TokensTimeline from "@/components/charts/TokensTimeline";
 import CostStackedBar from "@/components/charts/CostStackedBar";
 import { aggregateCalls, buildRateMap, computeCallCost } from "@/lib/cost";
+import { getUsdInrRate } from "@/lib/currency";
+import OverviewCosts from "@/components/OverviewCosts";
+import RatesPanel from "@/components/RatesPanel";
+import { type CallCostRow } from "@/components/CostsView";
+import Money from "@/components/Money";
+import { AlertTriangle } from "lucide-react";
 
 export default async function Overview() {
   const { id: orgId } = await getDefaultOrg();
@@ -31,6 +36,7 @@ export default async function Overview() {
     activeCallsRaw,
     rates,
     costCalls,
+    fx,
   ] = await Promise.all([
     prisma.call.count({ where: { organizationId: orgId } }),
     prisma.call.count({ where: { organizationId: orgId, wasBooked: true } }),
@@ -60,6 +66,13 @@ export default async function Overview() {
         createdAt: true,
         direction: true,
         durationSeconds: true,
+        // Added for the embedded Costs section's per-call table. Same single
+        // query as before — no second fetch.
+        toNumber: true,
+        fromNumber: true,
+        status: true,
+        recordingDurationSeconds: true,
+        assistant: { select: { llmModel: true } },
         llmInputTokens: true,
         llmOutputTokens: true,
         llmProviderUsed: true,
@@ -73,6 +86,7 @@ export default async function Overview() {
         telephonyProvider: true,
       },
     }),
+    getUsdInrRate(),
   ]);
 
   // Build the last-14-days timelines by binning recentCalls by ISO date.
@@ -117,6 +131,54 @@ export default async function Overview() {
     0,
   );
 
+  // ── Costs & Usage section figures ────────────────────────────────────────
+  // Reuses the rateMap + costAgg already computed above; only the per-call rows
+  // and the today/month sums are new, so no cost calculation is duplicated.
+  const costCallRows: CallCostRow[] = costCalls.map((c) => {
+    const b = computeCallCost(c, rateMap, {
+      includeUnavailable: true,
+      configuredLlmModel: c.assistant?.llmModel ?? null,
+    });
+    return {
+      id: c.id,
+      phone: c.direction === "INBOUND" ? c.fromNumber : c.toNumber,
+      direction: c.direction,
+      status: c.status,
+      createdAtIso: c.createdAt.toISOString(),
+      durationSeconds: c.durationSeconds,
+      totalUsd: b.totalUsd,
+      hasUnknownRates: b.hasUnknownRates,
+      lines: b.lines,
+    };
+  });
+  const startOfToday = new Date();
+  startOfToday.setUTCHours(0, 0, 0, 0);
+  const startOfMonth = new Date();
+  startOfMonth.setUTCDate(1);
+  startOfMonth.setUTCHours(0, 0, 0, 0);
+  let costTodayUsd = 0;
+  let costMonthUsd = 0;
+  for (const r of costCallRows) {
+    const t = new Date(r.createdAtIso);
+    if (t >= startOfToday) costTodayUsd += r.totalUsd;
+    if (t >= startOfMonth) costMonthUsd += r.totalUsd;
+  }
+  const costTotalCalls = costCalls.length;
+  const costAvgPerCall = costTotalCalls > 0 ? costAgg.totalUsd / costTotalCalls : 0;
+  const costTotalMinutes =
+    costCalls.reduce((sum, c) => sum + (c.durationSeconds ?? 0), 0) / 60;
+  const spendingProviders = costAgg.byProvider.filter((p) => p.costUsd > 0);
+
+  // Rate-freshness banner, same thresholds as the old Costs page.
+  const RATES_STALE_THRESHOLD_MIN = 180 + 20; // cron every 3h + slack
+  const lastVerified = rates.reduce<Date | null>(
+    (acc, r) => (acc && acc > r.lastVerifiedAt ? acc : r.lastVerifiedAt),
+    null,
+  );
+  const ratesAgeMinutes = lastVerified
+    ? Math.floor((Date.now() - new Date(lastVerified).getTime()) / 60000)
+    : null;
+
   // Outcome distribution for the donut.
   const outcomeMap = new Map<string, number>();
   for (const c of recentCalls) {
@@ -139,14 +201,47 @@ export default async function Overview() {
   }));
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold">Overview</h1>
-        <p className="text-sm text-gray-400 mt-1">
-          Real-time view of the voice platform — calls, bookings, and live
-          activity in the last 14 days.
-        </p>
-      </div>
+    <OverviewCosts
+      fx={fx}
+      header={
+        <div>
+          <h1 className="text-3xl font-bold">Overview</h1>
+          <p className="text-sm text-gray-400 mt-1">
+            Real-time view of the voice platform — calls, bookings, and live
+            activity in the last 14 days.
+          </p>
+        </div>
+      }
+      costs={{
+        totalUsd: costAgg.totalUsd,
+        totalCalls: costTotalCalls,
+        avgPerCallUsd: costAvgPerCall,
+        totalMinutes: costTotalMinutes,
+        todayUsd: costTodayUsd,
+        monthUsd: costMonthUsd,
+        byDay: costAgg.byDay,
+        byProvider: spendingProviders,
+        activeProviders: spendingProviders.map((p) => p.provider),
+        calls: costCallRows,
+      }}
+      ratesPanel={
+        <div className="space-y-4">
+      {/* Provider rate table + freshness banner, as on the old Costs page.
+              Prisma Decimal is not serialisable, so rateUsd is flattened. */}
+          <RatesPanel rates={rates.map((r) => ({ ...r, rateUsd: r.rateUsd.toString() }))} />
+          {ratesAgeMinutes != null && ratesAgeMinutes > RATES_STALE_THRESHOLD_MIN && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.08] p-3 text-xs text-amber-200">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>
+                Rates were last refreshed {Math.floor(ratesAgeMinutes / 60)} hr{" "}
+                {ratesAgeMinutes % 60} min ago — older than the 3-hour auto-refresh
+                cadence. Check whether the voice-service scheduler is running.
+              </span>
+            </div>
+          )}
+        </div>
+      }
+    >
 
       {/* Top stat tiles — calls + bookings + spend + tokens */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -163,10 +258,13 @@ export default async function Overview() {
           icon={CalendarCheck}
           tone="emerald"
         />
+        {/* <Money/> formats on the CLIENT from the currency context, so these
+            tiles follow the USD/INR toggle. A server-formatted "$..." string
+            could never react to it - that was the Spend (14d) bug. */}
         <StatCard
           label="Spend (14d)"
-          value={`$${costAgg.totalUsd.toFixed(2)}`}
-          hint={`Today $${todaysSpend.toFixed(4)}`}
+          value={<Money usd={costAgg.totalUsd} />}
+          hint={<>Today <Money usd={todaysSpend} decimals={4} /></>}
           icon={CircleDollarSign}
           tone="violet"
         />
@@ -330,9 +428,6 @@ export default async function Overview() {
         </section>
       </div>
 
-      {/* Realtime voice-pipeline diagnostics — reads the existing Live Logs SSE
-          stream to show exactly where a call breaks. Observability only. */}
-      <VoicePipelineDiagnostics />
-    </div>
+    </OverviewCosts>
   );
 }

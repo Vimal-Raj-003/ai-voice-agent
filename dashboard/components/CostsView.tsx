@@ -20,6 +20,7 @@ import CostStackedBar from "./charts/CostStackedBar";
 import CostByProvider from "./charts/CostByProvider";
 import { COST_CATEGORY_LABEL, type CostCategory, type CostLine } from "@/lib/cost";
 import { type Currency, type FxRate, formatMoney } from "@/lib/currency";
+import CurrencyToggle from "@/components/CurrencyToggle";
 
 export type CallCostRow = {
   id: string;
@@ -33,8 +34,19 @@ export type CallCostRow = {
   lines: CostLine[];
 };
 
-type Props = {
+export type CostsViewProps = {
   fx: FxRate;
+  /** Controlled display currency; omit to keep the internal toggle state. */
+  currency?: Currency;
+  onCurrencyChange?: (c: Currency) => void;
+  /** Hide the built-in toggle when a parent renders one. */
+  hideToggle?: boolean;
+  /** Render the header, summary cards and charts. False when a parent shows
+      only the Cost-by-call table in a panel. Default true. */
+  showSummary?: boolean;
+  /** Render the Cost-by-call section. False when a parent shows it in a
+      collapsible panel instead. Default true keeps standalone usage intact. */
+  showCalls?: boolean;
   totalUsd: number;
   totalCalls: number;
   avgPerCallUsd: number;
@@ -76,8 +88,13 @@ const STATUS_TONE: Record<string, string> = {
   CANCELED: "text-gray-400 bg-white/5",
 };
 
-export default function CostsView(p: Props) {
-  const [currency, setCurrency] = useState<Currency>("USD");
+export default function CostsView(p: CostsViewProps) {
+  // Currency can be CONTROLLED by a parent (Overview owns the header toggle and
+  // shares one choice with this section) or left uncontrolled, which preserves
+  // the original standalone behaviour.
+  const [ownCurrency, setOwnCurrency] = useState<Currency>("USD");
+  const currency = p.currency ?? ownCurrency;
+  const setCurrency = p.onCurrencyChange ?? setOwnCurrency;
   const [openId, setOpenId] = useState<string | null>(null);
   // The call list can run to hundreds of rows, so it starts compact and grows
   // a page at a time instead of dominating the screen. No data is dropped —
@@ -86,7 +103,6 @@ export default function CostsView(p: Props) {
   const callSectionRef = useRef<HTMLElement>(null);
 
   const rate = p.fx.rate;
-  const canInr = rate != null;
   const money = (usd: number, d = 2) => formatMoney(usd, currency, rate, d);
 
   // Newest first.
@@ -114,6 +130,8 @@ export default function CostsView(p: Props) {
 
   return (
     <div className="space-y-8">
+      {(p.showSummary ?? true) && (
+      <>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold">Costs</h1>
@@ -124,37 +142,11 @@ export default function CostsView(p: Props) {
           </p>
         </div>
 
-        {/* Currency toggle — one rate for the whole page. */}
-        <div className="text-right">
-          <div className="inline-flex rounded-lg border border-white/10 bg-black/30 p-0.5">
-            {(["USD", "INR"] as Currency[]).map((c) => {
-              const disabled = c === "INR" && !canInr;
-              return (
-                <button
-                  key={c}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => setCurrency(c)}
-                  title={disabled ? `Exchange rate unavailable — ${p.fx.error}` : `Show amounts in ${c}`}
-                  className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
-                    currency === c
-                      ? "bg-violet-500/20 text-violet-200"
-                      : "text-gray-400 hover:text-gray-200"
-                  } disabled:cursor-not-allowed disabled:opacity-40`}
-                >
-                  {c === "USD" ? "$ USD" : "₹ INR"}
-                </button>
-              );
-            })}
-          </div>
-          <p className="mt-1 text-[10px] text-gray-500">
-            {canInr
-              ? currency === "INR"
-                ? `1 USD = ₹${rate!.toFixed(4)} · ${p.fx.source === "live" ? "live rate" : "configured rate"}`
-                : "Amounts stored in USD"
-              : "INR unavailable — no exchange rate"}
-          </p>
-        </div>
+        {/* Shared control. Hidden when a parent (Overview) renders it in its
+            own header and drives this section through `currency`. */}
+        {!p.hideToggle && (
+          <CurrencyToggle fx={p.fx} currency={currency} onChange={setCurrency} />
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
@@ -212,8 +204,11 @@ export default function CostsView(p: Props) {
           )}
         </section>
       </div>
+      </>
+      )}
 
       {/* ── Cost by call ──────────────────────────────────────────────── */}
+      {(p.showCalls ?? true) && (
       <section ref={callSectionRef} className="glass scroll-mt-4 rounded-2xl p-5">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
@@ -283,6 +278,7 @@ export default function CostsView(p: Props) {
           </div>
         )}
       </section>
+      )}
     </div>
   );
 }

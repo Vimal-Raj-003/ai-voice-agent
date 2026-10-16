@@ -1,22 +1,16 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useSidebar } from "@/lib/sidebar-context";
 import {
   LayoutDashboard,
   Bot,
   Users,
   Megaphone,
-  PhoneCall,
   Activity,
   Settings,
   Sparkles,
   Calendar,
-  Webhook,
-  CircleDollarSign,
-  Hash,
-  Key,
-  Wrench,
-  Ban,
   Server,
 } from "lucide-react";
 
@@ -24,17 +18,14 @@ const links = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/assistants", label: "Assistants", icon: Bot },
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
+  // API keys are a tab of Settings (/settings?tab=api-keys).
+  // Costs & Usage is a section of Overview (/#costs).
+  // Do-Not-Call, Phone numbers and Calls are sections of Contacts
+  // (?section=dnc|numbers|calls)
   { href: "/contacts", label: "Contacts", icon: Users },
-  { href: "/phone-numbers", label: "Phone numbers", icon: Hash },
-  { href: "/dnd", label: "Do-Not-Call", icon: Ban },
-  { href: "/calls", label: "Calls", icon: PhoneCall },
-  { href: "/costs", label: "Costs", icon: CircleDollarSign },
   { href: "/calendar", label: "Calendar", icon: Calendar },
-  { href: "/tools", label: "Tools", icon: Wrench },
   { href: "/live-logs", label: "Live Logs", icon: Activity },
   { href: "/providers", label: "Providers", icon: Server },
-  { href: "/webhooks", label: "Webhooks", icon: Webhook },
-  { href: "/api-keys", label: "API keys", icon: Key },
   { href: "/demo", label: "Demo", icon: Sparkles },
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/team", label: "Team", icon: Users },
@@ -42,8 +33,18 @@ const links = [
 
 export default function SidebarNav() {
   const path = usePathname();
+  const { collapsed, setCollapsed } = useSidebar();
+
+  // Choosing a destination collapses the sidebar so the page it opens gets
+  // the width. Only from md upwards: on mobile the sidebar is the drawer and
+  // collapsing it would be meaningless. Expanding again is one click.
+  const onNavigate = () => {
+    if (typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches) {
+      setCollapsed(true);
+    }
+  };
   return (
-    <nav className="flex flex-col gap-1">
+    <nav className="flex w-full flex-col gap-1">
       {links.map(({ href, label, icon: Icon }) => {
         const active =
           path === href || (href !== "/" && path.startsWith(href));
@@ -51,7 +52,16 @@ export default function SidebarNav() {
           <Link
             key={href}
             href={href}
-            className={`group relative flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition ${
+            onClick={onNavigate}
+            // Native title doubles as the collapsed-mode tooltip and works on
+            // keyboard focus; aria-label keeps the name for screen readers once
+            // the visible text is gone.
+            title={collapsed ? label : undefined}
+            aria-label={collapsed ? label : undefined}
+            aria-current={active ? "page" : undefined}
+            className={`group relative flex items-center rounded-xl text-sm transition ${
+              collapsed ? "justify-center px-2 py-2" : "gap-3 px-3 py-2"
+            } ${
               active
                 ? "bg-white/[0.06] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
                 : "text-gray-400 hover:bg-white/[0.04] hover:text-white"
@@ -68,7 +78,7 @@ export default function SidebarNav() {
                   : "text-gray-500 group-hover:text-gray-300"
               }
             />
-            {label}
+            {!collapsed && label}
           </Link>
         );
       })}

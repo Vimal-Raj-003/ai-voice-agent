@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
+import { useSidebar } from "@/lib/sidebar-context";
 import { Phone, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 import {
   quickDispatchAction,
@@ -10,11 +11,28 @@ import { LANGUAGE_PRESETS } from "@/lib/language-presets";
 import Select from "./Select";
 
 export default function QuickDispatch() {
+  // Collapsed, the panel has no room; the icon expands the sidebar and opens
+  // the same form. Dispatch logic itself is untouched.
+  const { collapsed, setCollapsed } = useSidebar();
   const [expanded, setExpanded] = useState(false);
   const [state, formAction, pending] = useActionState<
     QuickDispatchResult | null,
     FormData
   >(quickDispatchAction, null);
+
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => { setCollapsed(false); setExpanded(true); }}
+        title="Quick dispatch"
+        aria-label="Quick dispatch"
+        className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-gradient-to-br from-violet-500/[0.12] to-cyan-500/[0.12] p-2 text-purple-300 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50"
+      >
+        <Phone size={14} />
+      </button>
+    );
+  }
 
   return (
     <div className="ring-gradient rounded-xl bg-gradient-to-br from-violet-500/[0.08] via-fuchsia-500/[0.04] to-cyan-500/[0.08] p-3">

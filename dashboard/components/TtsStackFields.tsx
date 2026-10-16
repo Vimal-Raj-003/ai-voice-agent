@@ -15,7 +15,6 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import FormField from "./FormField";
 import Select from "./Select";
-import ProviderBadges from "./ProviderBadges";
 import ProviderStatusChip from "./ProviderStatusChip";
 import {
   useProviderRegistry, selectableProviders, findProvider,
@@ -87,14 +86,13 @@ export default function TtsStackFields({
         />
         {current && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-            {/* Recommendation badges: how good/affordable this provider is. */}
-            <ProviderBadges registryBadges={current.badges} />
-            {/* Connection status, kept as its own chip (never inside the row above). */}
+            {/* Recommendation badges and the price caption were removed from
+                here: both already appear inside each dropdown option's
+                description, so showing them again only added height.
+                The connection chip STAYS - it is operational state and is
+                NOT duplicated in the options. */}
             <ProviderStatusChip status={current.statusBadge} />
           </div>
-        )}
-        {current?.priceLabel && (
-          <p className="mt-1 text-[11px] text-gray-500">{current.priceLabel}</p>
         )}
         {current?.needsCredential && (
           <p className="mt-1 text-[11px] text-amber-300">

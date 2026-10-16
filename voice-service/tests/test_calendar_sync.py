@@ -52,7 +52,7 @@ async def test_book_success_syncs_both(monkeypatch):
     monkeypatch.setattr("tools.db.check_slot", check_slot)
     monkeypatch.setattr("tools.db.insert_appointment", insert)
 
-    out = await _tools().book_appointment("Ravi", "+919876500000", "2026-06-01", "10:00", "demo")
+    out = await _tools().book_appointment("Ravi", "2026-06-01", "10:00", "demo")
     assert calls.get("booked") is True
     assert calls.get("calcom_uid") == "CAL-UID-1"   # local row linked to Cal.com
     assert "LOCAL123" in out
@@ -78,7 +78,7 @@ async def test_calcom_busy_blocks_booking(monkeypatch):
     monkeypatch.setattr(tools, "calcom_book", book)
     monkeypatch.setattr("tools.db.insert_appointment", insert)
 
-    out = await _tools().book_appointment("Ravi", "+919876500000", "2026-06-01", "10:00", "demo")
+    out = await _tools().book_appointment("Ravi", "2026-06-01", "10:00", "demo")
     assert booked["v"] is False
     assert inserted["v"] is False
     assert "another time" in out.lower()
@@ -105,7 +105,7 @@ async def test_local_busy_blocks_booking(monkeypatch):
     monkeypatch.setattr("tools.db.check_slot", check_slot)
     monkeypatch.setattr("tools.db.get_next_available", next_avail)
 
-    out = await _tools().book_appointment("Ravi", "+919876500000", "2026-06-01", "10:00", "demo")
+    out = await _tools().book_appointment("Ravi", "2026-06-01", "10:00", "demo")
     assert booked["v"] is False
     assert "11:00" in out
 
@@ -125,7 +125,7 @@ async def test_calcom_api_error_no_booking(monkeypatch):
     monkeypatch.setattr(tools, "calcom_slot_free", slot_free)
     monkeypatch.setattr("tools.db.insert_appointment", insert)
 
-    out = await _tools().book_appointment("Ravi", "+919876500000", "2026-06-01", "10:00", "demo")
+    out = await _tools().book_appointment("Ravi", "2026-06-01", "10:00", "demo")
     assert inserted["v"] is False
     assert "can't reach the calendar" in out.lower()
 
@@ -150,7 +150,7 @@ async def test_calcom_ok_local_fail_reports_inconsistency(monkeypatch):
     monkeypatch.setattr("tools.db.insert_appointment", insert)
 
     t = _tools()
-    out = await t.book_appointment("Ravi", "+919876500000", "2026-06-01", "10:00", "demo")
+    out = await t.book_appointment("Ravi", "2026-06-01", "10:00", "demo")
     # Cal.com is the source of truth: booking is reported confirmed with its ref,
     # not a silent failure or a fake local success.
     assert "CAL-UID-9" in out
@@ -212,7 +212,7 @@ async def test_local_only_when_calcom_unconfigured(monkeypatch):
     monkeypatch.setattr(tools, "calcom_book", book)
     monkeypatch.setattr("tools.db.insert_appointment", insert)
 
-    out = await _tools().book_appointment("Ravi", "+919876500000", "2026-06-01", "10:00", "demo")
+    out = await _tools().book_appointment("Ravi", "2026-06-01", "10:00", "demo")
     assert "calcom_called" not in seen          # Cal.com never contacted
     assert seen.get("calcom_uid") is None
     assert "LOCALONLY1" in out

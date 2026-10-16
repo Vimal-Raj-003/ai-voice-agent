@@ -35,6 +35,19 @@ const SCHEDULE_OPTIONS = [
   { value: "WEEKDAYS", label: "Weekdays", description: "Mon–Fri at scheduled time IST" },
 ];
 
+// Concurrency and dial RATE are different controls and are labelled as such:
+// one is how many calls may be up at once, the other is how fast new ones start.
+const CONCURRENCY_OPTIONS = [
+  { value: "3", label: "3 simultaneous calls" },
+  { value: "5", label: "5 simultaneous calls" },
+  { value: "10", label: "10 simultaneous calls" },
+];
+const RATE_OPTIONS = [
+  { value: "5", label: "5 calls / minute" },
+  { value: "10", label: "10 calls / minute" },
+  { value: "20", label: "20 calls / minute" },
+];
+
 export default function CampaignForm({
   action,
   assistants,
@@ -54,7 +67,7 @@ export default function CampaignForm({
   ];
 
   return (
-    <form action={action} className="glass rounded-2xl p-5 space-y-5 max-w-2xl">
+    <form id="campaign-form" action={action} className="glass rounded-2xl p-5 space-y-5 max-w-2xl">
       <Field label="Name">
         <input
           name="name"
@@ -128,6 +141,26 @@ export default function CampaignForm({
             name="callDelaySeconds"
             defaultValue={initial?.callDelaySeconds ?? 3}
             className={inputCls}
+          />
+        </Field>
+        <Field
+          label="Max concurrent calls"
+          tooltip="How many of this campaign's calls may be CONNECTED at the same time. This is a request: the dispatcher enforces the strictest of your telephony account limit, the outbound trunk limit and this number, and shows the result below."
+        >
+          <Select
+            name="maxConcurrent"
+            options={CONCURRENCY_OPTIONS}
+            defaultValue={String(initial?.maxConcurrent ?? 3)}
+          />
+        </Field>
+        <Field
+          label="Calls started per minute"
+          tooltip="How fast NEW calls are started — a dial RATE, not a concurrency limit. Counted from dispatched calls, so it still holds after a restart. A high rate with few slots simply means calls wait for a free slot."
+        >
+          <Select
+            name="maxStartsPerMinute"
+            options={RATE_OPTIONS}
+            defaultValue={String(initial?.maxStartsPerMinute ?? 10)}
           />
         </Field>
         <Field

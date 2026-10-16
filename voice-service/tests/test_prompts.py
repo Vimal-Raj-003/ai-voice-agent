@@ -28,9 +28,16 @@ def test_build_prompt_uses_custom_prompt():
     assert out.startswith("Hello X!")
 
 
-def test_build_prompt_silently_falls_back_on_keyerror():
-    out = build_prompt(custom_prompt="Hello {unknown_field}!")
+def test_build_prompt_leaves_an_unknown_placeholder_alone():
+    """An unsupported brace is preserved as the operator wrote it. It used to
+    make str.format raise, which abandoned ALL substitution for that prompt;
+    now only the known placeholders are replaced. See
+    test_prompt_enforcement.py for the substitution guarantees."""
+    out = build_prompt(custom_prompt="Hello {unknown_field} from {business_name}!",
+                       business_name="VIMS Enterprise")
     assert "{unknown_field}" in out
+    assert "VIMS Enterprise" in out, "the known placeholder must still be filled"
+    assert "{business_name}" not in out
 
 
 def test_build_prompt_appends_ist_time_context():

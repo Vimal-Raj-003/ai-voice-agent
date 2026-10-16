@@ -8,6 +8,16 @@ SIP_DOMAIN              = os.getenv("VOBIZ_SIP_DOMAIN", "")
 OUTBOUND_TRUNK_ID       = os.getenv("OUTBOUND_TRUNK_ID", "")
 INBOUND_TRUNK_ID        = os.getenv("INBOUND_TRUNK_ID", "")
 
+# ── Vobiz REST API (post-call recording retrieval) ───────────────────────────
+# SEPARATE from the VOBIZ_SIP_* trunk credentials above: these are the account
+# API credentials (Vobiz Console → Auth ID / Auth Token) used for
+# GET /cdr and GET /Recording/. They live only in this process — the dashboard
+# proxies recording audio through voice-service rather than holding a copy, so
+# no Vobiz credential ever reaches the browser.
+VOBIZ_AUTH_ID           = os.getenv("VOBIZ_AUTH_ID", "").strip()
+VOBIZ_AUTH_TOKEN        = os.getenv("VOBIZ_AUTH_TOKEN", "").strip()
+VOBIZ_API_BASE          = os.getenv("VOBIZ_API_BASE", "https://api.vobiz.ai").rstrip("/")
+
 # ── Gemini Live defaults ──────────────────────────────────────────────────────
 GEMINI_MODEL            = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
 GEMINI_TTS_VOICE        = os.getenv("GEMINI_TTS_VOICE", "Aoede")

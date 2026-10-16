@@ -590,3 +590,26 @@ body.modal-open {
 .recharts-tooltip-item-separator,
 .recharts-tooltip-item-value,
 .recharts-tooltip-item-unit { color: var(--text-secondary) !important; }
+
+/* ── Assistant edit page: 55 / 45, two columns ────────────────────────────
+ * Declared as a real media query rather than a Tailwind arbitrary variant:
+ * arbitrary `grid-cols-[...]` / `min-[...]` variants generated no rule at all
+ * under Tailwind v4 here, so the grid silently stayed at the fallback.
+ *
+ * Deliberately OUTSIDE @layer — unlayered declarations win over layered ones
+ * regardless of source order, so this beats `md:grid-cols-2` without relying
+ * on utility ordering.
+ *
+ * minmax(0, Nfr) rather than bare Nfr: a bare fr track has an automatic
+ * min-content minimum, so a long select or phone number could push a column
+ * past its share. The fr ratio applies to the space left after the 16px gap,
+ * so 11fr : 9fr = exactly 55 / 45 of the usable width.
+ *
+ * Below 1280px the md:grid-cols-2 utility gives two EQUAL halves (tablet): a
+ * 45% right track at 834px would be ~360px, too tight for the provider selects.
+ */
+@media (min-width: 1280px) {
+  .assistant-grid {
+    grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
+  }
+}

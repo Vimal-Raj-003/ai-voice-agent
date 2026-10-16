@@ -11,11 +11,9 @@
 // it as well.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Globe, RotateCw, Trash2, Plus, Loader2, CheckCircle2, AlertTriangle, Clock,
-  Upload, FileText, Image as ImageIcon, FileSpreadsheet, Link2, Eye,
-} from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, Eye, FileSpreadsheet, FileText, FolderOpen, Globe, Image as ImageIcon, Link2, Loader2, Plus, RotateCw, Trash2, Upload } from "lucide-react";
 import KnowledgeInspector from "./KnowledgeInspector";
+import InfoTooltip from "./InfoTooltip";
 
 type Source = {
   id: string;
@@ -63,6 +61,10 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"URL" | "FILE">("URL");
+  // The existing-source list is collapsed by default to save vertical space.
+  // Separate from `tab` because it is a toggle, not an add-mode: clicking
+  // "Uploaded Files" again hides it and leaves the URL/File choice alone.
+  const [showSources, setShowSources] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   // Which source's indexed data is open. Read-only; closing changes nothing.
   const [inspecting, setInspecting] = useState<Source | null>(null);
@@ -159,21 +161,25 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
   };
 
   return (
-    <section className="glass rounded-2xl p-5">
-      <div className="mb-1 flex items-center gap-2">
+    // max-w-3xl keeps this a card rather than a full-width banner: the page
+    // container is ~1700px, and nothing else shares this row, so constraining
+    // the card avoids the long empty stretch without leaving a gap elsewhere.
+    // min-w-0 so it still shrinks correctly if it is ever placed in a grid.
+    <section className="glass min-w-0 rounded-2xl p-4 space-y-2">
+      <div className="flex items-center gap-2">
         <Globe size={15} className="text-violet-300" />
-        <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
+        <h2 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
           Knowledge
+          <InfoTooltip width={300}>
+            Add your website or upload documents, and this assistant will answer
+            callers from them. If a caller asks something your sources don&apos;t
+            cover, the assistant says so instead of guessing.
+          </InfoTooltip>
         </h2>
       </div>
-      <p className="mb-3 text-xs text-gray-500">
-        Add your website or upload documents, and this assistant will answer callers
-        from them. If a caller asks something your sources don&apos;t cover, the
-        assistant says so instead of guessing.
-      </p>
 
       {/* Both tabs feed the same knowledge base; the tab only picks how you add. */}
-      <div className="mb-3 inline-flex rounded-lg border border-white/10 bg-black/30 p-0.5">
+      <div className="flex w-full flex-wrap items-center gap-0.5 rounded-lg border border-white/10 bg-black/30 p-0.5">
         {([["URL", "URL", Link2], ["FILE", "Upload File", Upload]] as const).map(([key, label, Icon]) => (
           <button
             key={key}
@@ -186,6 +192,24 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
             <Icon size={12} /> {label}
           </button>
         ))}
+        {/* Reveals the existing sources below. A toggle, so it does not
+            disturb the URL / Upload File selection. */}
+        <button
+          type="button"
+          onClick={() => setShowSources((v) => !v)}
+          aria-expanded={showSources}
+          aria-controls="knowledge-sources"
+          className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition ${
+            showSources ? "bg-violet-500/20 text-violet-200" : "text-gray-400 hover:text-gray-200"
+          }`}
+        >
+          <FolderOpen size={12} /> Uploaded Files
+          {sources.length > 0 && (
+            <span className="rounded bg-white/10 px-1 text-[10px] tabular-nums text-gray-300">
+              {sources.length}
+            </span>
+          )}
+        </button>
       </div>
 
       {tab === "FILE" ? (
@@ -206,7 +230,7 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
           </p>
         </div>
       ) : (
-      <div className="flex gap-2">
+      <div className="flex items-stretch gap-2">
         <input
           key="knowledge-url-input"
           value={url}
@@ -221,7 +245,7 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
           type="button"
           onClick={() => void add()}
           disabled={busy || !url.trim()}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-violet-500/20 px-3 py-2 text-xs font-semibold text-violet-200 transition hover:bg-violet-500/30 disabled:opacity-40"
+          className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-violet-500/20 px-3 text-xs font-semibold text-violet-200 transition hover:bg-violet-500/30 disabled:opacity-40"
         >
           <Plus size={13} /> Add URL
         </button>
@@ -229,7 +253,8 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
       )}
       {notice && <p className="mt-1.5 text-[11px] text-amber-300">{notice}</p>}
 
-      <div className="mt-4 space-y-2">
+      {showSources && (
+      <div id="knowledge-sources" className="mt-3 space-y-2">
         {sources.length === 0 && (
           <p className="py-6 text-center text-xs text-gray-500">
             Nothing added yet — add a website or upload a document.
@@ -314,6 +339,7 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
           );
         })}
       </div>
+      )}
 
       {/* Read-only inspector for one source. Mounted only while open, so it
           fetches nothing until the operator asks to see the stored data. */}

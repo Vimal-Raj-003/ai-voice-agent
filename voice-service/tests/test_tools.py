@@ -5,14 +5,58 @@ import pytest
 from tools import AppointmentTools
 
 
-def test_build_tool_list_returns_all_when_empty():
+def test_build_tool_list_returns_core_tools_when_empty(monkeypatch):
+    """An empty `enabled` list yields the always-available core tools.
+
+    The optional tools are deliberately gated and must NOT be in the default
+    set: lookup_contact is opt-in (prior history is already in the system
+    prompt, so shipping its schema every turn only burns Groq input tokens),
+    and the Cal.com / Twilio tools are exposed only when their backend is
+    configured, because an unusable tool's schema costs ITPM on every request.
+    """
+    monkeypatch.delenv("CALCOM_API_KEY", raising=False)
+    monkeypatch.delenv("CALCOM_EVENT_TYPE_ID", raising=False)
+    for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER"):
+        monkeypatch.delenv(k, raising=False)
     ctx = MagicMock()
     t = AppointmentTools(ctx, "+91111", "Ravi")
-    out = t.build_tool_list([])
-    names = {fn.__name__ for fn in out}
+    names = {fn.__name__ for fn in t.build_tool_list([])}
     assert {"check_availability", "book_appointment", "end_call",
-            "transfer_to_human", "send_sms_confirmation", "lookup_contact",
-            "remember_details", "book_calcom", "cancel_calcom"} <= names
+            "transfer_to_human", "remember_details"} <= names
+    # gated off when their backend is absent
+    assert "book_calcom" not in names
+    assert "cancel_calcom" not in names
+    assert "send_sms_confirmation" not in names
+    assert "lookup_contact" not in names
+
+
+def test_build_tool_list_exposes_calcom_tools_when_configured(monkeypatch):
+    """Configuring Cal.com adds cancellation — the gate works both ways.
+
+    UPDATED: book_calcom is no longer in the DEFAULT set. It books Cal.com
+    without writing the local row, so a booking made through it is invisible to
+    the local calendar, reminders and reconciliation, and it duplicates
+    book_appointment (which does both as one synchronised operation) at ~160
+    input tokens of schema on every request. The method and its backend are
+    retained and it is still reachable by naming it explicitly — asserted
+    below. See test_context_consolidation.py.
+    """
+    monkeypatch.setenv("CALCOM_API_KEY", "cal_test_key")
+    monkeypatch.setenv("CALCOM_EVENT_TYPE_ID", "3918684")
+    ctx = MagicMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    default = {fn.__name__ for fn in t.build_tool_list([])}
+    assert "cancel_calcom" in default, "cancellation must stay available"
+    assert "book_calcom" not in default, "the legacy booking path is opt-in now"
+    opt_in = {fn.__name__ for fn in t.build_tool_list(["book_calcom", "cancel_calcom"])}
+    assert {"book_calcom", "cancel_calcom"} <= opt_in
+
+
+def test_build_tool_list_opt_in_lookup_contact(monkeypatch):
+    """lookup_contact appears only when explicitly enabled for the assistant."""
+    ctx = MagicMock()
+    t = AppointmentTools(ctx, "+91111", "Ravi")
+    assert "lookup_contact" in {fn.__name__ for fn in t.build_tool_list(["lookup_contact"])}
 
 
 def test_build_tool_list_filters_by_enabled():
@@ -25,6 +69,8 @@ def test_build_tool_list_filters_by_enabled():
 
 @pytest.mark.asyncio
 async def test_check_availability_returns_available(monkeypatch):
+    monkeypatch.delenv("CALCOM_API_KEY", raising=False)
+    monkeypatch.delenv("CALCOM_EVENT_TYPE_ID", raising=False)
     async def fake_check_slot(date, time): return True
     async def fake_get_next(date, time): return "2026-06-01 at 11:00"
     monkeypatch.setattr("tools.db.check_slot", fake_check_slot)
@@ -37,6 +83,8 @@ async def test_check_availability_returns_available(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_check_availability_returns_next_when_booked(monkeypatch):
+    monkeypatch.delenv("CALCOM_API_KEY", raising=False)
+    monkeypatch.delenv("CALCOM_EVENT_TYPE_ID", raising=False)
     async def fake_check_slot(date, time): return False
     async def fake_get_next(date, time): return "2026-06-01 at 11:00"
     monkeypatch.setattr("tools.db.check_slot", fake_check_slot)
@@ -59,7 +107,7 @@ async def test_book_appointment_returns_confirmation(monkeypatch):
     monkeypatch.setattr("tools.db.insert_appointment", fake_insert)
     ctx = MagicMock()
     t = AppointmentTools(ctx, "+91111", "Ravi")
-    out = await t.book_appointment("Ravi", "+91111", "2026-06-01", "10:00", "consultation")
+    out = await t.book_appointment("Ravi", "2026-06-01", "10:00", "consultation")
     assert "ABC12345" in out
     assert "2026-06-01" in out
 

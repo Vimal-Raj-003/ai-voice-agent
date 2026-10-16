@@ -3,7 +3,6 @@ import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
 import { deleteAssistant } from "../actions";
 import AssistantForm from "@/components/AssistantForm";
-import UrlSetup from "@/components/UrlSetup";
 
 export const dynamic = "force-dynamic";
 
@@ -35,22 +34,22 @@ export default async function AssistantDetailPage({
   });
   const remove = deleteAssistant.bind(null, id);
   return (
-    <div className="space-y-6">
-      <h1 className="text-3xl font-bold">{a.name}</h1>
+    <div>
+      {/* The heading and both page actions live in AssistantForm's header so
+          Save can carry the form's pending state. `remove` is the same bound
+          deleteAssistant action as before — AssistantForm renders it as its
+          own <form>, a SIBLING of the assistant form (nesting would be invalid
+          HTML and would break submission). Authorization and the redirect are
+          unchanged. */}
       <AssistantForm
         mode="edit"
         initial={a}
         tools={tools}
         selectedToolIds={bindings.map((b) => b.toolId)}
         transferTargets={transferTargets}
+        title={a.name}
+        dangerAction={remove}
       />
-      {/* Website knowledge for THIS assistant only. */}
-      <UrlSetup assistantId={id} />
-      <form action={remove}>
-        <button className="text-sm text-red-400 hover:text-red-300">
-          Delete assistant
-        </button>
-      </form>
     </div>
   );
 }

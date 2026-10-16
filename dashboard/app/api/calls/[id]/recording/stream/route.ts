@@ -1,15 +1,15 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
-import { fetchLocalRecording, isLocalRecordingKey } from "@/lib/recordings";
+import { fetchLocalRecording, fetchVobizRecording, isLocalRecordingKey } from "@/lib/recordings";
 import { resolveRecording } from "@/lib/recording-source";
-import { getVobizCredentials, fetchRecordingAudio, audioContentType } from "@/lib/vobiz";
 
 // Streams a call recording to the browser from whichever backend holds it:
 //
-//   VOBIZ -> the carrier's own copy, proxied here because Vobiz's
-//            `recording_url` requires X-Auth-ID/X-Auth-Token headers. Those
-//            must never reach the browser, so redirecting is not an option.
+//   VOBIZ -> the carrier's own copy, proxied via voice-service. Vobiz's
+//            `recording_url` needs the account's X-Auth-ID/X-Auth-Token, and
+//            those live ONLY in voice-service - so the dashboard holds no
+//            Vobiz credential and the browser never sees one.
 //   LOCAL -> the self-hosted WAV on the voice-service host (unchanged path).
 //
 // Either way the bytes stay behind the dashboard session + org check, and Range
@@ -37,7 +37,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
   const resolved = resolveRecording(call);
 
   if (resolved.source === "VOBIZ") {
-    return streamVobiz(call.organizationId, call.providerRecordingUrl!, range);
+    return streamVobiz(call.id, range);
   }
 
   if (!call.recordingObjectKey || !isLocalRecordingKey(call.recordingObjectKey)) {
@@ -62,88 +62,35 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
   }
 }
 
-/** Largest response we are willing to buffer in order to satisfy a Range. */
-const MAX_SLICE_BYTES = 64 * 1024 * 1024;
-
 /**
- * Proxy the Vobiz recording, preserving seek.
+ * Proxy the Vobiz recording through voice-service.
  *
- * Vobiz's Range support is not documented, so both cases are handled: the
- * header is passed upstream, and if the upstream answers 200 (ignoring it) the
- * requested slice is cut here and returned as a correct 206. That keeps seeking
- * working either way, at the cost of buffering one response — bounded by
- * MAX_SLICE_BYTES, which an 8 kHz call recording is nowhere near.
+ * Range is passed along and whatever voice-service returns (200 or 206) is
+ * forwarded verbatim, so seeking works and the audio is never re-encoded.
+ * voice-service is the only process holding Vobiz credentials; it also covers
+ * the case where Vobiz itself ignores a Range header.
  */
-async function streamVobiz(
-  orgId: string,
-  recordingUrl: string,
-  range: string | null,
-): Promise<Response> {
-  const creds = await getVobizCredentials(orgId);
-  if (!creds) return new Response("recording unavailable", { status: 503 });
-
+async function streamVobiz(callId: string, range: string | null): Promise<Response> {
   let upstream: Response;
   try {
-    upstream = await fetchRecordingAudio(recordingUrl, creds, { range });
+    upstream = await fetchVobizRecording(callId, { range });
   } catch {
-    // Message is ours, never the provider's body, and carries no credentials.
+    // Our own message - never the provider's body, and no credentials.
     return new Response("recording fetch failed", { status: 502 });
   }
   if (!upstream.ok && upstream.status !== 206) {
-    return new Response("recording unavailable", { status: upstream.status === 404 ? 404 : 502 });
-  }
-
-  const ctype = upstream.headers.get("content-type")
-    || audioContentType(recordingUrl.split(".").pop());
-
-  // Upstream honoured the Range: pass it straight through, no buffering.
-  if (upstream.status === 206) {
-    const h = new Headers({ "Content-Type": ctype, "Cache-Control": "no-store" });
-    for (const k of ["content-length", "content-range"]) {
-      const v = upstream.headers.get(k);
-      if (v) h.set(k, v);
-    }
-    h.set("Accept-Ranges", "bytes");
-    return new Response(upstream.body, { status: 206, headers: h });
-  }
-
-  // No Range asked for: stream the whole file, but advertise Range support so
-  // the browser knows it may seek.
-  if (!range) {
-    const h = new Headers({ "Content-Type": ctype, "Cache-Control": "no-store", "Accept-Ranges": "bytes" });
-    const len = upstream.headers.get("content-length");
-    if (len) h.set("Content-Length", len);
-    return new Response(upstream.body, { status: 200, headers: h });
-  }
-
-  // Range asked for but ignored upstream — satisfy it ourselves.
-  const declared = Number(upstream.headers.get("content-length") || "0");
-  if (declared > MAX_SLICE_BYTES) {
-    // Too large to buffer: hand back the full body rather than failing.
-    const h = new Headers({ "Content-Type": ctype, "Cache-Control": "no-store", "Accept-Ranges": "bytes" });
-    h.set("Content-Length", String(declared));
-    return new Response(upstream.body, { status: 200, headers: h });
-  }
-
-  const buf = Buffer.from(await upstream.arrayBuffer());
-  const { start, end } = parseRange(range, buf.length);
-  if (start === null) {
-    return new Response("range not satisfiable", {
-      status: 416,
-      headers: { "Content-Range": `bytes */${buf.length}` },
+    return new Response("recording unavailable", {
+      status: upstream.status === 404 ? 404 : upstream.status === 503 ? 503 : 502,
     });
   }
-  const slice = buf.subarray(start, end + 1);
-  return new Response(slice, {
-    status: 206,
-    headers: {
-      "Content-Type": ctype,
-      "Content-Length": String(slice.length),
-      "Content-Range": `bytes ${start}-${end}/${buf.length}`,
-      "Accept-Ranges": "bytes",
-      "Cache-Control": "no-store",
-    },
-  });
+  const h = new Headers();
+  for (const k of ["content-length", "content-range", "accept-ranges", "content-type"]) {
+    const v = upstream.headers.get(k);
+    if (v) h.set(k, v);
+  }
+  if (!h.has("content-type")) h.set("Content-Type", "audio/wav");
+  h.set("Cache-Control", "no-store");
+  return new Response(upstream.body, { status: upstream.status, headers: h });
 }
 
 /**

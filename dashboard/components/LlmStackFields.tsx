@@ -18,7 +18,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import FormField from "./FormField";
-import ProviderBadges from "./ProviderBadges";
 import { badgesFor } from "@/lib/providerBadges";
 import Select from "./Select";
 import {
@@ -144,7 +143,8 @@ export default function LlmStackFields({
           defaultValue={provider}
           onChange={onProviderChange}
         />
-        <ProviderBadges provider={provider} className="mt-1.5" />
+        {/* Badges removed: the same verdicts are already in each option's
+            description (see the options= above). */}
       </FormField>
 
       <FormField
@@ -190,8 +190,7 @@ export default function LlmStackFields({
               </button>
             </div>
 
-            <ProviderBadges provider={provider} model={model} className="mt-1.5" />
-
+            {/* Badges removed: already inside each model option. */}
             <p className="mt-1 text-[11px] text-gray-500">
               {loading
                 ? `Loading ${provider} models…`

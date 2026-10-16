@@ -57,11 +57,34 @@ _SECRET_HINTS = ("key", "token", "secret", "password", "passwd", "authorization"
 # structlog-internal fields that are represented elsewhere in the row.
 _META_SKIP = {"event", "level", "timestamp", "logger", "source", "stack", "exception"}
 
+# Field-name suffixes that denote a MEASUREMENT, not a credential. The hints
+# above are substring matches, so "token" also matched every token COUNT
+# (total_input_tokens, system_prompt_tokens, conversation_history_tokens, …) and
+# "key" matched the groq_key/gemini_key "is it configured?" booleans. The whole
+# ITPM diagnostic was therefore persisted as "***redacted***" and could not be
+# read back at all, which is why a per-turn input-token budget was unmeasurable
+# from the Live Logs / error_logs store.
+_MEASUREMENT_SUFFIXES = ("_tokens", "_count", "_len", "_ms", "_bytes", "_rows",
+                         "_chars", "_items", "_pct", "_seconds")
+
 
 def _mask(key: str, value: object) -> object:
-    if any(h in key.lower() for h in _SECRET_HINTS):
-        return "***redacted***"
-    return value
+    """Redact credential-bearing fields before they are persisted.
+
+    A credential is always a STRING. A bool ("is the key present?") and a
+    numeric measurement ("how many tokens did this turn cost?") disclose
+    nothing, so they are exempt — but only for numbers, never for a string of
+    digits, which could still be a real secret.
+    """
+    k = key.lower()
+    if not any(h in k for h in _SECRET_HINTS):
+        return value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and (
+            k.endswith(_MEASUREMENT_SUFFIXES) or k == "tokens"):
+        return value
+    return "***redacted***"
 
 
 def _bridge_processor(logger, method_name, event_dict):

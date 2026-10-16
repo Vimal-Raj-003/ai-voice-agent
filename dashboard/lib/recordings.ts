@@ -33,3 +33,27 @@ export async function fetchLocalRecording(
 export function isLocalBackend(): boolean {
   return (process.env.RECORDING_BACKEND || "local").toLowerCase() !== "r2";
 }
+
+/**
+ * Server-side fetch of a VOBIZ (carrier) recording, proxied through
+ * voice-service (Range passthrough).
+ *
+ * The dashboard deliberately holds NO Vobiz credentials. Vobiz's recording_url
+ * only works with the account's X-Auth-ID/X-Auth-Token headers, and those live
+ * solely in voice-service — so the chain is:
+ *
+ *   browser → dashboard (session + org check) → voice-service (bearer) → Vobiz
+ *
+ * which is the same shape already used for local recordings.
+ */
+export async function fetchVobizRecording(
+  callId: string,
+  init?: { range?: string | null },
+): Promise<Response> {
+  const headers: Record<string, string> = { Authorization: `Bearer ${VOICE_TOKEN}` };
+  if (init?.range) headers["Range"] = init.range;
+  return fetch(`${VOICE_URL}/api/recordings/vobiz/${encodeURIComponent(callId)}`, {
+    headers,
+    cache: "no-store",
+  });
+}

@@ -36,8 +36,10 @@ export default function StatCard({
   tone = "cyan",
 }: {
   label: string;
-  value: string | number;
-  hint?: string;
+  // ReactNode so a client leaf (e.g. <Money/>) can render inside this
+  // server-rendered card and follow the page's currency choice.
+  value: React.ReactNode;
+  hint?: React.ReactNode;
   icon?: LucideIcon;
   tone?: Tone;
 }) {

@@ -58,6 +58,14 @@ export const voiceService = {
     `/api/campaigns/${id}/run-now`,
     { method: "POST" },
   ),
+  calcomStatus: () => call<{
+    configured: boolean; has_api_key: boolean;
+    event_type_id: string | null; timezone: string;
+  }>(`/api/calcom/status`),
+  calcomCancelBooking: (uid: string, reason = "") => call<{ success: boolean; message: string }>(
+    `/api/calcom/bookings/${encodeURIComponent(uid)}/cancel`,
+    { method: "POST", body: { reason } },
+  ),
   campaignSchedulerReload: () => call<{ status: string }>(`/api/campaigns/scheduler/reload`, { method: "POST" }),
   campaignSchedulerStatus: () => call<{ running: boolean; jobs: Array<{ id: string; next_run: string | null }> }>(`/api/campaigns/scheduler/status`),
   settings: () =>

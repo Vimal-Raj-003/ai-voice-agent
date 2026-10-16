@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from datetime import datetime, timedelta
 
 import pytz
@@ -117,7 +119,6 @@ You are a competent human on a LIVE phone call — never an IVR, a script, or a 
 • PRESENCE: "Hello?/Are you there?/கேக்குதா?" mid-call means "are you still there?" — reassure briefly and CONTINUE the current topic (reference any pending task, e.g. "ஆமா, இருக்கேன். Saturday 4 மணிதானே?"). Never re-greet, never say "How can I help you today?", never restart.
 • LANGUAGE: settle into the caller's language and KEEP it the whole call (English→English, Tamil→natural Tamil, Tamil+English→natural Tanglish, Hindi→Hindi, Telugu→Telugu). English/technical nouns inside another language (appointment, order, payment, price, tomorrow, Saturday…) do NOT switch the language; switch ONLY on an explicit request ("speak English", "தமிழ்ல பேசுங்க"). Reply only in English/Tamil/Tanglish/Hindi/Telugu; a word that sounds like Spanish is a mis-hear — stay in the current language. Tamil/Tanglish sounds spoken, not literary. Obey any CONVERSATION LANGUAGE / CALL STATE directive present. Never announce the language.
 • NEVER say "sorry, I missed that", "please go ahead" or "I'm still listening" when you DID receive what the caller said - those are only for a genuinely unintelligible turn. If a turn reads like a half-sentence or trails off, the caller is still forming the thought: use what you already understand and answer the fuller question they are building, rather than asking them to repeat.
-• If the caller says "Hello?" while waiting, they are only checking you are there: say so ("Yes, I'm here.") and CONTINUE the previous topic in the same breath. Never re-greet, never restart.
 • DIDN'T CATCH IT: ask only about the uncertain part ("Time மட்டும் மறுபடியும் சொல்லுங்க") — keep everything else already known; never guess intent.
 • INTERRUPTION: if the caller speaks while you're talking, stop and listen, answer their latest point, and keep the task/context.
 • TOOLS: never say tool names; never claim an action/booking succeeded before the tool confirms; after a tool runs, continue naturally; while one runs you may say one short line ("ஒரு second, check பண்றேன்."). If something genuinely can't complete, offer a human — never mention APIs/LLM/STT/TTS/providers or a "technical error".
@@ -231,6 +232,47 @@ def count_tokens(text: str) -> int:
     return max(1, round(len(text) / 4))          # ~4 chars/token approximation
 
 
+# The only placeholders a saved assistant prompt may use. Anything else in
+# braces is left exactly as the operator wrote it.
+PLACEHOLDERS = ("lead_name", "business_name", "service_type")
+
+_PLACEHOLDER_LIKE = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]{1,30}\}")
+
+
+def substitute_placeholders(template: str, **values: str) -> tuple[str, dict]:
+    """Fill the supported placeholders. Returns (text, diagnostics).
+
+    This replaced ``template.format(...)``, which failed SILENTLY and totally:
+    str.format parses EVERY brace in the string, so one unrelated ``{``
+    anywhere in a saved prompt (a JSON example, a literal ``{name}``, a stray
+    brace) raised KeyError/IndexError/ValueError and the handler fell back to
+    the RAW template — so NO placeholder was substituted at all and the caller
+    could be greeted with a literal "Hi {lead_name}". Nothing was logged, which
+    made it invisible.
+
+    Replacing only the known tokens cannot raise, cannot be derailed by
+    unrelated braces, and reports what it did so substitution is auditable.
+    """
+    out = template or ""
+    filled: dict[str, int] = {}
+    for name in PLACEHOLDERS:
+        token = "{" + name + "}"
+        count = out.count(token)
+        if count:
+            out = out.replace(token, str(values.get(name, "") or ""))
+        filled[name] = count
+    # Braces that look like a placeholder but are not one we support. Reported,
+    # never altered — the saved prompt text stays authoritative.
+    unresolved = sorted(set(_PLACEHOLDER_LIKE.findall(out)))
+    return out, {"substituted": filled, "unresolved": unresolved}
+
+
+def prompt_fingerprint(text: str) -> str:
+    """Stable short hash of a prompt, so Live Logs can prove WHICH prompt a
+    call loaded without ever persisting its confidential text."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
+
+
 def build_prompt(
     lead_name: str = "there",
     business_name: str = "our company",
@@ -238,17 +280,30 @@ def build_prompt(
     custom_prompt: str | None = None,
     language_preset: str = "multilingual",
     caller_history: str = "",
+    diagnostics: dict | None = None,
 ) -> str:
+    """Assemble the prompt for one call.
+
+    The SAVED assistant prompt is authoritative: it is placed FIRST, verbatim,
+    and platform rules are appended after it. Pass a dict as `diagnostics` to
+    receive loading/substitution facts for logging — hash and counts only,
+    never the prompt text.
+    """
     is_custom_role = bool(custom_prompt)
     template = custom_prompt if custom_prompt else DEFAULT_SYSTEM_PROMPT
-    try:
-        body = template.format(
-            lead_name=lead_name,
-            business_name=business_name,
-            service_type=service_type,
+    body, subst = substitute_placeholders(
+        template,
+        lead_name=lead_name,
+        business_name=business_name,
+        service_type=service_type,
+    )
+    if diagnostics is not None:
+        diagnostics.update(
+            prompt_source="saved_assistant" if is_custom_role else "platform_default",
+            prompt_sha=prompt_fingerprint(template),
+            prompt_chars=len(template),
+            **subst,
         )
-    except (KeyError, IndexError, ValueError):
-        body = template
     # The UNIVERSAL conversation engine is appended to EVERY role, so a custom
     # Sales/Support/Collections agent gets the same human phone behaviour as the
     # receptionist. The role prompt above supplies only objective/knowledge/tools.
@@ -260,4 +315,18 @@ def build_prompt(
     body += get_ist_time_context()
     if caller_history:
         body += f"\n[NOTES] {caller_history}"
+    if diagnostics is not None:
+        diagnostics.update(
+            platform_rules_appended=["UNIVERSAL_CONVERSATION"]
+            + ([] if is_custom_role else ["RECEPTIONIST_TRANSFER"])
+            + ["BUSINESS_CONTEXT", "IST_TIME"]
+            + (["CALLER_NOTES"] if caller_history else []),
+            assembled_chars=len(body),
+            # Proves the operator's saved text survived assembly untouched and
+            # was not displaced by the platform default.
+            saved_prompt_first_verbatim=body.startswith(
+                substitute_placeholders(
+                    template, lead_name=lead_name, business_name=business_name,
+                    service_type=service_type)[0]),
+        )
     return body

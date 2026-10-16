@@ -646,6 +646,11 @@ model Campaign {
   scheduleType     ScheduleType?
   scheduleTime     String? // "HH:MM" 24h IST
   callDelaySeconds Int           @default(3)
+  /// Parallel dialing. maxConcurrent is a REQUEST — the dispatcher enforces
+  /// min(this, provider account limit - inbound reserve, trunk limit).
+  /// maxStartsPerMinute is a separate control: dial RATE, not concurrency.
+  maxConcurrent      Int @default(3)
+  maxStartsPerMinute Int @default(10)
   agentProfileId   String?
   lastRunAt        DateTime?
 
@@ -674,6 +679,12 @@ model CampaignTarget {
   dispatchedAt  DateTime?
   dispatchAfter DateTime?
   attempts      Int                  @default(0)
+  /// One id per dial attempt, so a retry is distinguishable from a duplicate.
+  attemptId     String?
+  /// Set when a dispatcher atomically wins this row. A claim older than the
+  /// reclaim window counts as abandoned, which is how restart recovery avoids
+  /// double-dialing.
+  claimedAt     DateTime?
   lastError     String?              @db.Text
   variables     Json? // per-target template vars
   createdAt     DateTime             @default(now())
@@ -682,6 +693,7 @@ model CampaignTarget {
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
   @@index([campaignId, status])
+  @@index([campaignId, status, claimedAt])
   @@map("campaign_targets")
 }
 
@@ -897,13 +909,21 @@ model Appointment {
   calcomBookingUid String?           @map("calcom_booking_uid")
   gcalEventId      String?           @map("gcal_event_id")
   notes            String?
+  /// Appointment length in minutes. Used for overlap detection.
+  durationMinutes  Int               @default(30) @map("duration_minutes")
+  /// IANA zone the date/time strings are expressed in.
+  timezone         String            @default("Asia/Kolkata")
+  /// Assigned host or assistant. Free text, like `service`.
+  host             String?
   createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime?         @updatedAt @map("updated_at")
 
   contact   Contact?              @relation(fields: [phoneNumber], references: [phoneNumber])
   reminders AppointmentReminder[]
 
   @@index([date, time])
   @@index([phoneNumber])
+  @@index([date, status])
   @@map("appointments")
 }
 

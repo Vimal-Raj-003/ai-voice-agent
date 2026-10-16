@@ -3,8 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
 import { isR2Configured, signRecordingUrl } from "@/lib/r2";
 import { isLocalRecordingKey, isLocalBackend } from "@/lib/recordings";
-import { resolveRecording, shouldAttemptVobizLookup } from "@/lib/recording-source";
-import { resolveVobizRecordingForCall } from "@/lib/vobiz-recording";
+import { resolveRecording } from "@/lib/recording-source";
 
 // Recording status + a SHORT-LIVED signed playback URL for one call. The bucket
 // stays private — this route is the only way the browser gets a playable URL,
@@ -56,26 +55,16 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
     providerCallId: true, recordingSource: true, telephonyProvider: true, sipCallId: true,
   } as const;
 
-  let call = await prisma.call.findFirst({
+  const call = await prisma.call.findFirst({
     where: { id, organizationId: org.id },           // tenant authorization
     select: SELECT,
   });
   if (!call) return Response.json({ error: "not found" }, { status: 404 });
 
-  // ── Bounded fallback for a missed recording webhook ──────────────────────
-  // Attempted only post-call, only inside the processing window, and only when
-  // the deterministic SIP Call-ID key exists — so this is not a poll loop and
-  // cannot run during a live call. Failures leave the local fallback intact.
-  if (shouldAttemptVobizLookup(call)) {
-    const outcome = await resolveVobizRecordingForCall(call.id);
-    if (outcome.ok) {
-      call = (await prisma.call.findFirst({
-        where: { id, organizationId: org.id },
-        select: SELECT,
-      })) ?? call;
-    }
-  }
-
+  // Vobiz recordings are resolved by voice-service, which owns the Vobiz API
+  // credentials and runs the bounded post-call retry chain (see
+  // voice-service/vobiz.py). This route therefore just READS what that landed
+  // in the DB — no provider call, and nothing to do during a live call.
   const resolved = resolveRecording(call);
   const status = resolved.source === "VOBIZ" ? "READY" : effectiveStatus(call);
   const filename = recordingFilename(call);

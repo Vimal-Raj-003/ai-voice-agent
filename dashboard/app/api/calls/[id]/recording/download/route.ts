@@ -3,9 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
 import { isR2Configured, signRecordingUrl } from "@/lib/r2";
 import { effectiveStatus, recordingFilename } from "../route";
-import { fetchLocalRecording, isLocalRecordingKey } from "@/lib/recordings";
+import { fetchLocalRecording, fetchVobizRecording, isLocalRecordingKey } from "@/lib/recordings";
 import { resolveRecording, downloadFilename } from "@/lib/recording-source";
-import { getVobizCredentials, fetchRecordingAudio, audioContentType } from "@/lib/vobiz";
 
 // Redirects to a SHORT-LIVED signed download URL (Content-Disposition:
 // attachment) for one call's recording. Session-gated + org-scoped. R2
@@ -32,16 +31,18 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
   const resolved = resolveRecording(call);
 
   // ── Vobiz copy (preferred) ────────────────────────────────────────────────
-  // Proxied, not redirected: the Vobiz `recording_url` only works with the
-  // account's auth headers, which must never reach the browser.
+  // Proxied through voice-service, which is the only process holding the Vobiz
+  // credentials. Bytes are passed through untouched - no re-encoding, no
+  // container rewrite - so the file matches the carrier's original.
   if (resolved.source === "VOBIZ") {
-    const creds = await getVobizCredentials(call.organizationId);
-    if (!creds) return new Response("recording unavailable", { status: 503 });
     try {
-      const upstream = await fetchRecordingAudio(call.providerRecordingUrl!, creds);
-      if (!upstream.ok) return new Response("recording unavailable", { status: 404 });
-      const ctype = upstream.headers.get("content-type")
-        || audioContentType(call.providerRecordingUrl!.split(".").pop());
+      const upstream = await fetchVobizRecording(call.id);
+      if (!upstream.ok) {
+        return new Response("recording unavailable", {
+          status: upstream.status === 404 ? 404 : upstream.status === 503 ? 503 : 502,
+        });
+      }
+      const ctype = upstream.headers.get("content-type") || "audio/wav";
       const name = downloadFilename(
         call.id, call.endedAt ?? call.createdAt,
         ctype.includes("mpeg") ? "mp3" : "wav",
@@ -53,7 +54,6 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
       });
       const len = upstream.headers.get("content-length");
       if (len) h.set("Content-Length", len);
-      // Body passed through untouched — no re-encoding, no container rewrite.
       return new Response(upstream.body, { status: 200, headers: h });
     } catch {
       return new Response("download failed", { status: 502 });

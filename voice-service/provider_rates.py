@@ -81,10 +81,18 @@ async def refresh_llm_rates() -> dict[str, int]:
     # offset-aware datetimes" inside the binding layer.
     now = datetime.now(UTC).replace(tzinfo=None)
 
+    # Ids OpenRouter no longer lists. Collected and reported ONCE after the loop
+    # rather than one warning per SKU: this runs on a 3-hourly cron, so the
+    # per-SKU form produced a steady drip of identical lines in Live Logs (192
+    # of them) about providers that are not even in use. It is a PRICING gap,
+    # never a routing one — OpenRouter is read here only as a public price list
+    # and is never contacted while a call is running.
+    missing: list[str] = []
+
     for (provider, sku), or_id in OPENROUTER_LOOKUP.items():
         model = by_id.get(or_id)
         if not model:
-            logger.warning("openrouter_model_missing", provider=provider, sku=sku, id=or_id)
+            missing.append(f"{provider}/{sku}->{or_id}")
             continue
         pricing = model.get("pricing") or {}
         # OpenRouter prices are USD per single token — convert to per-Mtok.
@@ -127,13 +135,22 @@ async def refresh_llm_rates() -> dict[str, int]:
         )
         n_output += 1
 
+    if missing:
+        logger.warning(
+            "openrouter_price_lookup_incomplete",
+            missing_count=len(missing), missing=missing,
+            impact="those SKUs keep their existing cost rows; call routing is unaffected",
+            source="PROVIDER_RATES",
+        )
+
     logger.info(
         "rates_refreshed",
         input_rows=n_input,
         output_rows=n_output,
+        missing_price_lookups=len(missing),
         when=now.isoformat(),
     )
-    return {"input": n_input, "output": n_output, "errors": 0}
+    return {"input": n_input, "output": n_output, "errors": 0, "missing": len(missing)}
 
 
 async def get_all_rates() -> list[dict[str, Any]]:

@@ -23,7 +23,25 @@ logger = get_logger("tools")
 # Single source of external calendar truth for the live booking flow. The DB
 # mirrors every confirmed booking so the dashboard calendar keeps working and
 # the two systems stay in sync. Timezone defaults to Asia/Kolkata end-to-end.
-CALCOM_BASE = "https://api.cal.com/v1"
+CALCOM_BASE = "https://api.cal.com/v2"
+
+# Cal.com API v1 was DECOMMISSIONED: every v1 call now returns HTTP 410
+# {"message":"API v1 has been decommissioned. Please migrate to API v2"}.
+# These are the per-endpoint versions required by the v2 reference; each
+# endpoint pins its own, and sending the wrong value silently falls back to an
+# older response shape.
+CALCOM_V_SLOTS = "2024-09-04"
+CALCOM_V_BOOKINGS = "2026-02-25"
+
+
+def _calcom_headers(version: str) -> dict:
+    """Bearer auth plus the endpoint's pinned version. v1 passed the key as a
+    query parameter; v2 requires the Authorization header."""
+    return {
+        "Authorization": f"Bearer {_calcom_cfg()['api_key']}",
+        "cal-api-version": version,
+        "Content-Type": "application/json",
+    }
 
 
 def _calcom_cfg() -> dict:
@@ -72,11 +90,12 @@ async def calcom_slot_free(date: str, time: str, call_id: str = "") -> bool | No
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"{CALCOM_BASE}/slots",
+                headers=_calcom_headers(CALCOM_V_SLOTS),
                 params={
-                    "apiKey": c["api_key"],
                     "eventTypeId": int(c["event_id"]),
-                    "startTime": f"{date}T00:00:00.000Z",
-                    "endTime": f"{date}T23:59:59.000Z",
+                    # v2 renamed startTime/endTime to start/end.
+                    "start": date,
+                    "end": date,
                     "timeZone": c["tz"],
                 },
             )
@@ -84,11 +103,14 @@ async def calcom_slot_free(date: str, time: str, call_id: str = "") -> bool | No
             logger.error("CALCOM_AVAILABILITY_FAILED", status=resp.status_code,
                          body=resp.text[:200], call_id=call_id)
             return None
-        slots = resp.json().get("data", {}).get("slots", {}).get(date, [])
+        # v1: data.slots[date][].time   v2: data[date][] as {"start": ...}
+        # (or a bare ISO string, depending on `format`).
+        slots = resp.json().get("data", {}).get(date, [])
         free: set[str] = set()
-        for s in slots:
+        for slot in slots:
+            raw = slot.get("start") if isinstance(slot, dict) else slot
             try:
-                dt = datetime.fromisoformat(str(s["time"]).replace("Z", "+00:00")).astimezone(tz)
+                dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(tz)
                 free.add(dt.strftime("%H:%M"))
             except Exception:
                 continue
@@ -113,18 +135,22 @@ async def calcom_book(name: str, email: str, phone: str, date: str, time: str,
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
                 f"{CALCOM_BASE}/bookings",
-                params={"apiKey": c["api_key"]},
+                headers=_calcom_headers(CALCOM_V_BOOKINGS),
                 json={
                     "eventTypeId": int(c["event_id"]),
                     "start": start_iso,
-                    "timeZone": c["tz"],
-                    "language": "en",
-                    "metadata": {"source": "JillJillVoice"},
-                    "responses": {
+                    # v2 replaced the flat `responses` blob with a typed
+                    # `attendee` object; timeZone and language moved inside it.
+                    "attendee": {
                         "name": name,
                         "email": email or f"{_phone_digits(phone)}@voiceagent.placeholder",
+                        "timeZone": c["tz"],
+                        "language": "en",
+                    },
+                    "bookingFieldsResponses": {
                         "notes": notes or f"Booked via AI voice agent. Phone: {phone}. Service: {service}",
                     },
+                    "metadata": {"source": "JillJillVoice"},
                 },
             )
         try:
@@ -153,11 +179,13 @@ async def calcom_cancel(uid: str, reason: str = "", call_id: str = "") -> dict:
         return {"success": False, "message": "Cal.com not configured"}
     logger.info("CALENDAR_CANCEL_REQUEST", uid=uid, call_id=call_id)
     try:
-        params = {"apiKey": c["api_key"]}
-        if reason:
-            params["reason"] = reason
+        # v1: DELETE .../cancel?reason=   v2: POST .../cancel with a JSON body.
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.delete(f"{CALCOM_BASE}/bookings/{uid}/cancel", params=params)
+            resp = await client.post(
+                f"{CALCOM_BASE}/bookings/{uid}/cancel",
+                headers=_calcom_headers(CALCOM_V_BOOKINGS),
+                json={"cancellationReason": reason} if reason else {},
+            )
         if resp.status_code not in (200, 201, 204):
             logger.error("CALENDAR_CANCEL_FAILED", status=resp.status_code, uid=uid, call_id=call_id)
             return {"success": False, "message": f"HTTP {resp.status_code}"}
@@ -258,7 +286,21 @@ class AppointmentTools(llm.ToolContext):
         # just inflates INPUT tokens (Groq's ITPM rate limit) while being unable
         # to work — so Cal.com/Twilio tools are dropped when not configured.
         if calcom_enabled():
-            methods += [self.book_calcom, self.cancel_calcom]
+            # book_calcom is NOT exposed by default. It is the legacy path (its
+            # own docstring says so): it books Cal.com WITHOUT writing the local
+            # row, so a booking made through it is invisible to the local
+            # calendar, the reminder scheduler and the orphan reconciliation.
+            # book_appointment already does Cal.com AND the local DB as one
+            # synchronised operation, so exposing both gave the model two ways
+            # to book — one of which silently loses the booking locally — and
+            # cost ~160 input tokens of schema on every single request.
+            #
+            # The method is retained and still reachable by naming it in the
+            # assistant's enabled tools; only the default LLM-visible schema is
+            # withdrawn. cancel_calcom stays: cancellation has no equivalent.
+            methods.append(self.cancel_calcom)
+            if "book_calcom" in (enabled or []):
+                methods.append(self.book_calcom)
         if all(os.environ.get(k) for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER")):
             methods.append(self.send_sms_confirmation)
         if not enabled:
@@ -351,6 +393,39 @@ class AppointmentTools(llm.ToolContext):
             self._last_booking_service = service
             self._cs_book(existing_bid, name, date, time, service)
             return msg
+        # Slot-level guard, deliberately BEFORE any external call.
+        #
+        # find_booked_appointment above also matches on SERVICE, but the
+        # database constraint (appointments_active_customer_slot_idx) is unique
+        # on phone+date+time alone. A different service in the same slot
+        # therefore slipped past the guard, reached Cal.com, created a SECOND
+        # external booking, and only then failed locally — leaving a live
+        # Cal.com booking that nothing tracked. Catching it here means the
+        # duplicate external booking is never created in the first place.
+        try:
+            slot_row = await db.find_booked_slot(phone, date, time)
+        except Exception:
+            slot_row = None
+        if slot_row:
+            existing_bid = slot_row.get("booking_id")
+            other = slot_row.get("service")
+            logger.info("BOOKING_SLOT_ALREADY_TAKEN_BY_CUSTOMER",
+                        booking_id=existing_bid, existing_service=other,
+                        requested_service=service, call_id=call_id, date=date, time=time)
+            if other and other != service:
+                msg = (f"You already have a {other} booking on {date} at {time} "
+                       f"(reference {existing_bid}). I can't put a second appointment "
+                       f"in the same slot — would another time suit for the {service}?")
+            else:
+                msg = (f"You're already booked for {other or service} on {date} at "
+                       f"{time}. Booking ID: {existing_bid}.")
+            self._booked_keys[dedup_key] = msg
+            self._last_booking_id = existing_bid
+            self._last_booking_time = f"{date}T{time}:00+05:30"
+            self._last_booking_name = name
+            self._last_booking_service = other or service
+            self._cs_book(str(existing_bid), name, date, time, other or service)
+            return msg
         logger.info("CALENDAR_BOOKING_STARTED", date=date, time=time, call_id=call_id)
         try:
             calcom_uid: str | None = None
@@ -388,18 +463,87 @@ class AppointmentTools(llm.ToolContext):
             except Exception as exc:
                 logger.error("LOCAL_BOOKING_SAVE_FAILED", error=str(exc),
                              calcom_uid=calcom_uid, call_id=call_id)
+
+                # Do NOT assume the write was lost. The most common cause is the
+                # slot-level unique index (appointments_active_customer_slot_idx,
+                # unique on phone+date+time while BOOKED), which the pre-insert
+                # guard cannot catch because that guard also matches on service.
+                # Booking a DIFFERENT service in the same slot therefore reaches
+                # the insert and fails — and the row it collided with is a real,
+                # valid appointment. Ask the database what exists rather than
+                # reporting a phantom sync failure.
+                existing = None
+                try:
+                    existing = await db.find_booked_slot(phone, date, time)
+                except Exception:
+                    existing = None
+
+                if existing:
+                    existing_bid = existing.get("booking_id")
+                    other = existing.get("service")
+                    # DO NOT attach `calcom_uid` to this row. It is a booking we
+                    # just created, for THIS request's service; the existing row
+                    # is a different appointment that merely occupies the same
+                    # slot. Linking them would make a later cancellation of the
+                    # old appointment cancel the new external booking (or, if
+                    # the row already had a uid, silently strand the new one).
+                    # Record it instead so it is visible and reconcilable.
+                    if calcom_uid:
+                        logger.error("CALCOM_DUPLICATE_EXTERNAL_BOOKING",
+                                     calcom_uid=calcom_uid, existing_booking_id=existing_bid,
+                                     existing_service=other, requested_service=service,
+                                     date=date, time=time, call_id=call_id)
+                        try:
+                            await db.record_calcom_orphan(
+                                calcom_uid, phone, date, time, service, name,
+                                f"slot already held locally by {existing_bid} "
+                                f"(service={other}); external booking NOT attached",
+                            )
+                        except Exception:
+                            logger.error("CALCOM_ORPHAN_RECORD_FAILED",
+                                         calcom_uid=calcom_uid, call_id=call_id)
+                    logger.info("BOOKING_ALREADY_PRESENT", booking_id=existing_bid,
+                                date=date, time=time, call_id=call_id)
+                    self._last_booking_id = existing_bid
+                    self._last_booking_time = f"{date}T{time}:00+05:30"
+                    self._last_booking_name = name
+                    self._last_booking_service = other or service
+                    self._cs_book(str(existing_bid), name, date, time, other or service)
+                    if other and other != service:
+                        return (f"You already have a {other} booking on {date} at {time} "
+                                f"(reference {existing_bid}), so I couldn't add the "
+                                f"{service} in the same slot. Shall we pick another time?")
+                    return (f"You already have that slot on {date} at {time} — "
+                            f"your booking reference is {existing_bid}.")
+
                 if calcom_uid:
-                    # Inconsistent state: booked in Cal.com but not saved locally.
-                    # Cal.com is the source of truth, so report success and flag
-                    # for reconciliation rather than losing the real booking.
+                    # A genuine split-brain: the Cal.com booking is real but our
+                    # own record could not be written. Cal.com is the source of
+                    # truth, so the booking is NOT cancelled and NOT re-created
+                    # (a retry could double-book). Persist a recoverable record
+                    # so reconciliation can finish the local write later.
                     logger.error("CALENDAR_SYNC_INCONSISTENT", calcom_uid=calcom_uid,
                                  date=date, time=time, phone=phone, call_id=call_id)
+                    try:
+                        await db.record_calcom_orphan(calcom_uid, phone, date, time,
+                                                      service, name, str(exc))
+                    except Exception:
+                        # Defence in depth: the booking is real and already
+                        # paid for by the caller's time. Losing the audit row
+                        # must not lose the booking.
+                        logger.error("CALCOM_ORPHAN_RECORD_FAILED",
+                                     calcom_uid=calcom_uid, call_id=call_id)
                     self._last_booking_id = calcom_uid
                     self._last_booking_time = f"{date}T{time}:00+05:30"
                     self._last_booking_name = name
                     self._last_booking_service = service
-                    return (f"Your slot on {date} at {time} is confirmed on our calendar "
-                            f"(reference {calcom_uid}). A final confirmation will follow shortly.")
+                    # Deliberately does NOT claim our calendar is updated — it
+                    # is not. It states only what is true: the slot is held with
+                    # the provider, and our record is still being completed.
+                    return (f"Your slot on {date} at {time} is held with our booking "
+                            f"provider under reference {calcom_uid}. I could not finish "
+                            f"writing it into our own system just now, so our team will "
+                            f"confirm it shortly — your slot is not lost.")
                 raise
 
             self._last_booking_id = booking_id

@@ -1,198 +1,26 @@
-import Link from "next/link";
-import { prisma } from "@/lib/prisma";
-import { getDefaultOrg } from "@/lib/org";
-import {
-  Badge,
-  directionTone,
-  outcomeTone,
-  sentimentTone,
-  statusTone,
-} from "@/components/Badge";
-import CallsFilters from "@/components/CallsFilters";
-import PhoneDialer from "@/components/PhoneDialer";
+import { redirect } from "next/navigation";
 
-export const dynamic = "force-dynamic";
-
-const PAGE_SIZE = 25;
-
+// Call history now lives as a section of the Contacts page. This route is kept
+// so existing bookmarks keep working, and it forwards to Contacts with the
+// Calls section open.
+//
+// Incoming query params are carried across, so a bookmarked FILTERED listing
+// (e.g. /calls?direction=INBOUND&status=COMPLETED&page=2) lands on the same
+// filtered view instead of being reset.
+//
+// The sub-routes /calls/[id] and /calls/[id]/logs are untouched: call detail,
+// transcript, recording playback and the View Logs deep links all still resolve
+// at their original URLs.
 export default async function CallsPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | undefined>>;
 }) {
   const sp = await searchParams;
-  const { id: orgId } = await getDefaultOrg();
-
-  const q = (sp.q ?? "").trim();
-  const direction = sp.direction || undefined;
-  const status = sp.status || undefined;
-  const outcome = sp.outcome || undefined;
-  const assistantId = sp.assistantId || undefined;
-  const from = sp.from ? new Date(sp.from) : undefined;
-  const to = sp.to ? new Date(sp.to + "T23:59:59") : undefined;
-  const page = Math.max(1, Number(sp.page || 1));
-  const offset = (page - 1) * PAGE_SIZE;
-
-  let idFilter: string[] | null = null;
-  let snippetMap: Map<string, string> = new Map();
-  if (q) {
-    const rows: { call_id: string; snippet: string }[] = await prisma.$queryRaw`
-      SELECT DISTINCT ON ("callId")
-        "callId" AS call_id,
-        substring(content from greatest(1, position(lower(${q}) in lower(content)) - 30) for 120) AS snippet
-      FROM transcript_messages
-      WHERE content ILIKE '%' || ${q} || '%'
-      ORDER BY "callId"
-      LIMIT 200
-    `;
-    idFilter = rows.map((r) => r.call_id);
-    snippetMap = new Map(rows.map((r) => [r.call_id, r.snippet]));
-    if (idFilter.length === 0) idFilter = ["__none__"];
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(sp)) {
+    if (v && k !== "section") params.set(k, String(v));
   }
-
-  const where: Record<string, unknown> = {
-    organizationId: orgId,
-  };
-  if (direction) where.direction = direction;
-  if (status) where.status = status;
-  if (outcome) where.outcome = outcome;
-  if (assistantId) where.assistantId = assistantId;
-  if (from || to) {
-    where.createdAt = {};
-    if (from) (where.createdAt as Record<string, Date>).gte = from;
-    if (to) (where.createdAt as Record<string, Date>).lte = to;
-  }
-  if (idFilter) where.id = { in: idFilter };
-
-  const [calls, total, dialerAssistants] = await Promise.all([
-    prisma.call.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      skip: offset,
-      take: PAGE_SIZE,
-    }),
-    prisma.call.count({ where }),
-    // Active assistants for the dialer dropdown, with the fields it shows as a
-    // secondary label (provider · model · tts/voice).
-    prisma.assistant.findMany({
-      where: { organizationId: orgId, isActive: true },
-      orderBy: { name: "asc" },
-      select: {
-        id: true,
-        name: true,
-        llmProvider: true,
-        llmModel: true,
-        ttsProvider: true,
-        voiceId: true,
-      },
-    }),
-  ]);
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
-  return (
-    <div className="space-y-4">
-      <h1 className="text-3xl font-bold">Calls</h1>
-      <CallsFilters />
-      {direction === "INBOUND" && <PhoneDialer assistants={dialerAssistants} />}
-      <div className="text-xs text-gray-500">
-        {total} call{total === 1 ? "" : "s"}
-        {q && ` matching "${q}"`}
-      </div>
-      <ul className="rounded-2xl border border-white/10 divide-y divide-white/5">
-        {calls.length === 0 && (
-          <li className="p-6 text-sm text-gray-500 text-center">
-            No calls found. {q && "Try clearing filters."}
-          </li>
-        )}
-        {calls.map((c) => {
-          const cost = Number(c.costUsd ?? 0);
-          return (
-            <li key={c.id} className="p-3 hover:bg-white/[0.02]">
-             <div className="flex items-start gap-3">
-              <Link href={`/calls/${c.id}`} className="block min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="font-mono text-sm">{c.toNumber}</div>
-                    <div className="text-[11px] text-gray-500">
-                      {c.createdAt.toLocaleString()}
-                      {c.durationSeconds != null && ` · ${c.durationSeconds}s`}
-                      {cost > 0 && ` · $${cost.toFixed(4)}`}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge tone={directionTone(c.direction)}>{c.direction.toLowerCase()}</Badge>
-                    <Badge tone={statusTone(c.status)}>{c.status}</Badge>
-                    {c.outcome && <Badge tone={outcomeTone(c.outcome)}>{c.outcome}</Badge>}
-                    {c.sentiment && <Badge tone={sentimentTone(c.sentiment)}>{c.sentiment}</Badge>}
-                  </div>
-                </div>
-                {q && snippetMap.has(c.id) && (
-                  <div
-                    className="mt-2 text-[11px] text-gray-400 italic line-clamp-2"
-                    dangerouslySetInnerHTML={{
-                      __html: snippetMap
-                        .get(c.id)!
-                        .replace(
-                          new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig"),
-                          '<mark class="bg-violet-500/30 text-white">$1</mark>',
-                        ),
-                    }}
-                  />
-                )}
-              </Link>
-              {/* Per-call logs: recording, flow, breakpoint, timeline. Kept
-                  OUTSIDE the row <Link> so anchors are never nested. */}
-              <Link
-                href={`/calls/${c.id}/logs`}
-                className="shrink-0 self-center rounded-lg border border-white/15 px-2.5 py-1 text-[11px] text-gray-300 hover:bg-white/10 hover:text-white"
-              >
-                View Logs
-              </Link>
-             </div>
-            </li>
-          );
-        })}
-      </ul>
-
-      {totalPages > 1 && (
-        <Pagination current={page} total={totalPages} sp={sp} />
-      )}
-    </div>
-  );
-}
-
-function Pagination({
-  current,
-  total,
-  sp,
-}: {
-  current: number;
-  total: number;
-  sp: Record<string, string | undefined>;
-}) {
-  const pageUrl = (p: number) => {
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(sp)) {
-      if (v && k !== "page") params.set(k, String(v));
-    }
-    if (p > 1) params.set("page", String(p));
-    return `/calls?${params.toString()}`;
-  };
-  return (
-    <div className="flex items-center justify-center gap-1 text-xs">
-      {current > 1 && (
-        <Link href={pageUrl(current - 1)} className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5">
-          ← prev
-        </Link>
-      )}
-      <span className="px-2 py-1 text-gray-500">
-        Page {current} of {total}
-      </span>
-      {current < total && (
-        <Link href={pageUrl(current + 1)} className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5">
-          next →
-        </Link>
-      )}
-    </div>
-  );
+  params.set("section", "calls");
+  redirect(`/contacts?${params.toString()}`);
 }

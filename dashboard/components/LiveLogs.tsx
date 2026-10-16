@@ -122,6 +122,26 @@ function deriveStatus(level: string, message: string): Status {
   return "INFO";
 }
 
+/**
+ * Parse a server timestamp as UTC.
+ *
+ * error_logs stores NAIVE UTC, and the stream emits `ts.isoformat()` —
+ * "2026-10-16T06:24:35.123456", with no timezone suffix. ECMAScript parses a
+ * date-time form without an offset as LOCAL time, so on an IST (+05:30) host
+ * every event was read as 5.5 hours in the past and then discarded by the
+ * session-boundary check below. That is why the page showed CONNECTED with
+ * EVENTS 0 while the stream was in fact delivering events correctly. On a UTC
+ * host the offset is zero, which is why it never appeared in development.
+ *
+ * Timestamps that already carry Z or an explicit offset are left untouched.
+ */
+function parseUtcTs(value: string): number {
+  const v = String(value).trim();
+  const hasZone = /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(v);
+  const n = Date.parse(hasZone ? v : v + "Z");
+  return Number.isFinite(n) ? n : Date.now();
+}
+
 export default function LiveLogs() {
   const [logs, setLogs] = useState<Log[]>([]);
   const [paused, setPaused] = useState(false);
@@ -167,7 +187,7 @@ export default function LiveLogs() {
   // Insert one normalized event — honoring the session boundary + fingerprint dedup.
   const ingest = useCallback((raw: { source?: string; level?: string; message?: string; detail?: string; timestamp?: string; synthetic?: boolean }) => {
     if (pausedRef.current) return;
-    const ts = raw.timestamp ? Date.parse(raw.timestamp) : Date.now();
+    const ts = raw.timestamp ? parseUtcTs(raw.timestamp) : Date.now();
     const tsMs = Number.isFinite(ts) ? ts : Date.now();
     // SESSION BOUNDARY: drop events from before this session (kills the SSE
     // replay of historical rows). Synthetic events carry "now" → always pass.
@@ -192,6 +212,29 @@ export default function LiveLogs() {
     setLastEventAt(Date.now());
     if (!autoScrollRef.current) setNewCount((c) => c + 1);
   }, []);
+
+  // REPLAY: seed from the durable store so a refresh shows recent history
+  // instead of an empty page. Without this the operator could not distinguish
+  // "idle" from "ingestion broken" — both rendered as zero events.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/logs/recent?limit=50", { cache: "no-store" });
+        const j = await r.json();
+        if (cancelled) return;
+        if (!j?.ok) { setConnErr((p) => p || String(j?.error || "log store unreachable")); return; }
+        for (const ev of j.events ?? []) {
+          // `synthetic: true` only to bypass the session-boundary filter —
+          // these are real persisted rows, flagged `replayed` for the UI.
+          ingest({ ...ev, synthetic: true });
+        }
+      } catch {
+        if (!cancelled) setConnErr((p) => p || "could not load recent history");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ingest]);
 
   // SSE — backend events. Passes ?since=<session start> so the server never
   // replays pre-session history (req 14). Reconnects with backoff on error and

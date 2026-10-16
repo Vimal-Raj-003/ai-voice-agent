@@ -28,6 +28,7 @@ ssl.create_default_context = _certifi_ssl  # type: ignore[assignment]
 
 import asyncio  # noqa: E402
 import json  # noqa: E402
+import random  # noqa: E402
 import re  # noqa: E402
 import time  # noqa: E402
 from collections import defaultdict  # noqa: E402
@@ -290,6 +291,24 @@ GREETING_PROTECT_MAX_S = float(os.getenv("GREETING_PROTECT_MAX_SECONDS", "8"))
 
 _GROQ_COOLDOWN_S = max(30.0, min(60.0, float(os.getenv("GROQ_COOLDOWN_SECONDS", "45"))))
 
+# Input tokens-per-minute the LLM account is believed to allow. Used ONLY to
+# warn: nothing is throttled or dropped on the strength of it.
+#
+# Why it exists: in the 08:21 incident the per-request input was ~3,400 tokens
+# (2,764 of them the assembled system prompt) and the call ran at 5 requests a
+# minute — about 17,000 ITPM against a free tier of roughly 7,000. The call was
+# 2.4x over budget from its first minute, so the 429s were arithmetic, not a
+# burst, a retry storm or concurrency. That was invisible: the measurement
+# existed but carried no call id and was being redacted. This surfaces the
+# arithmetic while the call is running, so the limit is a known constraint
+# rather than something discovered through dropped turns.
+#
+# 8,000 is MEASURED, not assumed: Groq returns it per model in
+# `x-ratelimit-limit-tokens` (gpt-oss-120b, gpt-oss-20b and qwen3.8-27b each
+# report 8000, with independent remaining counts). The earlier 7000 here was a
+# guess made before those headers were read.
+_LLM_ITPM_BUDGET = int(os.getenv("LLM_INPUT_TOKENS_PER_MINUTE", "8000"))
+
 
 def _build_fallback_llm(route: "llm_routing.LlmRoute") -> tuple[Any, str | None]:
     """Build the per-turn fallback LLM for an already-resolved route.
@@ -324,6 +343,91 @@ def _classify_llm_error(err: BaseException | None) -> tuple[str, int | None]:
     if "connect" in msg or "connection" in msg:
         return "connection_error", status
     return "error", status
+
+
+_RETRY_AFTER_RE = re.compile(r"try again in ([\d.]+)\s*(ms|s)\b", re.I)
+_LIMIT_KIND_RE = re.compile(r"on (tokens|requests) per (minute|day|hour)", re.I)
+
+
+def _rate_limit_hint(err: BaseException | None) -> tuple[float | None, str]:
+    """(retry_after_seconds, limit_kind) read from a provider's 429.
+
+    The cooldown used to be a fixed 30-60s guess. Groq states the real wait
+    both in a `retry-after` header and in the message body, e.g.
+
+        Rate limit reached for model `openai/gpt-oss-120b` ... on tokens per
+        minute (TPM): Limit 6000, Used 5800, Requested 500.
+        Please try again in 3.456s.
+
+    Guessing high keeps the caller on a degraded model long after the window
+    has actually reopened; guessing low walks straight back into the wall. Read
+    whatever the provider states and fall back to the fixed window only when it
+    states nothing. `limit_kind` ("tokens per minute" / "requests per minute")
+    is surfaced in the logs because the remedy differs: TPM is fixed by sending
+    fewer tokens per turn, RPM by sending fewer turns.
+    """
+    if err is None:
+        return None, ""
+    secs: float | None = None
+    # 1. a real Retry-After header, wherever the SDK hung it.
+    for holder in (getattr(err, "response", None), err):
+        headers = getattr(holder, "headers", None)
+        if not headers:
+            continue
+        try:
+            for key in ("retry-after", "Retry-After",
+                        "x-ratelimit-reset-tokens", "x-ratelimit-reset-requests"):
+                raw = headers.get(key) if hasattr(headers, "get") else None
+                if raw is None:
+                    continue
+                m = _RETRY_AFTER_RE.search(str(raw))
+                if m:
+                    secs = float(m.group(1)) / (1000 if m.group(2).lower() == "ms" else 1)
+                else:
+                    secs = float(str(raw).rstrip("s") or 0) or None
+                if secs:
+                    break
+        except Exception:
+            secs = None
+        if secs:
+            break
+    # 2. otherwise the number the provider put in the message.
+    msg = str(err)
+    if secs is None:
+        m = _RETRY_AFTER_RE.search(msg)
+        if m:
+            secs = float(m.group(1)) / (1000 if m.group(2).lower() == "ms" else 1)
+    kind = ""
+    k = _LIMIT_KIND_RE.search(msg)
+    if k:
+        kind = f"{k.group(1)} per {k.group(2)}".lower()
+    # Never trust an absurd value from a provider into a caller-facing stall.
+    if secs is not None:
+        secs = max(0.0, min(secs, 120.0))
+    return secs, kind
+
+
+def _limit_is_account_wide(err: BaseException | None) -> bool:
+    """True when a 429 constrains the whole ACCOUNT, not one model.
+
+    Per-model cooldowns alone are not enough. Groq's per-minute token limits
+    are per model — which is why, in the 08:21 incident, the fallback kept
+    serving for ten turns after the primary was limited. But the DAILY limits
+    are organisation-scoped: once tokens-per-day is exhausted, every model on
+    the key is finished, and resting them one at a time just means each gets
+    its own doomed request before the call gives up.
+
+    Detected conservatively — only a stated per-day/per-hour limit, or an
+    explicit account/organisation scope, counts. An unrecognised 429 stays
+    per-model, which is the safer default: it never parks a model that might
+    still be able to serve.
+    """
+    if err is None:
+        return False
+    msg = str(err).lower()
+    if re.search(r"per (day|hour)\b", msg) or re.search(r"\b(tpd|rpd)\b", msg):
+        return True
+    return bool(re.search(r"(account|organization|organisation)[- ]?(wide|level|limit)", msg))
 
 
 def _safe_to_release(text: str) -> bool:
@@ -644,7 +748,10 @@ def _build_session(tools: list, system_prompt: str, profile: dict | None = None,
     EndSensitivity MUST use full string form: END_SENSITIVITY_LOW (not .LOW).
     """
     profile = profile or {}
-    gemini_model = profile.get("model") or os.getenv("GEMINI_MODEL", config.GEMINI_MODEL)
+    # `realtime_model` is agent_profiles.model — a Gemini REALTIME id. "model"
+    # is the PIPELINE chat model and is not interchangeable with it.
+    gemini_model = (profile.get("realtime_model")
+                    or os.getenv("GEMINI_MODEL", config.GEMINI_MODEL))
     gemini_voice = profile.get("voice") or os.getenv("GEMINI_TTS_VOICE", config.GEMINI_TTS_VOICE)
     use_realtime = config.USE_GEMINI_REALTIME
 
@@ -1118,8 +1225,24 @@ class BoundedAgent(Agent):
         # Primary-provider 429 cooldown (call-level). While active the PRIMARY is
         # skipped and turns go straight to the fallback — which, by default, is a
         # different model on the SAME provider.
-        self._groq_cooldown_until = 0.0
-        self._groq_cooldown_active = False
+        # provider/model label -> monotonic deadline. Separate buckets, because
+        # the primary and the fallback are different models and Groq rate-limits
+        # per model; one being limited says nothing about the other, and BOTH
+        # being limited means there is nothing worth sending at all.
+        self._model_cooldown: dict[str, float] = {}
+        # (monotonic, input_tokens) for the last 60s — the ITPM warning above.
+        self._itpm_window: list[tuple[float, int]] = []
+        # Rolling 60s input-token spend PER MODEL, for admission control.
+        # Groq meters tokens-per-minute per model, and the primary and the
+        # fallback are different models with separate buckets. Trying the
+        # primary first on every turn spends one bucket while the other sits
+        # idle, so the usable budget was 8K rather than the 16K actually
+        # available — and the fallback only ever engaged AFTER a 429 had
+        # already cost the caller a turn.
+        self._model_spend: dict[str, list[tuple[float, int]]] = {}
+        # Size of the most recent request's context, measured in
+        # on_user_turn_completed. Used to predict the next turn's cost.
+        self._last_ctx_tokens: int = 0
         # Precise per-turn LLM timing (monotonic s), read by the latency
         # breakdown: when the LLM node started and when the FIRST spoken token
         # (first released chunk) was produced — the real first-token signal.
@@ -1160,7 +1283,32 @@ class BoundedAgent(Agent):
                     break
             if not latest.strip():
                 return ""
-            hits = await knowledge.search(self._assistant_id, latest.strip(), top_k=4)
+            # TIME-BOUNDED. This runs inside llm_node BEFORE the LLM is called,
+            # so an unbounded wait here means the caller hears nothing at all.
+            # Measured on this host: a warm lookup is ~130 ms, but the FIRST one
+            # of the process pays the embedder load (~4.1 s load, 6.4 s total)
+            # and that cost landed inside the caller's first question. Worse, a
+            # repeated "Hello?" cancels this node and the next turn starts the
+            # wait again, so the agent could never reach the LLM.
+            #
+            # Budget 2.0 s: measured steady state is ~130 ms and the first
+            # pgvector query of the process ~1.1 s, so real context is kept;
+            # meanwhile the LLM always starts long before the 5 s dead-air
+            # threshold. A cold or stalled embedder costs one turn's knowledge
+            # rather than the whole conversation.
+            _kb_t0 = time.monotonic()
+            hits = await asyncio.wait_for(
+                knowledge.search(self._assistant_id, latest.strip(), top_k=4),
+                timeout=float(os.getenv("KNOWLEDGE_LOOKUP_TIMEOUT_S", "2.0")),
+            )
+            # Timed explicitly. Without this the knowledge stage is invisible: it
+            # runs before llm_start is stamped, so its cost hides inside
+            # turn_latency_breakdown's stt_final_to_llm_start_ms and a slow
+            # lookup looks like a generic LLM-dispatch delay.
+            logger.info("knowledge_lookup_done",
+                        ms=int((time.monotonic() - _kb_t0) * 1000),
+                        hits=len(hits) if hits else 0,
+                        call_id=self._room_id, source="KNOWLEDGE")
             if not hits:
                 # Nothing relevant: tell the model so, rather than leaving it to
                 # fill the silence with invention.
@@ -1169,6 +1317,15 @@ class BoundedAgent(Agent):
                         "confirmed and offer to connect them or take details — "
                         "never guess specifics.")
             return knowledge.build_context(hits)
+        except (TimeoutError, asyncio.TimeoutError):
+            # Logged distinctly (not as a generic failure) because this is the
+            # one that silences a turn: the LLM still runs, just without
+            # business context for this question.
+            logger.warning("knowledge_lookup_timeout",
+                           timeout_s=float(os.getenv("KNOWLEDGE_LOOKUP_TIMEOUT_S", "2.0")),
+                           impact="turn proceeds to the LLM without business context",
+                           call_id=self._room_id, source="KNOWLEDGE")
+            return ""
         except Exception as exc:
             logger.warning("knowledge_context_failed", error=str(exc)[:200],
                            call_id=self._room_id, source="KNOWLEDGE")
@@ -1315,11 +1472,60 @@ class BoundedAgent(Agent):
         # route this turn straight to the cross-provider fallback (no per-turn 429
         # round-trip). When the window elapses, Groq is tried again.
         now_mono = time.monotonic()
-        if self._groq_cooldown_active and now_mono >= self._groq_cooldown_until:
-            self._groq_cooldown_active = False
-            logger.info("llm_provider_cooldown_ended", provider=self._route.primary_provider,
-                        turn_id=turn_id, call_id=rid, room=rid, source="LLM")
-        groq_cooling = now_mono < self._groq_cooldown_until
+        primary_label = f"{self._route.primary_provider}/{self._route.primary_model}"
+        groq_cooling = self._cooling(primary_label, now_mono, turn_id, rid)
+        fallback_cooling = bool(
+            self._fallback_label and self._cooling(self._fallback_label, now_mono, turn_id, rid)
+        )
+
+        # ── Admission control: pick the model that can actually afford it ───
+        # Predict this turn from the last measured context (history grows a
+        # little each turn, so this slightly under-estimates, which the 10%
+        # margin inside _headroom covers).
+        _pred = self._last_ctx_tokens or 3300
+        _p_room = self._headroom(primary_label, _pred)
+        _f_room = (self._headroom(self._fallback_label, _pred)
+                   if self._fallback_label else -(1 << 30))
+        # Prefer the primary — it is the operator's selected model — and step
+        # aside only when it genuinely cannot afford this turn while the
+        # fallback can. This is NOT a provider or model substitution: both are
+        # already in the resolved route and the fallback served 31% of turns
+        # reactively. Doing it BEFORE the 429 is what turns a failed turn into
+        # an answered one.
+        _prefer_fallback = (not groq_cooling and not fallback_cooling
+                            and _p_room < 0 <= _f_room)
+        if _prefer_fallback:
+            logger.info(
+                "llm_admission_routed", to=self._fallback_label,
+                from_model=primary_label, predicted_tokens=_pred,
+                primary_spend_60s=self._spend60(primary_label),
+                fallback_spend_60s=self._spend60(self._fallback_label),
+                budget_per_model=_LLM_ITPM_BUDGET,
+                reason="primary has no token headroom this minute; fallback does",
+                turn_id=turn_id, call_id=rid, room=rid, source="LLM")
+            groq_cooling = True          # skip the primary for THIS turn only
+
+        # BOTH models rate-limited: every request now is guaranteed to 429, so
+        # send none. This is the turn-19 case from the 08:21 incident, where the
+        # fallback had already 429'd five turns earlier and was still being
+        # called on every turn. Skipping straight to the repair line also gets
+        # the caller an answer sooner than two doomed round-trips would.
+        if groq_cooling and fallback_cooling:
+            resumes_in = max(0.0, min(self._model_cooldown.values()) - now_mono)
+            logger.warning(
+                "llm_all_models_cooling", primary=primary_label,
+                fallback=self._fallback_label or "none",
+                resumes_in_s=round(resumes_in, 1),
+                impact="no provider request sent this turn; both models are rate-limited",
+                turn_id=turn_id, call_id=rid, room=rid, source="LLM")
+            self._consec_recovery += 1
+            logger.error("llm_all_providers_failed", turn_id=turn_id, call_id=rid, room=rid,
+                         language=self._lang(), consec=self._consec_recovery,
+                         reason="both_models_cooling", source="LLM")
+            logger.warning("llm_recovery_spoken", turn_id=turn_id, call_id=rid, room=rid,
+                           source="LLM")
+            yield self._recovery_line()
+            return
 
         # Stamp the FIRST released chunk (the real caller-perceived first token)
         # whichever provider produces it — used by the latency breakdown.
@@ -1331,6 +1537,7 @@ class BoundedAgent(Agent):
 
         # ── Primary (Groq), gated so a bare fragment is never spoken ──────────
         if primary is not None and not groq_cooling:
+            self._record_spend(primary_label, _pred)
             logger.info("primary_llm_started", turn_id=turn_id, call_id=rid, room=rid,
                         provider=self._route.primary_provider, model=self._route.primary_model,
                         **self._route.log_fields(), language=self._lang(), source="LLM")
@@ -1353,7 +1560,8 @@ class BoundedAgent(Agent):
                 self._route.record_use(self._route.primary_provider, self._route.primary_model)
                 et, sc = _classify_llm_error(r1.get("err"))
                 if et == "rate_limit":
-                    self._enter_groq_cooldown(now_mono, turn_id, rid, sc)
+                    self._enter_model_cooldown(primary_label, now_mono, turn_id, rid,
+                                               sc, r1.get("err"))
                 logger.warning("primary_llm_failed", error_type=et, status_code=sc,
                                turn_id=turn_id, call_id=rid, room=rid, source="LLM",
                                detail="failed after partial already spoken")
@@ -1364,9 +1572,10 @@ class BoundedAgent(Agent):
                            turn_id=turn_id, call_id=rid, room=rid, source="LLM",
                            detail=(str(r1.get("err"))[:200] if r1.get("err") else f"fragment:{r1.get('text','')[:40]!r}"))
             if et == "rate_limit":
-                # HTTP 429 → start a cooldown and go STRAIGHT to the fallback for
-                # this turn. Never retry Groq here (rule: no 429 retry loop).
-                self._enter_groq_cooldown(now_mono, turn_id, rid, sc)
+                # HTTP 429 → rest THIS model for as long as it asked and go
+                # straight to the fallback. Never retry it here (no 429 loop).
+                self._enter_model_cooldown(primary_label, now_mono, turn_id, rid,
+                                           sc, r1.get("err"))
             elif et in ("timeout", "server_error", "connection_error", "incomplete_generation"):
                 # One quick retry on the primary for TRANSIENT (non-429) problems.
                 logger.info("primary_llm_retry", error_type=et, turn_id=turn_id,
@@ -1382,7 +1591,8 @@ class BoundedAgent(Agent):
                     return
                 rt, rsc = (_classify_llm_error(rr["err"]) if rr.get("err") else ("incomplete_generation", None))
                 if rt == "rate_limit":
-                    self._enter_groq_cooldown(now_mono, turn_id, rid, rsc)
+                    self._enter_model_cooldown(primary_label, now_mono, turn_id, rid,
+                                               rsc, rr.get("err"))
         elif groq_cooling:
             # Skip Groq while cooling down — fall through to the fallback below.
             logger.info("llm_primary_skipped_cooldown", provider=self._route.primary_provider,
@@ -1395,7 +1605,11 @@ class BoundedAgent(Agent):
         # ── Fallback model (Gemini) on the SAME latest turn (nothing spoken) ──
         # Gets the SAME chat_ctx (bounded history + language directive + tools),
         # so it has the full conversation/booking context and the locked language.
-        if self._fallback_llm is not None:
+        if self._fallback_llm is not None and fallback_cooling:
+            # Known rate-limited; sending would burn a round-trip to a certain 429.
+            logger.info("llm_fallback_skipped_cooldown", provider=self._fallback_label,
+                        turn_id=turn_id, call_id=rid, room=rid, source="LLM")
+        elif self._fallback_llm is not None:
             logger.info("llm_provider_failover", **{"from": self._route.primary_provider},
                         to=self._fallback_label,
                         is_cross_provider=(self._route.fallback_provider
@@ -1404,6 +1618,7 @@ class BoundedAgent(Agent):
                         turn_id=turn_id, call_id=rid, room=rid, source="LLM")
             logger.info("fallback_llm_started", provider=self._fallback_label,
                         turn_id=turn_id, call_id=rid, room=rid, language=self._lang(), source="LLM")
+            self._record_spend(self._fallback_label, _pred)
             r2: dict = {}
             async for c in _stamp(_stream_gated(self._fallback_llm, chat_ctx, tools, tool_choice, conn, r2)):
                 yield c
@@ -1424,6 +1639,10 @@ class BoundedAgent(Agent):
             logger.warning("fallback_llm_failed", provider=self._fallback_label,
                            error_type=fe, status_code=fs, turn_id=turn_id,
                            call_id=rid, room=rid, source="LLM")
+            if fe == "rate_limit" and self._fallback_label:
+                # Record it, so the NEXT turn does not repeat this round-trip.
+                self._enter_model_cooldown(self._fallback_label, now_mono, turn_id,
+                                           rid, fs, r2.get("err"))
 
         # ── Every provider genuinely failed: ONE short conversational REPAIR ──
         self._consec_recovery += 1
@@ -1439,16 +1658,111 @@ class BoundedAgent(Agent):
     def _lang(self) -> str:
         return getattr(self._lang_state, "active", "en") if self._lang_state else "en"
 
-    def _enter_groq_cooldown(self, now_mono: float, turn_id: int, rid: str, status: int | None) -> None:
-        """Mark Groq unavailable for _GROQ_COOLDOWN_S after a 429 and log it."""
-        self._groq_cooldown_until = now_mono + _GROQ_COOLDOWN_S
-        logger.warning("llm_primary_rate_limited", provider=self._route.primary_provider,
-                       model=self._route.primary_model, http_status=status or 429,
+    # ── Per-MODEL rate-limit cooldowns ───────────────────────────────────────
+    # Previously only the PRIMARY was cooled down. Evidence from the 08:21 call
+    # (room call-917397075913-5801): the primary 429'd at turn 4, and from then
+    # on every turn was routed to the fallback — which is another model on the
+    # SAME Groq key. At turns 14 and 19 the fallback 429'd too, and because
+    # nothing recorded that, turn 19 still paid a full doomed round-trip to a
+    # model already known to be rate-limited, and the caller heard the recovery
+    # line again. Cooling each model separately lets a healthy fallback keep
+    # serving while a limited primary rests, and stops doomed requests once
+    # BOTH are known to be limited.
+    # ── Quota-aware admission control ────────────────────────────────────────
+    # Spend is tracked per MODEL because that is how Groq meters it. Before a
+    # turn is sent, the model with real headroom is chosen — rather than always
+    # hammering the primary until it 429s and only then discovering the
+    # fallback's bucket was full the whole time.
+    def _record_spend(self, label: str, tokens: int) -> None:
+        if not label or tokens <= 0:
+            return
+        now = time.monotonic()
+        w = self._model_spend.setdefault(label, [])
+        w.append((now, tokens))
+        while w and now - w[0][0] > 60.0:
+            w.pop(0)
+
+    def _spend60(self, label: str) -> int:
+        now = time.monotonic()
+        w = self._model_spend.get(label) or []
+        while w and now - w[0][0] > 60.0:
+            w.pop(0)
+        return sum(t for _, t in w)
+
+    def _headroom(self, label: str, predicted: int) -> int:
+        """Tokens left in this model's minute after the next request.
+
+        A safety margin is kept because the prediction is the PREVIOUS turn's
+        context and the next one is usually slightly larger (history grows),
+        and because the provider's window is rolling, not aligned to ours.
+        """
+        if not label or _LLM_ITPM_BUDGET <= 0:
+            return 1 << 30
+        margin = int(_LLM_ITPM_BUDGET * 0.10)
+        return _LLM_ITPM_BUDGET - margin - self._spend60(label) - predicted
+
+    def _any_cooling(self) -> bool:
+        """True while ANY model is resting. Read by the dead-air watchdog and
+        the latency breakdown, which previously read the primary-only
+        `_groq_cooldown_active` flag; that flag is gone, and leaving those
+        call sites on a getattr default would have made them silently report
+        "not cooling" forever."""
+        now = time.monotonic()
+        return any(until > now for until in self._model_cooldown.values())
+
+    def _cooling(self, label: str, now_mono: float, turn_id: int, rid: str) -> bool:
+        until = self._model_cooldown.get(label, 0.0)
+        if not until:
+            return False
+        if now_mono >= until:
+            del self._model_cooldown[label]
+            logger.info("llm_provider_cooldown_ended", provider=label,
+                        turn_id=turn_id, call_id=rid, room=rid, source="LLM")
+            return False
+        return True
+
+    def _enter_model_cooldown(self, label: str, now_mono: float, turn_id: int,
+                              rid: str, status: int | None,
+                              err: BaseException | None = None) -> None:
+        """Rest one provider/model after a 429, for as long as IT asked for."""
+        retry_after, limit_kind = _rate_limit_hint(err)
+        if retry_after is not None:
+            # Jitter so several concurrent calls on one key do not all resume
+            # on the same millisecond and re-trip the limit together.
+            wait = retry_after + random.uniform(0.25, 1.5)
+        else:
+            wait = _GROQ_COOLDOWN_S + random.uniform(0, 5.0)
+        already = self._model_cooldown.get(label, 0.0)
+        self._model_cooldown[label] = max(already, now_mono + wait)
+        # An account-scoped limit (tokens per DAY, or an explicit org limit)
+        # exhausts every model on the key at once, so resting them one at a
+        # time would just hand each its own doomed request. Cool the whole
+        # provider's set together.
+        if _limit_is_account_wide(err):
+            primary_label = (f"{self._route.primary_provider}/{self._route.primary_model}"
+                             if self._route.primary_model else "")
+            siblings = [x for x in (primary_label, self._fallback_label)
+                        if x and x != label]
+            for sib in siblings:
+                self._model_cooldown[sib] = max(self._model_cooldown.get(sib, 0.0),
+                                                now_mono + wait)
+            logger.warning("llm_account_quota_exhausted", provider=label.split("/", 1)[0],
+                           limit_kind=limit_kind or "per-day/account",
+                           also_cooled=siblings,
+                           cooldown_seconds=round(wait, 1),
+                           impact="every model on this credential is rate-limited, "
+                                  "not just the one that returned 429",
+                           turn_id=turn_id, call_id=rid, room=rid, source="LLM")
+        logger.warning("llm_primary_rate_limited", provider=label,
+                       model=label.split("/", 1)[-1], http_status=status or 429,
+                       retry_after_s=round(retry_after, 2) if retry_after is not None else None,
+                       limit_kind=limit_kind or "unknown",
+                       source_of_wait="provider" if retry_after is not None else "default",
                        turn_id=turn_id, call_id=rid, room=rid, source="LLM")
-        if not self._groq_cooldown_active:
-            self._groq_cooldown_active = True
-            logger.warning("llm_provider_cooldown_started", provider=self._route.primary_provider,
-                           cooldown_seconds=round(_GROQ_COOLDOWN_S), http_status=status or 429,
+        if already <= now_mono:
+            logger.warning("llm_provider_cooldown_started", provider=label,
+                           cooldown_seconds=round(wait, 1), http_status=status or 429,
+                           limit_kind=limit_kind or "unknown",
                            turn_id=turn_id, call_id=rid, room=rid, source="LLM")
 
     async def on_user_turn_completed(
@@ -1506,8 +1820,34 @@ class BoundedAgent(Agent):
                 current_user_tokens=cur_toks,
                 total_input_tokens=total,
                 history_items=len(items),
+                # Without these the single most useful rate-limit diagnostic
+                # could not be tied to a call: the 08:21 incident had NO
+                # readable per-turn token budget at all, because this event
+                # carried no room id (and every *_tokens field was being
+                # redacted as if it were a credential).
+                call_id=self._room_id, room=self._room_id,
                 source="WORKER",
             )
+            # Rolling 60s input-token spend vs the account's believed ITPM.
+            # Warn-only — never throttles, never drops a turn.
+            now = time.monotonic()
+            self._last_ctx_tokens = total
+            self._itpm_window.append((now, total))
+            while self._itpm_window and now - self._itpm_window[0][0] > 60.0:
+                self._itpm_window.pop(0)
+            spent = sum(t for _, t in self._itpm_window)
+            if _LLM_ITPM_BUDGET > 0 and spent > _LLM_ITPM_BUDGET:
+                logger.warning(
+                    "llm_input_budget_exceeded",
+                    tokens_last_60s=spent, budget=_LLM_ITPM_BUDGET,
+                    requests_last_60s=len(self._itpm_window),
+                    per_request_tokens=total,
+                    system_prompt_tokens=sys_toks,
+                    system_prompt_share_pct=round(100 * sys_toks / max(total, 1)),
+                    impact="further turns this minute are likely to be rate-limited",
+                    remedy="reduce per-request input (prompt/tools) or raise the "
+                           "provider tier; history is already bounded",
+                    call_id=self._room_id, room=self._room_id, source="LLM")
         except Exception as exc:
             logger.warning("token_measure_failed", error=str(exc))
 
@@ -1913,6 +2253,14 @@ async def entrypoint(ctx: JobContext) -> None:
         ident = getattr(p, "identity", "")
         kind = getattr(p, "kind", None)
         if _is_sip(p):
+            # NOT the answer. Verified against the carrier CDR for room
+            # call-917397075913-5801: this fired at 13:51:18.338 IST, which
+            # Vobiz records as "Start" (dial initiated). The carrier's
+            # "Call picked" was 13:51:25 — seven seconds later, and it bills
+            # from the pickup. Anchoring billing here overcharged the ringing
+            # period on every outbound call. The authoritative answer stamp is
+            # taken where create_sip_participant(wait_until_answered=True)
+            # returns; this event stays purely as the ring/start marker.
             logger.info("sip_participant_found", participant=ident, kind=str(kind),
                         name=str(getattr(p, "name", "")), room=_lk_rid, call_id=_lk_rid, source="LIVEKIT")
         else:
@@ -1923,8 +2271,46 @@ async def entrypoint(ctx: JobContext) -> None:
     def _dbg_participant_left(*a: Any) -> None:  # noqa: ANN401 — rtc event
         p = a[0] if a else None
         ident = getattr(p, "identity", "")
-        logger.info("sip_participant_left" if _is_sip(p) else "participant_left",
+        is_sip = _is_sip(p)
+        logger.info("sip_participant_left" if is_sip else "participant_left",
                     participant=ident, room=_lk_rid, call_id=_lk_rid, source="LIVEKIT")
+        if is_sip:
+            # Stamp the hangup the moment it happens. The shutdown hook can run
+            # much later (LiveKit's room reaper), and billing must not inherit
+            # that delay — see _billable_seconds.
+            try:
+                ctx._jj_hangup_mono = time.monotonic()   # type: ignore[attr-defined]
+                ctx._jj_hangup_at = datetime.now(UTC)    # type: ignore[attr-defined]
+            except Exception:
+                pass
+        # The SIP leg leaving IS the end of the call — end the session now.
+        #
+        # This handler used to only log. MEASURED on room
+        # call-917397075913-5801: the caller hung up at 08:24:59 and the
+        # session stayed alive until LiveKit reaped the empty room at 09:17:43
+        # — 52.7 minutes later. The shutdown hook then recorded
+        # duration=3417s for a call that really lasted 236s, so the stored
+        # duration (and every cost derived from it) was ~14x too high, a
+        # worker slot and an active_calls row were held for the whole time,
+        # and campaign concurrency was starved by a call that had ended.
+        #
+        # Only the SIP participant counts: the dashboard diagnostics listener
+        # joins and leaves these rooms routinely and must never end a call.
+        # ctx.shutdown() is idempotent and runs the normal shutdown hook, so
+        # the call is completed through exactly the same path as a hangup the
+        # agent initiates.
+        if not is_sip:
+            return
+        if getattr(ctx, "_jj_ending", False):
+            return
+        ctx._jj_ending = True          # type: ignore[attr-defined]
+        logger.info("call_ended_by_caller_hangup", participant=ident,
+                    room=_lk_rid, call_id=_lk_rid, source="LIVEKIT")
+        try:
+            ctx.shutdown(reason="sip_participant_left")
+        except Exception as exc:
+            logger.warning("hangup_shutdown_failed", error=str(exc)[:200],
+                           room=_lk_rid, call_id=_lk_rid, source="LIVEKIT")
 
     # Late-arriving SIP metadata. `sip.callIDFull` (the trunk provider's SIP
     # Call-ID, and the key used to find the Vobiz recording afterwards) is
@@ -2030,6 +2416,7 @@ async def entrypoint(ctx: JobContext) -> None:
         source=profile.get("_profile_source") or "default_or_agent_profile",
         llm_provider=profile.get("llm_provider"),
         llm_model=profile.get("model"),
+        realtime_model=profile.get("realtime_model"),
         stt_provider=profile.get("stt_provider"),
         tts_provider=profile.get("tts_provider"),
         voice_id=profile.get("voice"),
@@ -2037,6 +2424,22 @@ async def entrypoint(ctx: JobContext) -> None:
         system_prompt_len=len(str(profile.get("system_prompt") or "")),
         call_id=ctx.room.name, room=ctx.room.name,
     )
+    if profile_lookup_id and profile.get("id") != profile_lookup_id:
+        # A specific assistant was requested (inbound routing, or an outbound /
+        # campaign / demo job's metadata) but could not be resolved — inactive,
+        # deleted, or a stale id — so _resolve_profile fell through to the
+        # default agent_profile. That silently swaps in an UNRELATED prompt,
+        # model and voice, and disables knowledge retrieval (which is keyed on
+        # an assistant id). It used to leave no trace at all.
+        logger.error(
+            "assistant_profile_fallback",
+            requested_id=profile_lookup_id, loaded_id=profile.get("id"),
+            loaded_name=profile.get("name"),
+            loaded_source=profile.get("_profile_source") or "default_agent_profile",
+            impact="the requested assistant's saved prompt, voice stack and "
+                   "knowledge are NOT in force for this call",
+            call_id=ctx.room.name, room=ctx.room.name, source="WORKER",
+        )
     history = await _load_caller_history(phone)
 
     # Resolve business + customer identity ONCE so the system prompt and the
@@ -2048,6 +2451,10 @@ async def entrypoint(ctx: JobContext) -> None:
     ).strip()
     customer_name = _clean_customer_name(meta.get("lead_name") or name)
 
+    # `_prompt_diag` carries hash + substitution counts only, never the prompt
+    # text: the saved prompt is confidential, but WHICH prompt loaded and
+    # WHETHER its placeholders were filled must be provable from Live Logs.
+    _prompt_diag: dict = {}
     system_prompt = build_prompt(
         lead_name=customer_name or "the caller",
         business_name=business_name,
@@ -2055,7 +2462,29 @@ async def entrypoint(ctx: JobContext) -> None:
         custom_prompt=profile.get("system_prompt"),
         language_preset=meta.get("language_preset") or "multilingual",
         caller_history=history,
+        diagnostics=_prompt_diag,
     )
+    logger.info("prompt_loaded", assistant_id=profile.get("id"),
+                assistant_name=profile.get("name"),
+                has_customer_name=bool(customer_name),
+                business_name_resolved=business_name,
+                **_prompt_diag,
+                call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
+    if _prompt_diag.get("prompt_source") != "saved_assistant":
+        # Loud, because it means the operator's configured behaviour is NOT in
+        # force — the platform default receptionist persona is.
+        logger.warning("prompt_saved_assistant_missing",
+                       assistant_id=profile.get("id"),
+                       using=_prompt_diag.get("prompt_source"),
+                       impact="the platform default prompt is in force, not the "
+                              "assistant's saved configuration",
+                       call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
+    if _prompt_diag.get("unresolved"):
+        logger.warning("prompt_placeholders_unresolved",
+                       unresolved=_prompt_diag["unresolved"],
+                       impact="these braces are not supported placeholders and are "
+                              "spoken/sent literally",
+                       call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
     # Hallucination guard is now covered by the shared [VOICE] rules appended in
     # build_prompt ("don't invent names, prices, policies, availability or
     # facts…"), so no extra per-call paragraph is added here — saves input tokens
@@ -2226,7 +2655,27 @@ async def entrypoint(ctx: JobContext) -> None:
     # transcripts — the exact "no STT" symptom on outbound. Default OFF aligns
     # real calls with the known-working (no-BVC) demo STT path; set the env var
     # to re-enable once confirmed safe on your trunk.
-    use_bvc = os.getenv("ENABLE_BVC_TELEPHONY", "false").lower() in ("1", "true", "yes", "on")
+    # The ASSISTANT's saved setting decides this. ENABLE_BVC_TELEPHONY is an
+    # explicit kill-switch, not a required opt-in.
+    #
+    # It used to be required: `... and use_bvc`, defaulting to false. Since the
+    # variable was never set, noise cancellation was silently OFF on every call
+    # while the Assistant page showed it ON — measured across the whole log
+    # table: noise_cancellation_enabled 0, noise_cancellation_disabled 96,
+    # init_failed 0, with all five assistants having backgroundDenoising=true.
+    #
+    # On a telephony leg with no cancellation, line noise and the agent's own
+    # audio reach the VAD. That shows up as VAD flapping (3,431 speaking-state
+    # transitions against 607 completed replies) and as spurious barge-in
+    # cancelling the agent mid-sentence (1,120 reply-speeches created, 607
+    # completed — ~35% cut off). The caller hears the agent stop talking
+    # part-way through an answer and says "Hello?" — logged 80 times.
+    #
+    # Setting ENABLE_BVC_TELEPHONY=false still forces it off for debugging.
+    _bvc_env = os.getenv("ENABLE_BVC_TELEPHONY")
+    _bvc_forced_off = (_bvc_env is not None
+                       and _bvc_env.strip().lower() in ("0", "false", "no", "off"))
+    use_bvc = not _bvc_forced_off
     if not is_demo and profile.get("background_denoising", True) and use_bvc:
         try:
             room_input = RoomInputOptions(
@@ -2241,7 +2690,11 @@ async def entrypoint(ctx: JobContext) -> None:
     elif not is_demo:
         room_input = RoomInputOptions(close_on_disconnect=False, participant_kinds=_sip_kinds)
         logger.info("noise_cancellation_disabled",
-                    reason="ENABLE_BVC_TELEPHONY not set — matching demo STT path",
+                    reason=("ENABLE_BVC_TELEPHONY explicitly set to a false value"
+                            if _bvc_forced_off
+                            else "the assistant has backgroundDenoising switched off"),
+                    assistant_setting=bool(profile.get("background_denoising", True)),
+                    env_override=_bvc_env,
                     call_id=ctx.room.name)
     if not is_demo:
         logger.info("agent_input_restricted_to_sip", kinds="SIP",
@@ -2294,7 +2747,7 @@ async def entrypoint(ctx: JobContext) -> None:
             return
         if _turn_watch["awaiting_audio"] and _turn_watch["turn_id"] == turn_id:
             elapsed = _ms(_turn_watch["t"]["stt_final"], time.monotonic())
-            cooling = bool(getattr(agent, "_groq_cooldown_active", False))
+            cooling = bool(getattr(agent, "_any_cooling", lambda: False)())
             # Name the stage we are ACTUALLY blocked in, from the stamps we
             # already hold, instead of the catch-all "llm_or_tts".
             _t = _turn_watch["t"]
@@ -2630,7 +3083,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     _tk.cancel()
                 t = _turn_watch["t"]
                 t["first_audio"] = time.monotonic()
-                cooling = bool(getattr(agent, "_groq_cooldown_active", False))
+                cooling = bool(getattr(agent, "_any_cooling", lambda: False)())
                 # Read the provider/model that ACTUALLY served this turn from the
                 # route rather than assuming groq-unless-cooling: that guess
                 # mislabelled Groq-served fallback turns as "gemini".
@@ -2772,17 +3225,67 @@ async def entrypoint(ctx: JobContext) -> None:
     # STT initialized + ready for this call (Deepgram realtime pipeline).
     logger.info("stt_connected", provider=config.DEFAULT_STT_PROVIDER, model=config.STT_MODEL,
                 call_id=_dbg_rid, room=_dbg_rid, source="STT")
+    # When the STT stream opened, so its real lifetime can be measured at
+    # teardown. There were 99 stt_connected events in the log table and ZERO
+    # close events, which is why Deepgram's billable duration could only be
+    # inferred: we could show no audio was transcribed after the hangup, but
+    # not when the stream actually closed.
+    agent_tools._stt_connected_mono = time.monotonic()
+    agent_tools._stt_provider = config.DEFAULT_STT_PROVIDER
+    agent_tools._stt_model = config.STT_MODEL
 
     # Real per-turn provider metrics (truthful latency, not state-derived).
+    # Which assistant the usage belongs to, for per-assistant cost attribution.
+    _usage_assistant_id = (profile.get("id")
+                           if profile.get("_profile_source") == "assistant" else None)
+
     @session.on("metrics_collected")
     def _on_metrics(ev: Any) -> None:  # noqa: ANN401 — runtime event
         try:
             m = getattr(ev, "metrics", None)
             cls = type(m).__name__ if m is not None else ""
             if cls == "LLMMetrics":
+                # PROVIDER-REPORTED token usage, per request.
+                #
+                # The stored per-call figure was
+                #   user_chars//4 + len(system_prompt)//4
+                # which counts the system prompt ONCE for the whole call rather
+                # than once per request, and ignores tool schemas and history
+                # entirely. On room call-917397075913-5801 that stored 2,000
+                # input tokens for ~18 requests whose real cost was an order of
+                # magnitude higher. Accumulating what the provider actually
+                # reports replaces the estimate with a measurement; `estimated`
+                # stays available as a labelled fallback when a provider
+                # returns no usage block.
+                _pt = int(getattr(m, "prompt_tokens", 0) or 0)
+                _ct = int(getattr(m, "completion_tokens", 0) or 0)
+                _cached = int(getattr(m, "prompt_cached_tokens", 0) or 0)
+                if _pt or _ct:
+                    agent_tools._usage_prompt_tokens = (
+                        getattr(agent_tools, "_usage_prompt_tokens", 0) + _pt)
+                    agent_tools._usage_completion_tokens = (
+                        getattr(agent_tools, "_usage_completion_tokens", 0) + _ct)
+                    agent_tools._usage_cached_tokens = (
+                        getattr(agent_tools, "_usage_cached_tokens", 0) + _cached)
+                    agent_tools._usage_requests = (
+                        getattr(agent_tools, "_usage_requests", 0) + 1)
+                _rt = getattr(agent_tools, "_llm_route", None)
                 logger.info("llm_response_received", call_id=_dbg_rid, room=_dbg_rid, source="LLM",
                             ttft_ms=round(float(getattr(m, "ttft", 0) or 0) * 1000),
                             duration_ms=round(float(getattr(m, "duration", 0) or 0) * 1000),
+                            # request_id is the provider's own id — the join key
+                            # back to Groq's request log, which nothing captured
+                            # before, so app records could not be reconciled
+                            # against the provider's.
+                            provider_request_id=(str(getattr(m, "request_id", "") or "") or None),
+                            prompt_tokens=_pt, completion_tokens=_ct,
+                            cached_tokens=_cached,
+                            total_tokens=int(getattr(m, "total_tokens", 0) or 0),
+                            usage_source="provider" if (_pt or _ct) else "absent",
+                            cancelled=bool(getattr(m, "cancelled", False)),
+                            provider=(getattr(_rt, "actual_provider_used", "") or None),
+                            model=(getattr(_rt, "actual_model_used", "") or None),
+                            assistant_id=_usage_assistant_id,
                             error=(str(getattr(m, "error", "") or "")[:200] or None))
             elif cls == "TTSMetrics":
                 logger.info("tts_metrics", call_id=_dbg_rid, room=_dbg_rid, source="TTS",
@@ -2945,6 +3448,24 @@ async def entrypoint(ctx: JobContext) -> None:
     # outbound SIP participant has answered (or immediately for an in-room
     # caller). Starting it here (pre-dial) recorded ring/silence.
 
+    # ── INBOUND answer anchor ────────────────────────────────────────────────
+    # Inbound has different semantics from outbound and must not borrow them:
+    # there is no dial and no wait_until_answered. The carrier has ALREADY
+    # connected the leg before LiveKit dispatches this job, which is why the
+    # SIP participant is in the room the moment we start. The earliest answer
+    # signal available to the worker is therefore "the SIP participant is
+    # present at job start" — close to, but not identical to, the carrier's own
+    # connect instant, so it is labelled as such rather than presented as
+    # carrier-confirmed. answer_source distinguishes the two in Live Logs and
+    # tells the cost view which figures are provider-grade.
+    if user_in_room and getattr(agent_tools, "_answered_mono", None) is None:
+        agent_tools._answered_mono = time.monotonic()
+        agent_tools._answered_at = datetime.now(UTC)
+        agent_tools._ringing_seconds = 0.0
+        logger.info("call_answered", phone=phone, ringing_seconds=0.0,
+                    answer_source="inbound_participant_present_at_start",
+                    call_id=ctx.room.name, room=ctx.room.name, source="LIVEKIT")
+
     # Outbound dial-out branch
     if phone not in ("unknown", "demo") and not user_in_room:
         # ── DND race-close (Feature Pack 4 / Task 8) ─────────────────────────
@@ -2958,6 +3479,10 @@ async def entrypoint(ctx: JobContext) -> None:
             await db.remove_active_call(ctx.room.name)
             return
 
+        _dial_mono = time.monotonic()
+        # Marks that a SIP leg was attempted. If no answer stamp follows, the
+        # call never connected and must bill zero connected seconds.
+        agent_tools._dial_attempted = True
         logger.info("dialing_out", phone=phone, trunk=config.OUTBOUND_TRUNK_ID,
                     call_id=ctx.room.name, room=ctx.room.name, source="VOBIZ")
         try:
@@ -2970,7 +3495,17 @@ async def entrypoint(ctx: JobContext) -> None:
                     wait_until_answered=True,
                 )
             )
-            logger.info("call_answered", phone=phone,
+            # THE authoritative answer: this call blocks until the carrier
+            # reports the call picked up. Verified against the Vobiz CDR for
+            # room call-917397075913-5801 — this line logged 13:51:25.113 IST
+            # and Vobiz recorded "Call picked 13:51:25". Everything billable
+            # starts here; the ringing before it is not connected time.
+            agent_tools._answered_mono = time.monotonic()
+            agent_tools._answered_at = datetime.now(UTC)
+            _ring_s = round(agent_tools._answered_mono - _dial_mono, 2)
+            agent_tools._ringing_seconds = _ring_s
+            logger.info("call_answered", phone=phone, ringing_seconds=_ring_s,
+                        answer_source="sip_wait_until_answered",
                         call_id=ctx.room.name, room=ctx.room.name, source="VOBIZ")
         except Exception as exc:
             logger.error("dial_out_failed", error=str(exc), phone=phone,
@@ -3014,6 +3549,34 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception as _sx:  # noqa: BLE001 - recording must never affect the call
         logger.warning("recording_existing_track_sweep_failed", error=str(_sx)[:200],
                        room=getattr(ctx.room, "name", ""), source="RECORDING")
+
+    # ── Pre-warm the knowledge embedder (off the turn path) ───────────────────
+    # The first knowledge lookup of the process loads a sentence-transformers
+    # model: measured 4.1 s to load, 6.4 s for that first search, versus ~130 ms
+    # once warm. Until now that cost was paid INSIDE llm_node on the caller's
+    # first question, before the LLM was called, so the caller heard silence.
+    #
+    # Doing it here overlaps the load with the greeting playout (~7 s), so the
+    # first real question hits a warm embedder. Fire-and-forget: the turn path is
+    # separately time-bounded, so if this is slow or fails nothing waits on it.
+    try:
+        if resolved_assistant_id:
+            async def _warm_knowledge() -> None:
+                try:
+                    t0 = time.monotonic()
+                    await knowledge.embed_texts(["warm"])
+                    logger.info("knowledge_prewarm_done",
+                                ms=int((time.monotonic() - t0) * 1000),
+                                room=ctx.room.name, source="KNOWLEDGE")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("knowledge_prewarm_failed", error=str(exc)[:200],
+                                   room=ctx.room.name, source="KNOWLEDGE")
+            # The local binding lives for the whole entrypoint, which keeps the
+            # task referenced (a bare create_task can be garbage collected).
+            _warm_task = asyncio.create_task(_warm_knowledge())  # noqa: RUF006
+    except Exception as _wx:  # noqa: BLE001 - prewarm must never affect the call
+        logger.warning("knowledge_prewarm_schedule_failed", error=str(_wx)[:200],
+                       room=getattr(ctx.room, "name", ""), source="KNOWLEDGE")
 
     # ── Capture the telephony-provider join key ───────────────────────────────
     # Vobiz records the PSTN leg on its own side. To fetch THAT recording after
@@ -3234,8 +3797,59 @@ async def _handle_voicemail(session, msg: str, ctx: JobContext) -> None:
 
 # ── Shutdown hook ────────────────────────────────────────────────────────────
 
+def _billable_seconds(ctx: JobContext, agent_tools) -> tuple[int, str]:
+    """(seconds, basis) — the duration the call is BILLED on.
+
+    MEASURED on room call-917397075913-5801: the caller answered at 08:21:25
+    and hung up at 08:24:59 — 214s, which is exactly what the carrier's call
+    log and the egress recording both show. The stored duration was 3417s,
+    because it ran from job start to whenever the shutdown hook finally fired
+    (LiveKit's room reaper, 09:18:23). Every duration-derived cost line —
+    Vobiz telephony, Deepgram STT, LiveKit media — inherited that 16x error.
+
+    Billing anchors on the two events a carrier bills on:
+      answer  = the SIP participant being present (greeting starts here)
+      hangup  = the SIP participant leaving
+    Either missing falls back to the old wall-clock, with the basis reported
+    so an estimate is never mistaken for a measurement.
+    """
+    def _num(v: Any) -> float | None:
+        # Must never raise: this runs inside the shutdown hook, and a bad value
+        # here would stop the call row being written at all. Anything that is
+        # not a real number (a mock, a stub, None) degrades to the fallback.
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    answered = _num(getattr(agent_tools, "_answered_mono", None))
+    hangup = _num(getattr(ctx, "_jj_hangup_mono", None))
+    # `is not None`, never truthiness: time.monotonic() may legitimately be
+    # 0.0, and a falsy check there would silently bill the wrong span.
+    if answered is not None and hangup is not None and hangup >= answered:
+        return max(0, int(hangup - answered)), "answer_to_hangup"
+    if answered is not None:
+        # Agent-initiated hangup, or a teardown with no disconnect event.
+        return max(0, int(time.monotonic() - answered)), "answer_to_teardown"
+    # A SIP dial was attempted and never answered: busy, declined, ring-timeout
+    # or a failed dial. There is NO connected time, so none may be billed.
+    # Falling through to the wall-clock here charged dialling + ringing +
+    # timeout as if the customer had been on the line — the carrier bills none
+    # of it (Vobiz's own CDR separates "Total" from "Connected/billed").
+    if getattr(agent_tools, "_dial_attempted", False):
+        return 0, "no_answer"
+    started = _num(getattr(agent_tools, "_call_start_time", None))
+    if started is None:
+        return 0, "unknown"
+    return max(0, int(time.time() - started)), "job_wallclock"
+
+
 async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, phone: str, name: str) -> None:
-    duration = int(time.time() - agent_tools._call_start_time)
+    duration, duration_basis = _billable_seconds(ctx, agent_tools)
+    room_seconds = int(time.time() - agent_tools._call_start_time)
+    if duration_basis != "job_wallclock" and room_seconds > duration + 5:
+        # The room outlived the conversation. Worth seeing: it is wasted worker
+        # capacity even now that billing no longer counts it.
+        logger.warning("room_outlived_call", billable_seconds=duration,
+                       room_seconds=room_seconds, basis=duration_basis,
+                       call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
     transcript = ""
     user_chars_total = 0       # for STT estimate (we transcribed the user)
     assistant_chars_total = 0  # for TTS chars (we synthesised the assistant)
@@ -3353,9 +3967,33 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
             or (_tts_bill_def.models[0] if _tts_bill_def and _tts_bill_def.models else tts_provider_used)
         )
 
-    llm_input_tokens = max(0, user_chars_total // 4 + len(profile.get("system_prompt") or "") // 4)
-    llm_output_tokens = max(0, assistant_chars_total // 4)
-    stt_seconds = duration  # we transcribed the whole call
+    # Prefer what the PROVIDER reported, summed over every request this call
+    # made. The char-based estimate below counts the system prompt once for the
+    # whole call instead of once per request and ignores tool schemas and
+    # history, so it understated heavily; it survives only as a labelled
+    # fallback for providers that return no usage block.
+    _prov_in = int(getattr(agent_tools, "_usage_prompt_tokens", 0) or 0)
+    _prov_out = int(getattr(agent_tools, "_usage_completion_tokens", 0) or 0)
+    _prov_reqs = int(getattr(agent_tools, "_usage_requests", 0) or 0)
+    if _prov_in or _prov_out:
+        llm_input_tokens, llm_output_tokens = _prov_in, _prov_out
+        token_source = "provider"
+    else:
+        llm_input_tokens = max(0, user_chars_total // 4 + len(profile.get("system_prompt") or "") // 4)
+        llm_output_tokens = max(0, assistant_chars_total // 4)
+        token_source = "estimated"
+    logger.info("llm_usage_total", input_tokens=llm_input_tokens,
+                output_tokens=llm_output_tokens, requests=_prov_reqs,
+                cached_tokens=int(getattr(agent_tools, "_usage_cached_tokens", 0) or 0),
+                token_source=token_source,
+                per_request_input=(round(_prov_in / _prov_reqs) if _prov_reqs else None),
+                call_id=ctx.room.name, room=ctx.room.name, source="LLM")
+    # STT is metered on audio actually streamed. That is the BILLABLE
+    # span, not the room's lifetime: with the SIP leg gone there is no
+    # audio track, so nothing reaches Deepgram. The 08:21 call recorded
+    # stt_seconds=3417 while the caller was only connected for 214s and
+    # zero STT events were logged after the hangup.
+    stt_seconds = duration
     tts_chars = assistant_chars_total
     telephony_provider = "vobiz"
 
@@ -3382,6 +4020,8 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
                 tts_provider_used=tts_provider_used,
                 tts_sku_used=tts_sku_used,
                 telephony_provider=telephony_provider,
+                answered_at=getattr(agent_tools, "_answered_at", None),
+                ended_at=getattr(ctx, "_jj_hangup_at", None),
             )
         else:
             # Fallback: row was never inserted (e.g. early exit before session.start).
@@ -3394,7 +4034,12 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
                 was_booked=was_booked, transcript=transcript,
             )
         log_call_ok = True
-        logger.info("call_logged", call_id=call_id, duration=duration, outcome=outcome)
+        logger.info("call_logged", call_id=call_id, duration=duration,
+                    duration_basis=duration_basis, room_seconds=room_seconds,
+                    ringing_seconds=getattr(agent_tools, "_ringing_seconds", None),
+                    cost_basis=("provider_aligned" if duration_basis == "answer_to_hangup"
+                                else "estimated"),
+                    outcome=outcome)
         logger.info("session_ended", call_id=call_id, room=getattr(ctx.room, "name", ""),
                     duration=duration, outcome=outcome, source="WORKER")
     except Exception as exc:
@@ -3447,7 +4092,58 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
         except Exception as exc:
             logger.warning("egress_stop_failed", error=str(exc), egress_id=egress_id)
 
+    # ── STT stream lifetime ──────────────────────────────────────────────────
+    # Closes the measurement gap: Deepgram meters streamed audio, and the only
+    # evidence we had was the absence of transcripts after a hangup. This
+    # reports how long the stream was actually open and how that compares with
+    # the connected span, so STT cost stops being inferred from room lifetime.
+    try:
+        _stt_open = getattr(agent_tools, "_stt_connected_mono", None)
+        if isinstance(_stt_open, (int, float)):
+            _stt_open_s = int(time.monotonic() - _stt_open)
+            logger.info("stt_disconnected",
+                        provider=getattr(agent_tools, "_stt_provider", None),
+                        model=getattr(agent_tools, "_stt_model", None),
+                        stream_open_seconds=_stt_open_s,
+                        connected_seconds=duration,
+                        billed_on=duration,
+                        note=("stream outlived the connected span"
+                              if _stt_open_s > duration + 5 else "aligned"),
+                        call_id=ctx.room.name, room=ctx.room.name, source="STT")
+    except Exception as exc:
+        logger.warning("stt_lifetime_log_failed", error=str(exc)[:160],
+                       call_id=ctx.room.name, source="STT")
+
     await db.remove_active_call(ctx.room.name)
+
+    # ── Settle this room's campaign target, if it belongs to a campaign ──────
+    # Closes the dispatch loop: until now a target stayed DISPATCHED forever
+    # once the dial API accepted, so the campaign page could not distinguish
+    # "dial accepted" from "the customer actually spoke to the agent", and the
+    # campaign's completed/failed counters never moved off zero.
+    #
+    # Only two states are written, because only two are supported by evidence
+    # this process genuinely has: the session ran and the caller spoke
+    # (COMPLETED), or it ended without a conversation (FAILED, carrying the
+    # reason). Provider-level outcomes like BUSY / NO ANSWER are NOT inferred
+    # here — nothing in the worker observes them.
+    try:
+        connected = duration > 0 and bool(transcript)
+        settled = await db.settle_campaign_target(
+            ctx.room.name,
+            status="COMPLETED" if connected else "FAILED",
+            error=None if connected else (reason or outcome or "no conversation")[:300],
+        )
+        if settled:
+            await db.refresh_campaign_counters(ctx.room.name)
+            logger.info("campaign_target_settled", room=ctx.room.name,
+                        status="COMPLETED" if connected else "FAILED",
+                        duration=duration, outcome=outcome,
+                        call_id=ctx.room.name, source="WORKER")
+    except Exception as exc:
+        # Campaign bookkeeping must never break call teardown.
+        logger.warning("campaign_target_settle_failed", error=str(exc)[:200],
+                       room=ctx.room.name, source="WORKER")
 
     # ── Booking-aware notifications (sync notify.py helpers via to_thread) ────
     if log_call_ok:

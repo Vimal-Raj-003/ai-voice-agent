@@ -57,7 +57,7 @@ async def test_book_schedules_reminder(monkeypatch):
 
     date, time = _future_slot()
     out = await AppointmentTools(MagicMock(), "+919000000003", "Ravi").book_appointment(
-        "Ravi", "+919000000003", date, time, "demo")
+        "Ravi", date, time, "demo")
     assert captured.get("reminder_at") is not None          # reminder scheduled
     assert "remind you" in out.lower()
 
@@ -76,8 +76,8 @@ async def test_duplicate_booking_suppressed(monkeypatch):
 
     t = AppointmentTools(MagicMock(), "+919000000004", "Ravi")
     date, time = _future_slot()
-    out1 = await t.book_appointment("Ravi", "+919000000004", date, time, "demo")
-    out2 = await t.book_appointment("Ravi", "+919000000004", date, time, "demo")
+    out1 = await t.book_appointment("Ravi", date, time, "demo")
+    out2 = await t.book_appointment("Ravi", date, time, "demo")
     assert calls["n"] == 1          # second call did not insert again
     assert out1 == out2             # same confirmation returned
 

@@ -747,7 +747,7 @@ export const FLOW_NODES = [
   { key: "livekit_in", label: "LiveKit Room", tech: "room connected", Icon: Radio },
   { key: "vobiz", label: "Vobiz / SIP", tech: "call answered", Icon: PhoneCall },
   { key: "deepgram", label: "Deepgram", tech: "STT final", Icon: Ear },
-  { key: "groq", label: "Groq", tech: "qwen3 LLM", Icon: Brain },
+  { key: "groq", label: "Groq", tech: "LLM reply", Icon: Brain },
   { key: "sarvam", label: "Sarvam", tech: "TTS", Icon: AudioLines },
   { key: "livekit_out", label: "LiveKit Out", tech: "audio publish", Icon: Send },
   { key: "customer_out", label: "Customer", tech: "hears reply", Icon: Headphones },
@@ -1111,7 +1111,13 @@ export const STAGE_LABELS: Record<string, { name: string; provider: string }> = 
   livekit_in: { name: "LiveKit Room", provider: "Room / SIP participant" },
   vobiz: { name: "Vobiz / SIP", provider: "Telephony" },
   deepgram: { name: "Deepgram STT", provider: "Speech-to-text" },
-  groq: { name: "Groq LLM", provider: "qwen/qwen3.8-27b" },
+  // NOT a model name: this is the stage label shown when the call itself
+  // does not say which model ran. It used to read "qwen/qwen3.8-27b",
+  // hardcoded, so every call timeline claimed qwen was the LLM in use —
+  // including calls whose route resolved to openai/gpt-oss-120b. That
+  // sent a P0 investigation after a model-routing bug that did not
+  // exist. The real model per call is on calls.llm_sku_used.
+  groq: { name: "Groq LLM", provider: "Language model" },
   sarvam: { name: "Sarvam TTS", provider: "Text-to-speech" },
   livekit_out: { name: "LiveKit Output", provider: "Audio publish" },
   customer_out: { name: "Customer Reply", provider: "Delivered to caller" },

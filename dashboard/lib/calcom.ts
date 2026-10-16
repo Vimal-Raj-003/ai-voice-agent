@@ -1,31 +1,54 @@
-// Minimal Cal.com (v1) client for the dashboard — currently only cancellation,
-// used to keep an appointment's external booking in sync when an admin cancels
-// it from the calendar page. Mirrors voice-service/tools.py's Cal.com v1 usage
-// (apiKey query param). Reads CALCOM_API_KEY from the server env only.
+// Cal.com access for the dashboard.
+//
+// The dashboard holds NO Cal.com credentials. It used to call
+// https://api.cal.com/v1 directly with its own CALCOM_API_KEY — that API is
+// now decommissioned (every v1 request returns HTTP 410), and keeping a second
+// copy of the key here would mean two places to rotate and two code paths to
+// keep in step.
+//
+// Instead both callers go through the voice service, which owns the key and
+// already speaks Cal.com API v2 (tools.calcom_cancel). That gives one
+// credential location, one cancellation behaviour, one set of booking
+// identifiers and one authentication scheme across the dashboard and the
+// agent. Nothing here ever reaches the browser: these run in server actions
+// and server components, and the only secret involved is the existing
+// VOICE_SERVICE_TOKEN used for service-to-service auth.
 
-const CALCOM_BASE = "https://api.cal.com/v1";
-
-export function calcomConfigured(): boolean {
-  return !!process.env.CALCOM_API_KEY;
-}
+import { voiceService } from "@/lib/voice-service";
 
 export type CalcomResult = { ok: true } | { ok: false; error: string };
 
+export type CalcomStatus = {
+  configured: boolean;
+  eventTypeId: string | null;
+  timezone: string;
+};
+
+/**
+ * Whether Cal.com is usable, as reported by the service that owns the key.
+ *
+ * Async because the answer lives in the voice service's environment, not the
+ * dashboard's. Returns `configured: false` when the service is unreachable —
+ * the caller must not claim a working integration it could not verify.
+ */
+export async function calcomStatus(): Promise<CalcomStatus> {
+  try {
+    const s = await voiceService.calcomStatus();
+    return {
+      configured: !!s.configured,
+      eventTypeId: s.event_type_id ?? null,
+      timezone: s.timezone || "Asia/Kolkata",
+    };
+  } catch {
+    return { configured: false, eventTypeId: null, timezone: "Asia/Kolkata" };
+  }
+}
+
 /** Cancel a Cal.com booking by uid. Never throws. */
 export async function calcomCancel(uid: string, reason = ""): Promise<CalcomResult> {
-  const apiKey = process.env.CALCOM_API_KEY || "";
-  if (!apiKey) return { ok: false, error: "Cal.com not configured" };
-  const params = new URLSearchParams({ apiKey });
-  if (reason) params.set("reason", reason);
   try {
-    const resp = await fetch(
-      `${CALCOM_BASE}/bookings/${encodeURIComponent(uid)}/cancel?${params.toString()}`,
-      { method: "DELETE", signal: AbortSignal.timeout(15_000) },
-    );
-    if (![200, 201, 204].includes(resp.status)) {
-      return { ok: false, error: `Cal.com cancel failed: HTTP ${resp.status}` };
-    }
-    return { ok: true };
+    const r = await voiceService.calcomCancelBooking(uid, reason);
+    return r?.success ? { ok: true } : { ok: false, error: r?.message || "Cal.com cancel failed" };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Cal.com cancel error" };
   }

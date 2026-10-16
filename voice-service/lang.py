@@ -141,7 +141,13 @@ _TANGLISH_MARKERS = {
     "pesunga", "pesu", "solluvinga", "kudunga", "kodunga", "venum",
 }
 
-_WORD_RE = re.compile(r"[a-z஀-௿]+", re.I)
+# Latin + every Indic script this agent supports. Devanagari (Hindi), Telugu
+# and Malayalam used to be missing, so _words() returned [] for any utterance
+# written in them — and is_short_ack() treats "no words" as an inert
+# acknowledgement. A full sentence like "నమస్కారం, నాకు అపాయింట్‌మెంట్ కావాలి"
+# was therefore discarded before rule 2b could read its native script, making
+# script-based switching unreachable for Telugu and Malayalam entirely.
+_WORD_RE = re.compile(r"[a-zऀ-ॿ஀-௿ఀ-౿ഀ-ൿ]+", re.I)
 
 
 def _words(text: str) -> list[str]:
@@ -299,10 +305,33 @@ class LanguageState:
             self.active = "ta"
             self.established = True
             return changed
-        # 5. English / other allowed language establishes from a GENUINE
-        #    utterance — not one that is only English loan-words inside Tamil.
+        # 5. A bare STT language CODE may SEED the conversation language, but it
+        #    may never FLIP one that is already established.
+        #
+        #    Rule 3 above protects a locked non-English language. English was
+        #    deliberately left open so it could be upgraded to Tamil — but that
+        #    upgrade has its own strong-evidence paths (2b native script, 4
+        #    tamilish), so leaving this one open bought nothing and cost a great
+        #    deal.
+        #
+        #    MEASURED on room call-917397075913-2902: the caller spoke Tamil.
+        #    Deepgram cannot transcribe Tamil — it emitted Devanagari gibberish
+        #    ("Hello पूरी ले यार बेच रही हैं?") and reported detected='hi'. No
+        #    Tamil/Telugu/Malayalam glyphs were present, so 2b did not fire; the
+        #    text was not tanglish, so 4 did not fire; and because `active` was
+        #    "en", rule 3 did not protect it. This branch then flipped the whole
+        #    call to Hindi on one mis-transcription, and the agent answered in
+        #    Hindi for the rest of the call.
+        #
+        #    A detection code alone is the WEAKEST evidence available and is
+        #    exactly what the lock exists to resist. Seeding from it is still
+        #    right: before anything is established there is nothing better.
         if base in _ALLOWED:
             if base == "en" and _mostly_loanwords(text):
+                return False
+            if self.established and base != self.active:
+                # Strong evidence only (explicit request, native script, a
+                # genuine English utterance, or tamilish) may move it.
                 return False
             changed = self.active != base
             self.active = base

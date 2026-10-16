@@ -14,6 +14,10 @@ type Appt = {
   time: string;
   service: string;
   status: string;
+  durationMinutes?: number;
+  host?: string | null;
+  calcomBookingUid?: string | null;
+  gcalEventId?: string | null;
 };
 
 function statusTone(s: string) {
@@ -64,7 +68,7 @@ export default function DayDrawer({
         // Status · Actions. Appointments are already ordered by time (page
         // query). Horizontal scroll keeps all columns readable in the drawer.
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[620px] text-left text-sm">
+          <table className="w-full min-w-[560px] text-left text-sm">
             <thead>
               <tr className="border-b border-white/10 text-[10px] uppercase tracking-widest text-gray-500">
                 <th className="py-2 pr-3 font-medium">Time</th>
@@ -72,6 +76,7 @@ export default function DayDrawer({
                 <th className="py-2 pr-3 font-medium">Phone</th>
                 <th className="py-2 pr-3 font-medium">Email</th>
                 <th className="py-2 pr-3 font-medium">Service</th>
+                <th className="py-2 pr-3 font-medium">Host</th>
                 <th className="py-2 pr-3 font-medium">Status</th>
                 <th className="py-2 font-medium">Actions</th>
               </tr>
@@ -91,17 +96,36 @@ export default function DayDrawer({
                   <td className="py-2.5 pr-3 font-mono text-xs text-gray-400 whitespace-nowrap">
                     {a.phoneNumber}
                   </td>
-                  <td className="py-2.5 pr-3 font-mono text-xs text-gray-400">
-                    {a.email ? a.email : <span className="text-gray-600">—</span>}
+                  <td className="max-w-[140px] py-2.5 pr-3 font-mono text-xs text-gray-400">
+                    {a.email ? (
+                      <span className="block truncate" title={a.email}>{a.email}</span>
+                    ) : (
+                      <span className="text-gray-600">—</span>
+                    )}
                   </td>
                   <td className="py-2.5 pr-3 text-gray-300 whitespace-nowrap">
                     {a.service}
+                    {a.durationMinutes ? (
+                      <span className="ml-1 text-[10px] text-gray-600">
+                        {a.durationMinutes}m
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="py-2.5 pr-3 whitespace-nowrap text-gray-400">
+                    {a.host || <span className="text-gray-600">—</span>}
                   </td>
                   <td className="py-2.5 pr-3">
                     <Badge tone={statusTone(a.status)}>{a.status}</Badge>
                   </td>
                   <td className="py-2.5">
-                    <BookingRowActions appointmentId={a.id} status={a.status} />
+                    <BookingRowActions
+                      appointmentId={a.id}
+                      status={a.status}
+                      date={a.date}
+                      time={a.time}
+                      durationMinutes={a.durationMinutes ?? 30}
+                      externallyLinked={!!(a.calcomBookingUid || a.gcalEventId)}
+                    />
                   </td>
                 </tr>
               ))}

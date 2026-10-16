@@ -1,5 +1,3 @@
-"""Neon DB layer — asyncpg pool + async functions matching the spec API surface."""
-
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +12,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
+
+from observability import get_logger
 
 import config
 import provider_registry
@@ -210,7 +210,18 @@ async def get_enabled_tools() -> list[str]:
 
 # ── Error logs ────────────────────────────────────────────────────────────────
 
-async def log_error(source: str, message: str, detail: str = "", level: str = "ERROR") -> None:
+_log = get_logger("db")
+
+async def log_error(source: str, message: str, detail: str = "", level: str = "ERROR") -> bool:
+    """Persist an error row. NEVER raises — logging must not break the caller.
+
+    Returns True only when the INSERT actually committed. That return value
+    matters: callers which need to know whether the audit landed (see
+    record_calcom_orphan) previously wrapped this in try/except and set a
+    success flag in the try body. Because this function swallows every
+    exception, that flag was ALWAYS true and a failed insert looked like a
+    successful one, so a durable fallback could never trigger. The contract is
+    now "never raises, but tells you the truth"."""
     try:
         pool = await get_pool()
         await pool.execute(
@@ -218,8 +229,9 @@ async def log_error(source: str, message: str, detail: str = "", level: str = "E
                VALUES ($1, $2, $3::"ErrorLevel", $4, $5, now())""",
             str(uuid.uuid4()), source, level.upper(), message[:500], detail[:2000],
         )
+        return True
     except Exception:
-        pass  # never let logging break the caller
+        return False  # never let logging break the caller
 
 
 async def get_errors(limit: int = 100) -> list[dict]:
@@ -436,6 +448,128 @@ async def find_booked_appointment(
     )
 
 
+async def find_booked_slot(phone: str, date: str, time: str) -> dict | None:
+    """Return the customer's existing BOOKED appointment in this SLOT, or None.
+
+    Deliberately service-agnostic, unlike find_booked_appointment: the database
+    guard `appointments_active_customer_slot_idx` is unique on
+    (phone_number, date, time) WHERE status = 'BOOKED', with no service column.
+    A booking for the same slot under a DIFFERENT service therefore passes the
+    service-aware pre-check and then violates the index at insert time. This
+    lets the caller ask what actually exists instead of guessing why the write
+    failed."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """SELECT booking_id, service, calcom_booking_uid FROM appointments
+           WHERE phone_number = $1 AND date = $2 AND time = $3
+             AND status = 'BOOKED'::"AppointmentStatus" LIMIT 1""",
+        phone, date, time,
+    )
+    return dict(row) if row else None
+
+
+async def attach_calcom_uid(booking_id: str, calcom_uid: str) -> bool:
+    """Link a Cal.com booking to an existing local appointment that has none.
+
+    COALESCE-style first-write-wins: an appointment that already carries a uid
+    is left alone, so reconciliation can never overwrite a good link or create
+    a second association."""
+    pool = await get_pool()
+    res = await pool.execute(
+        """UPDATE appointments SET calcom_booking_uid = $2
+            WHERE booking_id = $1 AND calcom_booking_uid IS NULL""",
+        booking_id, calcom_uid,
+    )
+    return res.endswith("1")
+
+
+async def find_appointment_by_calcom_uid(calcom_uid: str) -> dict | None:
+    """Idempotency key for reconciliation: has this Cal.com booking already
+    been persisted locally? Prevents a retry creating a second row."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """SELECT booking_id, status, phone_number, date, time
+             FROM appointments WHERE calcom_booking_uid = $1 LIMIT 1""",
+        calcom_uid,
+    )
+    return dict(row) if row else None
+
+
+async def record_calcom_orphan(calcom_uid: str, phone: str, date: str, time: str,
+                               service: str, name: str, reason: str) -> bool:
+    """Durably record a Cal.com booking that exists externally but has no local
+    appointment, so it can be reconciled later.
+
+    TWO sinks, because one of them is not trustworthy here:
+
+      1. error_logs in Neon — queryable, but it is the SAME database whose
+         failure usually caused the orphan. When Neon is fully unavailable this
+         write fails too, which would lose the only record of a real booking.
+      2. An append-only JSONL file on local disk — survives the process, needs
+         no database, and is what makes recovery possible in exactly the case
+         that matters.
+
+    DURABILITY CAVEAT — read before relying on sink 2. fsync() guarantees the
+    bytes reached the filesystem; it does NOT guarantee that filesystem
+    outlives the container. In voice-service/docker-compose.yml the only
+    mounted volume is `./configs:/app/configs:ro`, and with WORKDIR=/app the
+    default path below resolves to /output/logs/ — the image's ephemeral
+    writable layer, which is discarded on redeploy. For this fallback to be
+    durable in a container, set CALCOM_ORPHAN_LOG to a path on a MOUNTED,
+    writable volume. On a bare-metal/dev host the default is already durable.
+
+    MULTI-PROCESS: the worker runs several processes that may append
+    concurrently. Each record is a single short line written in O_APPEND mode,
+    which keeps individual lines intact; this is not a substitute for a real
+    queue if the volume of orphans ever becomes non-trivial.
+
+    The file is written whenever the database write does not succeed. Returns
+    True if at least one sink captured the record. Never raises: the booking is
+    real and already confirmed to the caller, so losing the audit trail must
+    not turn into an exception on the call.
+    """
+    payload = {
+        "calcom_uid": calcom_uid, "phone_number": phone, "date": date,
+        "time": time, "service": service, "name": name, "reason": reason[:300],
+        "recorded_at": datetime.now(UTC).isoformat(),
+    }
+    # log_error never raises, so its RETURN VALUE is the only honest signal of
+    # whether the row committed. The try/except is belt-and-braces for a future
+    # change to that contract.
+    db_ok = False
+    try:
+        db_ok = bool(await log_error("calcom_sync", "ORPHANED_CALCOM_BOOKING",
+                                     detail=json.dumps(payload), level="ERROR"))
+    except Exception:
+        db_ok = False
+
+    file_ok = False
+    if not db_ok:
+        try:
+            path = os.getenv("CALCOM_ORPHAN_LOG") or os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "output", "logs", "calcom_orphans.jsonl")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload) + chr(10))
+                fh.flush()
+                os.fsync(fh.fileno())   # survive an abrupt process kill
+            file_ok = True
+        except Exception:
+            file_ok = False
+
+    if not (db_ok or file_ok):
+        # BOTH durable paths failed. The external booking is real and the
+        # caller has been told their slot is held, but nothing anywhere now
+        # records it. Emit the full detail on stderr as the last resort, and
+        # tell the caller so it can raise an unresolved-recovery risk.
+        _log.error("CALCOM_ORPHAN_UNRECOVERABLE", calcom_uid=calcom_uid,
+                   date=date, time=time, service=service,
+                   impact="external booking exists with no durable local record")
+    return db_ok or file_ok
+
+
+"""Neon DB layer — asyncpg pool + async functions matching the spec API surface."""
 async def get_next_available(date: str, time: str) -> str:
     try:
         dt = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
@@ -539,6 +673,14 @@ async def complete_call(
     tts_provider_used: str | None = None,
     tts_sku_used: str | None = None,
     telephony_provider: str | None = None,
+    # Carrier-aligned lifecycle stamps. answered_at is the instant the call was
+    # PICKED UP (outbound: create_sip_participant(wait_until_answered=True)
+    # returning; inbound: the SIP leg already present at job start). ended_at is
+    # the hangup itself, passed in rather than defaulted to now(), because the
+    # shutdown hook can run later than the hangup. Both are COALESCEd so a retry
+    # cannot move a timestamp that is already recorded.
+    answered_at: "datetime | None" = None,
+    ended_at: "datetime | None" = None,
 ) -> None:
     """Update an in-progress call to its final state and upsert the contact CRM row.
 
@@ -574,6 +716,13 @@ async def complete_call(
              tts_provider_used   = $20,
              tts_sku_used        = $21,
              telephony_provider  = $22,
+             -- The call has just ended, so stamp it. This column existed but was
+             -- never written (0 of 150 historical rows had it), which left the
+             -- post-call Vobiz recording lookup and the "processing" window in
+             -- the UI with no notion of when a call finished. COALESCE keeps a
+             -- value already set, so a retry cannot move the end time.
+             "answeredAt"        = COALESCE("answeredAt", $23),
+             "endedAt"           = COALESCE("endedAt", $24, now()),
              "updatedAt"         = now()
            WHERE id = $11""",
         outcome.upper(), reason, duration_seconds, recording_url, notes,
@@ -582,6 +731,8 @@ async def complete_call(
         stt_seconds, stt_provider_used, stt_sku_used,
         tts_chars, tts_provider_used, tts_sku_used,
         telephony_provider,
+        answered_at,
+        ended_at,
     )
     if phone_number:
         await pool.execute(
@@ -762,6 +913,38 @@ async def remove_active_call(room_id: str) -> None:
     await pool.execute("DELETE FROM active_calls WHERE room_id = $1", room_id)
 
 
+async def delete_active_calls(room_ids: list[str], older_than: datetime | None = None) -> int:
+    """Delete specific active_calls rows by room id.
+
+    Takes an explicit list rather than a predicate on purpose: the caller must
+    have verified each room against LiveKit first (see
+    /api/active-calls/reconcile). There is deliberately no "delete everything
+    older than X" here, because age alone cannot distinguish a long call from
+    an orphan.
+
+    `older_than` closes a time-of-check/time-of-use race. Between listing the
+    LiveKit rooms and running this delete, a NEW call can start and upsert a
+    row — and room ids are `call-<phone>-<4 digits>`, so the same id can recur
+    for the same caller. Deleting purely by id would then remove a LIVE call's
+    registry row and under-count capacity, letting the dispatcher over-dial.
+    Re-asserting the age predicate inside the DELETE makes the check and the
+    write atomic, so a freshly recreated row is never removed."""
+    if not room_ids:
+        return 0
+    pool = await get_pool()
+    if older_than is not None:
+        res = await pool.execute(
+            "DELETE FROM active_calls WHERE room_id = ANY($1::text[]) AND started_at < $2",
+            room_ids, older_than)
+    else:
+        res = await pool.execute(
+            "DELETE FROM active_calls WHERE room_id = ANY($1::text[])", room_ids)
+    try:
+        return int(res.split()[-1])
+    except Exception:
+        return 0
+
+
 async def get_active_calls() -> list[dict]:
     pool = await get_pool()
     rows = await pool.fetch("SELECT * FROM active_calls ORDER BY started_at DESC")
@@ -849,6 +1032,293 @@ async def set_sip_call_identity(
         pass  # never let logging break the caller
 
 
+async def set_vobiz_recording(
+    call_id: str,
+    provider_call_id: str | None = None,
+    provider_recording_id: str | None = None,
+    provider_recording_url: str | None = None,
+    provider_recording_status: str | None = None,
+    recording_source: str | None = None,
+    duration_seconds: int | None = None,
+) -> None:
+    """Store the telephony-provider recording fields on a call, by call id.
+
+    Only non-None arguments are written, so a partial update (e.g. recording the
+    call_uuid before the recording itself exists) never clobbers a later one.
+    Durations are only overwritten when the provider supplies one, so a good
+    local duration is never replaced with a null.
+    """
+    sets: list[str] = []
+    args: list[object] = []
+    def add(col: str, val: object) -> None:
+        args.append(val)
+        sets.append(f'"{col}" = ${len(args)}')
+    if provider_call_id is not None:          add("providerCallId", provider_call_id)
+    if provider_recording_id is not None:     add("providerRecordingId", provider_recording_id)
+    if provider_recording_url is not None:    add("providerRecordingUrl", provider_recording_url)
+    if provider_recording_status is not None: add("providerRecordingStatus", provider_recording_status)
+    if recording_source is not None:          add("recordingSource", recording_source)
+    if duration_seconds is not None:          add("recordingDurationSeconds", duration_seconds)
+    if not sets:
+        return
+    args.append(call_id)
+    pool = await get_pool()
+    await pool.execute(
+        f'UPDATE calls SET {", ".join(sets)}, "updatedAt" = now() WHERE id = ${len(args)}',
+        *args,
+    )
+
+
+async def get_calls_awaiting_vobiz_recording(
+    window_minutes: int = 30,
+    limit: int = 20,
+) -> list[dict]:
+    """Completed Vobiz calls that still need their provider recording resolved.
+
+    The gate is deliberately strict so nothing is ever guessed at:
+      * the call has reached a TERMINAL status (polling is post-call only — a
+        live call is never touched)
+      * it ran over the Vobiz trunk
+      * it is not already READY or terminally FAILED
+      * it finished within the window, so old calls are never re-polled forever
+
+    Note on the time column: `endedAt` is only written from the day this shipped
+    onward, so COALESCE falls back to `updatedAt` (which complete_call has always
+    stamped) and finally `createdAt`. Without that fallback the sweeper would
+    silently never match anything.
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        f'''SELECT id, "sipCallId", "providerCallId",
+                   "toNumber", "durationSeconds",
+                   COALESCE("endedAt", "updatedAt", "createdAt") AS finished_at
+              FROM calls
+             WHERE status IN ('COMPLETED'::"CallStatus", 'FAILED'::"CallStatus",
+                              'NO_ANSWER'::"CallStatus", 'BUSY'::"CallStatus")
+               AND COALESCE("endedAt", "updatedAt", "createdAt")
+                     > NOW() - INTERVAL '{int(window_minutes)} minutes'
+               AND lower(COALESCE(telephony_provider, '')) = 'vobiz'
+               -- The deterministic join key. Calls from before sipCallId capture
+               -- shipped have none and are intentionally left on their local
+               -- recording rather than matched by number + timestamp.
+               AND "sipCallId" IS NOT NULL
+               AND COALESCE("providerRecordingStatus", '') NOT IN ('READY', 'FAILED')
+             ORDER BY COALESCE("endedAt", "updatedAt", "createdAt") DESC
+             LIMIT {int(limit)}''',
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_call_vobiz_recording(call_id: str) -> dict | None:
+    """The stored Vobiz recording pointer for one call (for the audio proxy)."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        'SELECT id, "providerRecordingUrl", "providerRecordingId", '
+        '"providerRecordingStatus", "recordingSource" FROM calls WHERE id = $1',
+        call_id,
+    )
+    return dict(row) if row else None
+
+
+# ── Parallel campaign dialing ────────────────────────────────────────────────
+# Slot accounting and target claiming live in the DATABASE, not in process
+# memory: the API can run more than one worker, and an in-process semaphore
+# would let each one dial up to the limit independently.
+
+#: A claim older than this is treated as abandoned (dispatcher crashed), so the
+#: target becomes dialable again. Must comfortably exceed the time from claim to
+#: the call appearing in active_calls.
+CLAIM_RECLAIM_SECONDS = 180
+
+#: active_calls rows are removed when a call ends, but a killed job leaves one
+#: behind. Anything older than this is not counted as occupying a slot.
+#: (Measured on this install: the table held 20 rows, all stale, none within 30
+#: minutes — counting them naively would report the system permanently full.)
+ACTIVE_CALL_STALE_SECONDS = 1800
+
+
+async def claim_campaign_target(campaign_id: str, attempt_id: str) -> dict | None:
+    """Atomically take ONE dialable target for this campaign, or None.
+
+    FOR UPDATE SKIP LOCKED is what makes concurrent dispatchers safe: each one
+    locks a different row instead of all reading the same PENDING row and
+    dialing the same customer. The claim is recorded on the row itself, so it
+    survives a process restart.
+
+    A row is dialable when it is PENDING, its optional dispatchAfter has passed,
+    and it is either unclaimed or its claim has expired.
+    """
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        'UPDATE campaign_targets t '
+        '   SET "claimedAt" = now(), "attemptId" = $2, '
+        '       attempts = t.attempts + 1, "updatedAt" = now() '
+        ' WHERE t.id = ('
+        '       SELECT c.id FROM campaign_targets c '
+        '        WHERE c."campaignId" = $1 '
+        '          AND c.status = \'PENDING\'::"CampaignTargetStatus" '
+        '          AND (c."dispatchAfter" IS NULL OR c."dispatchAfter" <= now()) '
+        '          AND (c."claimedAt" IS NULL OR c."claimedAt" < now() - '
+        f'              interval \'{int(CLAIM_RECLAIM_SECONDS)} seconds\') '
+        '        ORDER BY c.id FOR UPDATE SKIP LOCKED LIMIT 1) '
+        'RETURNING t.id, t."phoneNumber", t."leadName", t.attempts, t."attemptId"',
+        campaign_id, attempt_id,
+    )
+    return dict(row) if row else None
+
+
+async def release_campaign_claim(target_id: str, status: str | None = None,
+                                 error: str | None = None) -> None:
+    """Hand a claimed target back.
+
+    `status` None returns it to the queue (claim cleared) — used when capacity
+    or compliance blocked the dial, so nothing was actually attempted. A
+    terminal status records the outcome instead.
+    """
+    pool = await get_pool()
+    if status is None:
+        await pool.execute(
+            'UPDATE campaign_targets SET "claimedAt" = NULL, "updatedAt" = now() '
+            'WHERE id = $1',
+            target_id,
+        )
+        return
+    await pool.execute(
+        'UPDATE campaign_targets '
+        '   SET status = $2::"CampaignTargetStatus", '
+        '       "lastError" = COALESCE($3, "lastError"), "updatedAt" = now() '
+        ' WHERE id = $1',
+        target_id, status.upper(), error,
+    )
+
+
+async def mark_campaign_target_dispatched(target_id: str, room: str,
+                                          dispatch_id: str | None = None) -> None:
+    """Record a successful dial. The slot is now held by the live call."""
+    pool = await get_pool()
+    await pool.execute(
+        'UPDATE campaign_targets '
+        '   SET status = \'DISPATCHED\'::"CampaignTargetStatus", '
+        '       "callId" = $2, "dispatchId" = COALESCE($3, "dispatchId"), '
+        '       "dispatchedAt" = now(), "updatedAt" = now() '
+        ' WHERE id = $1',
+        target_id, room, dispatch_id,
+    )
+
+
+async def settle_campaign_target(room: str, *, status: str,
+                                 error: str | None = None) -> bool:
+    """Close out a dispatched campaign target once its call has ENDED.
+
+    WHY THIS EXISTS: every other campaign_targets writer runs in the dispatcher,
+    before or at dial time — FAILED (bad number / dial threw), BLOCKED (DND),
+    DEFERRED (outside the window) and DISPATCHED (the dial API accepted). After
+    a successful dial nothing ever wrote the row again, so a target stayed
+    DISPATCHED forever no matter what happened on the call, and the campaign's
+    completedTargets/failedTargets counters stayed at 0 while it was marked
+    COMPLETED. DISPATCHED therefore meant only "the dial API returned 200",
+    which is exactly what must never be presented as a successful call.
+
+    Keyed on the room name, which mark_campaign_target_dispatched stored in
+    "callId". Scoped to status = 'DISPATCHED' so it is idempotent (a retried
+    shutdown hook cannot overwrite a settled row) and so it can never disturb a
+    target the dispatcher already resolved. Returns True when a row was settled.
+    """
+    if not room:
+        return False
+    pool = await get_pool()
+    tag = await pool.execute(
+        'UPDATE campaign_targets '
+        '   SET status = $2::"CampaignTargetStatus", '
+        '       "lastError" = COALESCE($3, "lastError"), "updatedAt" = now() '
+        ' WHERE "callId" = $1 '
+        '   AND status = \'DISPATCHED\'::"CampaignTargetStatus"',
+        room, status.upper(), error,
+    )
+    return tag.rsplit(" ", 1)[-1] not in ("0", "")
+
+
+async def refresh_campaign_counters(room: str) -> None:
+    """Recompute a campaign's completed/failed counters from its targets.
+
+    Derived from the rows rather than incremented, so it is safe to call more
+    than once and self-heals counters that drifted while targets were never
+    being settled.
+    """
+    if not room:
+        return
+    pool = await get_pool()
+    await pool.execute(
+        'UPDATE campaigns c SET '
+        '  "completedTargets" = s.done, "failedTargets" = s.failed, '
+        '  "updatedAt" = now() '
+        'FROM ( '
+        '  SELECT t."campaignId" cid, '
+        '         COUNT(*) FILTER (WHERE t.status = \'COMPLETED\') done, '
+        '         COUNT(*) FILTER (WHERE t.status IN (\'FAILED\',\'BLOCKED\')) failed '
+        '    FROM campaign_targets t '
+        '   WHERE t."campaignId" = ( '
+        '           SELECT "campaignId" FROM campaign_targets WHERE "callId" = $1 LIMIT 1) '
+        '   GROUP BY t."campaignId") s '
+        'WHERE c.id = s.cid',
+        room,
+    )
+
+
+async def count_live_calls() -> int:
+    """Calls currently occupying provider capacity, across ALL sources.
+
+    Counts the shared active_calls registry (the worker adds a row when a call
+    connects and removes it when it ends), so campaign calls, single dials and
+    inbound traffic are all included — a campaign must not spend capacity that
+    another call already holds.
+
+    Stale rows from killed jobs are excluded by age.
+    """
+    pool = await get_pool()
+    return int(await pool.fetchval(
+        'SELECT COUNT(*) FROM active_calls WHERE started_at > now() - '
+        f'interval \'{int(ACTIVE_CALL_STALE_SECONDS)} seconds\'',
+    ) or 0)
+
+
+async def count_recent_campaign_starts(campaign_id: str, window_seconds: int = 60) -> int:
+    """Calls this campaign has STARTED inside the rate window.
+
+    Read from the calls table rather than an in-memory counter, so the dial rate
+    stays enforced after a restart and across processes.
+    """
+    pool = await get_pool()
+    return int(await pool.fetchval(
+        'SELECT COUNT(*) FROM calls WHERE "campaignId" = $1 AND "createdAt" > now() - '
+        f'interval \'{int(window_seconds)} seconds\'',
+        campaign_id,
+    ) or 0)
+
+
+async def get_campaign_dispatch_config(campaign_id: str) -> dict | None:
+    """Status plus the campaign's requested concurrency and dial rate."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        'SELECT id, status::text AS status, "maxConcurrent", "maxStartsPerMinute", '
+        '       "callDelaySeconds", "agentProfileId", "assistantId" '
+        '  FROM campaigns WHERE id = $1',
+        campaign_id,
+    )
+    return dict(row) if row else None
+
+
+async def count_campaign_targets_by_status(campaign_id: str) -> dict[str, int]:
+    """Queue depth per status, for the campaign progress panel."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        'SELECT status::text AS s, COUNT(*) AS n FROM campaign_targets '
+        ' WHERE "campaignId" = $1 GROUP BY 1',
+        campaign_id,
+    )
+    return {r["s"]: int(r["n"]) for r in rows}
+
+
 # ── Real-time transcript ──────────────────────────────────────────────────────
 
 async def insert_transcript_message(
@@ -891,10 +1361,28 @@ async def get_all_agent_profiles() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _shape_agent_profile(row) -> dict:
+    """agent_profiles row -> the profile dict the agent reads.
+
+    `agent_profiles.model` is the GEMINI REALTIME model id (config.GEMINI_MODEL,
+    e.g. "gemini-3.1-flash-live-preview") — the table predates the pipeline path
+    and has no llm_provider or chat-model column at all. Returning it as "model"
+    made the pipeline hand a Gemini realtime id to the selected chat provider,
+    which answered 404 `model_not_found` on every turn. It is exposed as
+    `realtime_model` so only the realtime path can consume it; the pipeline gets
+    no chat-model selection from this table and uses the provider's default.
+    """
+    d = dict(row)
+    d["realtime_model"] = d.pop("model", None)
+    d["model"] = None
+    d["model_source"] = "agent_profiles (realtime only; no chat-model selection)"
+    return d
+
+
 async def get_agent_profile(profile_id: str) -> dict | None:
     pool = await get_pool()
     row = await pool.fetchrow("SELECT * FROM agent_profiles WHERE id = $1", profile_id)
-    return dict(row) if row else None
+    return _shape_agent_profile(row) if row else None
 
 
 async def get_default_agent_profile() -> dict | None:
@@ -902,7 +1390,7 @@ async def get_default_agent_profile() -> dict | None:
     row = await pool.fetchrow(
         "SELECT * FROM agent_profiles WHERE is_default = true LIMIT 1",
     )
-    return dict(row) if row else None
+    return _shape_agent_profile(row) if row else None
 
 
 # ── Inbound routing (Feature Pack 3 / Task 2) ────────────────────────────────

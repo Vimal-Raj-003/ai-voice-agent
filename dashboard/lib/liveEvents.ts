@@ -29,6 +29,27 @@ export type UseLiveEvents = {
 
 // Mount once per page; both Live Logs and the Providers page derive their views
 // from the returned `events` array.
+/**
+ * Parse a server timestamp as UTC.
+ *
+ * THE BUG THIS FIXES: error_logs stores naive UTC, and the stream emits
+ * `ts.isoformat()` — "2026-10-16T06:24:35.123456", with NO timezone suffix.
+ * ECMAScript parses a date-TIME form without an offset as LOCAL time, so on an
+ * IST (+05:30) host every event was read as 5.5 hours in the past and then
+ * dropped by the session-boundary guard below. The Live Logs page therefore
+ * showed CONNECTED with EVENTS 0 while events were streaming in correctly.
+ * On a UTC host the offset is zero, which is why it never surfaced in CI.
+ *
+ * A timestamp that already carries Z or an explicit ±hh:mm offset is left
+ * alone, so this stays correct once the server is also emitting UTC markers.
+ */
+function parseUtc(value: string): number {
+  const v = String(value).trim();
+  const hasZone = /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(v);
+  const n = Date.parse(hasZone ? v : v + "Z");
+  return Number.isFinite(n) ? n : Date.now();
+}
+
 export function useLiveEvents(): UseLiveEvents {
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [conn, setConn] = useState<ConnState>("connecting");
@@ -52,7 +73,7 @@ export function useLiveEvents(): UseLiveEvents {
 
   const ingest = useCallback((raw: { source?: string; level?: string; message?: string; detail?: string; timestamp?: string; synthetic?: boolean }) => {
     if (pausedRef.current) return;
-    const ts = raw.timestamp ? Date.parse(raw.timestamp) : Date.now();
+    const ts = raw.timestamp ? parseUtc(raw.timestamp) : Date.now();
     const tsMs = Number.isFinite(ts) ? ts : Date.now();
     if (!raw.synthetic && tsMs < sessionStartRef.current - 250) return;    // session boundary
     const source = String(raw.source || "");

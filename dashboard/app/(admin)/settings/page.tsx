@@ -9,6 +9,8 @@ import {
 } from "@/lib/known-settings";
 import SettingRow from "@/components/SettingRow";
 import DocsContent from "@/components/DocsContent";
+import ApiKeysSection from "@/components/ApiKeysSection";
+import WebhooksSection from "@/components/WebhooksSection";
 import SettingsSearchBar from "@/components/SettingsSearchBar";
 import { Download } from "lucide-react";
 
@@ -18,7 +20,16 @@ const KNOWN_KEYS = new Set(KNOWN_SETTINGS.map((s) => s.key));
 // full guide / API reference. Treated as a sibling of the SettingCategory
 // values but doesn't fetch any rows.
 const DOCS_TAB = "docs" as const;
-type TabId = SettingCategory | typeof DOCS_TAB;
+// API keys + BYOK provider credentials, moved in from the standalone page.
+const API_KEYS_TAB = "api-keys" as const;
+// Webhook endpoints, moved in from the standalone /webhooks page. Like the
+// API Keys tab it reads no settings rows, so the settings queries are skipped.
+const WEBHOOKS_TAB = "webhooks" as const;
+type TabId =
+  | SettingCategory
+  | typeof DOCS_TAB
+  | typeof API_KEYS_TAB
+  | typeof WEBHOOKS_TAB;
 
 // Best-effort: ask the running voice-service which keys are populated via env.
 // Endpoint requires the bearer token (server-only) so it's safe here. If
@@ -44,15 +55,21 @@ export default async function SettingsPage({
   const q = (sp.q ?? "").trim().toLowerCase();
   const active: TabId =
     requested === DOCS_TAB ||
+    requested === API_KEYS_TAB ||
+    requested === WEBHOOKS_TAB ||
     SETTING_CATEGORIES.some((c) => c.id === requested)
       ? (requested as TabId)
       : "credentials";
 
   const isDocs = active === DOCS_TAB;
+  const isApiKeys = active === API_KEYS_TAB;
+  const isWebhooks = active === WEBHOOKS_TAB;
+  // Neither of these tabs reads the settings table, so skip those queries.
+  const skipSettingsData = isDocs || isApiKeys || isWebhooks;
 
   // Skip the Prisma fetches when the docs tab is active — rendering the
   // guide doesn't need the settings table.
-  const [stored, envMap] = isDocs
+  const [stored, envMap] = skipSettingsData
     ? [[] as Awaited<ReturnType<typeof prisma.setting.findMany>>, new Map<string, { configured: boolean }>()]
     : await Promise.all([
         prisma.setting.findMany({ orderBy: { key: "asc" } }),
@@ -65,8 +82,8 @@ export default async function SettingsPage({
   // across the full registry — the user typed something specific, so the tab
   // restriction would only get in the way. Otherwise show just the active
   // category's defs.
-  let defs = isDocs ? [] : settingsByCategory(active as SettingCategory);
-  if (q && !isDocs) {
+  let defs = skipSettingsData ? [] : settingsByCategory(active as SettingCategory);
+  if (q && !skipSettingsData) {
     defs = KNOWN_SETTINGS.filter(
       (s) =>
         s.key.toLowerCase().includes(q) ||
@@ -74,7 +91,7 @@ export default async function SettingsPage({
         (s.description?.toLowerCase().includes(q) ?? false),
     );
   }
-  const meta = isDocs
+  const meta = skipSettingsData
     ? null
     : SETTING_CATEGORIES.find((c) => c.id === active);
 
@@ -85,17 +102,23 @@ export default async function SettingsPage({
   const TABS: { id: TabId; label: string }[] = [
     ...SETTING_CATEGORIES.map((c) => ({ id: c.id as TabId, label: c.label })),
     { id: DOCS_TAB, label: "Docs & API" },
+    { id: API_KEYS_TAB, label: "API Keys" },
+    { id: WEBHOOKS_TAB, label: "Webhooks" },
   ];
 
   return (
     // Wider container when the docs tab is active so code blocks have room.
-    <div className={`space-y-6 ${isDocs ? "max-w-5xl" : "max-w-3xl"}`}>
+    <div className={`space-y-6 ${isDocs || isApiKeys || isWebhooks ? "max-w-5xl" : "max-w-3xl"}`}>
       <div>
         <h1 className="text-3xl font-bold">Settings</h1>
         <p className="text-sm text-gray-400 mt-1">
-          {isDocs
-            ? "User guide, REST API reference, environment variables, and troubleshooting — all in one place."
-            : "Values stored here override the voice-service environment variables for the running container."}
+          {isWebhooks
+            ? "HTTP endpoints notified on call lifecycle events — started, ended, failed and transcript updates."
+            : isApiKeys
+            ? "REST API tokens for the voice-service, and your own provider keys (BYOK) for speech and language models."
+            : isDocs
+              ? "User guide, REST API reference, environment variables, and troubleshooting — all in one place."
+              : "Values stored here override the voice-service environment variables for the running container."}
         </p>
       </div>
 
@@ -118,11 +141,11 @@ export default async function SettingsPage({
         })}
       </div>
 
-      {meta && !isDocs && (
+      {meta && !isDocs && !isWebhooks && (
         <p className="text-xs text-gray-500 -mt-2">{meta.description}</p>
       )}
 
-      {!isDocs && (
+      {!isDocs && !isWebhooks && (
         <div className="flex flex-wrap items-center gap-3">
           <SettingsSearchBar />
           <a
@@ -136,7 +159,11 @@ export default async function SettingsPage({
         </div>
       )}
 
-      {isDocs ? (
+      {isWebhooks ? (
+        <WebhooksSection />
+      ) : isApiKeys ? (
+        <ApiKeysSection />
+      ) : isDocs ? (
         <DocsContent />
       ) : (
         <>

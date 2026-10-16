@@ -136,6 +136,86 @@ def provider_available(key: str) -> tuple[bool, str]:
     return True, ""
 
 
+# ── Model / provider compatibility ───────────────────────────────────────────
+# A model id is NEVER used to pick a provider (see THE RULE). It is used only to
+# reject an id the selected provider demonstrably cannot serve, which is a
+# different thing: the provider stays exactly as selected, and only the model
+# falls back to that provider's default.
+#
+# WHY THIS EXISTS: `agent_profiles.model` holds the GEMINI REALTIME model id
+# (config.GEMINI_MODEL, e.g. "gemini-3.1-flash-live-preview"). The pipeline path
+# read the same field as the selected provider's CHAT model, so every legacy
+# profile call sent a Gemini id to Groq and took a 404 `model_not_found` on
+# EVERY turn, then leaned on the Groq fallback (or spoke the recovery line when
+# that 429'd). The route still logged selection_honored=true, so the dashboard
+# said the selection was being honoured while no turn could be served.
+#
+# Only ids that POSITIVELY identify another vendor's native API are rejected:
+#  * an id containing "/" is an aggregator-style namespaced id and is always
+#    allowed — `openai/gpt-oss-120b` is a GROQ model and the `openai/` prefix
+#    must never be read as "use OpenAI";
+#  * an unrecognised bare id is allowed, so a newly released model is never
+#    blocked by this table.
+_NATIVE_MODEL_OWNERS: tuple[tuple[str, str], ...] = (
+    ("gemini-", "gemini"),
+    ("claude-", "anthropic"),
+    ("gpt-4", "openai"),
+    ("gpt-5", "openai"),
+    ("gpt-3.5", "openai"),
+    ("o1-", "openai"),
+    ("o3-", "openai"),
+    ("chatgpt-", "openai"),
+)
+
+# These deliberately serve other vendors' model ids, so ownership says nothing.
+_AGGREGATORS = frozenset({"openrouter", "custom"})
+
+# Providers whose own API serves namespaced, "vendor/model" ids. Groq is one:
+# `openai/gpt-oss-120b` and `qwen/qwen3.8-27b` are GROQ models. The native
+# single-vendor APIs below are not, so a slashed id there is a leftover from a
+# different provider — the mirror image of the bug this guard was written for
+# (switch an assistant GROQ -> GEMINI and the old `qwen/...` id would be sent to
+# Google, 404ing every turn exactly as before).
+_SLASHED_ID_PROVIDERS = frozenset({"groq"}) | _AGGREGATORS
+
+# Google accepts its own ids in a canonical "models/<id>" form, so that one
+# namespace is not a foreign vendor.
+_OWN_NAMESPACES = {"gemini": frozenset({"models", "tunedmodels"})}
+
+
+def model_owner(model: str) -> str:
+    """Canonical provider whose NATIVE api owns this bare model id, else "".
+
+    Never call this to choose a provider — it exists only for `vet_model`.
+    """
+    m = (model or "").strip().lower()
+    if not m or "/" in m:
+        return ""
+    for prefix, owner in _NATIVE_MODEL_OWNERS:
+        if m.startswith(prefix):
+            return owner
+    return ""
+
+
+def vet_model(selected_provider: str, model: str) -> tuple[bool, str]:
+    """(servable, owner). False only when `model` is provably another vendor's.
+
+    `owner` names the vendor it belongs to when that is identifiable, else
+    "namespaced-id" for a slashed id on a single-vendor API.
+    """
+    m = (model or "").strip()
+    if not m or selected_provider in _AGGREGATORS:
+        return True, ""
+    owner = model_owner(m)
+    if owner and owner != selected_provider:
+        return False, owner
+    if "/" in m and selected_provider not in _SLASHED_ID_PROVIDERS:
+        ns = m.split("/", 1)[0].lower()
+        if ns not in _OWN_NAMESPACES.get(selected_provider, frozenset())                 and ns != selected_provider:
+            return False, "namespaced-id"
+    return True, ""
+
+
 # ── Route ────────────────────────────────────────────────────────────────────
 # The cost tables (ProviderRate) and the existing realtime path spell Gemini
 # "google". Canonical routing keys stay "gemini"; only the BILLING name is
@@ -154,6 +234,11 @@ class LlmRoute:
     cross_provider_allowed: bool = False
     cross_provider_used: bool = False      # True once a different vendor served a turn
     selection_honored: bool = True         # False = selection could not be served
+    # The provider selection and the MODEL selection can fail independently: a
+    # foreign model id is replaced by the provider's default while the provider
+    # stays exactly as chosen. Reporting one flag for both made that invisible.
+    model_honored: bool = True             # False = requested model was unservable
+    requested_model: str = ""              # what the profile actually asked for
     reason: str = ""                       # why the route looks the way it does
     # Runtime truth — stamped by `record_use` as turns are served.
     actual_provider_used: str = ""
@@ -201,6 +286,8 @@ class LlmRoute:
             "cross_provider_allowed": self.cross_provider_allowed,
             "cross_provider_used": self.cross_provider_used,
             "selection_honored": self.selection_honored,
+            "model_honored": self.model_honored,
+            "requested_model": self.requested_model or self.primary_model,
         }
 
 
@@ -236,16 +323,41 @@ def resolve_route(profile: dict | None = None) -> LlmRoute:
         spec = specs[selected]
         route.primary_provider = selected
         # Honour the operator's chosen model; fall back to the provider default.
-        route.primary_model = (profile.get("model") or "").strip() or spec.default_model
+        wanted = (profile.get("llm_model") or profile.get("model") or "").strip()
+        route.requested_model = wanted
+        ok, owner = vet_model(selected, wanted)
+        if not ok:
+            # Keep the PROVIDER exactly as selected — only the unservable model
+            # is replaced, and loudly. Silently sending it anyway is what made
+            # every turn 404.
+            route.model_honored = False
+            logger.error("llm_model_foreign_to_provider",
+                         selected_provider=selected, requested_model=wanted,
+                         model_belongs_to=owner, using_model=spec.default_model,
+                         impact="the requested model cannot be served by the selected "
+                                "provider; the provider's default model is used instead",
+                         source="LLM")
+            wanted = ""
+        route.primary_model = wanted or spec.default_model
         # An operator-chosen fallback wins; it must still be a DIFFERENT model
         # on the SAME provider, otherwise it just retries the same bucket.
         chosen_fb = (profile.get("fallback_model") or "").strip()
+        if chosen_fb:
+            fb_ok, fb_owner = vet_model(selected, chosen_fb)
+            if not fb_ok:
+                logger.error("llm_fallback_model_foreign_to_provider",
+                             selected_provider=selected, requested_model=chosen_fb,
+                             model_belongs_to=fb_owner, source="LLM")
+                chosen_fb = ""
         fb_model = (chosen_fb if chosen_fb and chosen_fb != route.primary_model
                     else _pick_fallback_model(spec, route.primary_model))
         if fb_model:
             route.fallback_provider = selected
             route.fallback_model = fb_model
-            route.reason = "same-provider fallback (selection is source of truth)"
+            route.reason = ("same-provider fallback (selection is source of truth)"
+                            if route.model_honored else
+                            "provider honoured; requested model unservable, using "
+                            "provider default + same-provider fallback")
         elif config.ALLOW_CROSS_PROVIDER_FALLBACK:
             route.fallback_provider, route.fallback_model = _cross_provider_fallback(selected, specs)
             route.reason = "no distinct same-provider model; cross-provider fallback enabled"
