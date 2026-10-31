@@ -49,6 +49,8 @@ Other spec facts that shape the code:
 from __future__ import annotations
 
 import asyncio
+import datetime
+import re
 from typing import Any
 
 import httpx
@@ -141,6 +143,63 @@ def match_recording(recs: list[dict], sip_call_id: str) -> dict | None:
     return None
 
 
+def match_recording_by_metadata(recs: list[dict], meta: dict) -> dict | None:
+    """Secondary match for LiveKit inbound SIP trunks where LiveKit's internal
+    sipCallId differs from Vobiz's call_uuid. Requires 3-way agreement:
+    1) phone numbers match (last 10 digits of caller phone)
+    2) duration matches within 25 seconds
+    3) timestamp matches within 10 minutes (600 seconds)
+    """
+    to_num = re.sub(r"\D", "", str(meta.get("toNumber") or ""))[-10:]
+    from_num = re.sub(r"\D", "", str(meta.get("fromNumber") or ""))[-10:]
+    call_dur = meta.get("durationSeconds")
+    finished_at = meta.get("finished_at")
+
+    if not (to_num or from_num) or call_dur is None:
+        return None
+
+    target_ts = None
+    if isinstance(finished_at, datetime.datetime):
+        target_ts = finished_at.timestamp()
+
+    candidates = []
+    for rec in recs:
+        rec_from = re.sub(r"\D", "", str(rec.get("from_number") or ""))[-10:]
+        rec_to = re.sub(r"\D", "", str(rec.get("to_number") or ""))[-10:]
+        phone_match = False
+        if to_num and (to_num == rec_from or to_num == rec_to):
+            phone_match = True
+        elif from_num and (from_num == rec_from or from_num == rec_to):
+            phone_match = True
+        if not phone_match:
+            continue
+
+        rec_dur = recording_seconds(rec)
+        if rec_dur is None or abs(rec_dur - call_dur) > 25:
+            continue
+
+        add_time_raw = rec.get("add_time")
+        if target_ts is not None and add_time_raw:
+            try:
+                rec_dt = (
+                    add_time_raw
+                    if isinstance(add_time_raw, datetime.datetime)
+                    else datetime.datetime.fromisoformat(str(add_time_raw))
+                )
+                if abs(rec_dt.timestamp() - target_ts) > 600:
+                    continue
+            except Exception:
+                pass
+
+        candidates.append(rec)
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        return min(candidates, key=lambda r: abs((recording_seconds(r) or 0) - call_dur))
+    return None
+
+
 async def list_recent_recordings(max_pages: int = _MAX_PAGES) -> list[dict]:
     """Newest-first recordings, bounded paging (the list cannot be filtered)."""
     out: list[dict] = []
@@ -219,6 +278,13 @@ async def resolve_for_call(call_id: str, sip_call_id: str,
         if rec is None and sip_call_id:
             rec = match_recording(recs, sip_call_id)
             how = "sipCallId==call_uuid"
+
+        if rec is None and call_id:
+            meta = await db.get_call_metadata(call_id)
+            if meta:
+                rec = match_recording_by_metadata(recs, meta)
+                if rec:
+                    how = "phone+timestamp+duration"
 
         if rec is None:
             # Log the evidence needed to tell whether these id spaces relate at

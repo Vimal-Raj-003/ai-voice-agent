@@ -469,6 +469,15 @@ def recommendation_for(capability: str, provider_id: str,
     return None
 
 
+def default_model_for(cap: str, pid: str) -> str:
+    """The model a provider runs when none is chosen ("" if unlisted).
+
+    Read-only accessor over _PROVIDER_DEFAULT_MODEL so callers outside this
+    module do not have to reach into a private name.
+    """
+    return _PROVIDER_DEFAULT_MODEL.get((cap, pid), "")
+
+
 def _why(rec: Recommendation, part: str) -> str:
     base = {
         "quality": "Overall output quality for voice calls.",

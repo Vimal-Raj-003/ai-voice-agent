@@ -144,7 +144,13 @@ RATE_LIMIT_WINDOW       = 3600
 RECORDING_BACKEND       = os.getenv("RECORDING_BACKEND", "local").strip().lower()
 # Persistent storage root. Containerised deploys mount a volume here; override
 # with RECORDINGS_DIR for local development (the default path is Linux-only).
-RECORDINGS_DIR          = os.getenv("RECORDINGS_DIR", "/opt/jilljill/recordings")
+_raw_rec_dir            = os.getenv("RECORDINGS_DIR", "/opt/jilljill/recordings").strip()
+if os.name != "nt" and len(_raw_rec_dir) >= 2 and _raw_rec_dir[1] == ":":
+    _drive = _raw_rec_dir[0].lower()
+    _rest = _raw_rec_dir[2:].replace("\\", "/").lstrip("/")
+    RECORDINGS_DIR      = f"/mnt/{_drive}/{_rest}"
+else:
+    RECORDINGS_DIR      = _raw_rec_dir
 # Bounded buffers + disk safeguards so a recording can never destabilise a call.
 RECORDING_MAX_MINUTES   = int(os.getenv("RECORDING_MAX_MINUTES", "60"))
 RECORDING_MIN_FREE_MB   = int(os.getenv("RECORDING_MIN_FREE_MB", "500"))

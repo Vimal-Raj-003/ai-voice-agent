@@ -126,7 +126,13 @@ _LOAN_WORDS = {
     "confirmed", "cancel", "reschedule", "slot", "slots", "morning", "evening",
     "afternoon", "night", "number", "address", "email", "online", "offline",
     "report", "test", "scan", "sir", "madam", "please", "ok", "okay", "yes",
-    "no", "date", "today", "tomorrow", "week", "name",
+    "no", "date", "today", "tomorrow", "week", "name", "age", "years", "old",
+    "am", "pm", "clock", "dot", "com", "at", "phone", "mobile", "gmail", "yahoo",
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
+    "sixty", "seventy", "eighty", "ninety", "hundred", "thousand",
+    "first", "second", "third", "fourth", "fifth", "details", "check", "wait",
 }
 
 # Latin-script Tamil/Tanglish function words — their presence marks the utterance
@@ -139,6 +145,10 @@ _TANGLISH_MARKERS = {
     "ungaluku", "naan", "neenga", "unga", "enaku", "enakku", "kooda", "appo",
     "ippo", "appadi", "ipdi", "mudiyum", "mudiyuma", "theriyuma", "theriyum",
     "pesunga", "pesu", "solluvinga", "kudunga", "kodunga", "venum",
+    "podunga", "podu", "vainga", "veinga", "paaru", "paathutu", "ketuten",
+    "ketten", "solren", "solrenu", "edunga", "eduthu", "varum", "varuma",
+    "mudiyathu", "theriyathu", "illama", "kitta", "kitte", "paththi", "patti",
+    "enakum", "ungalku", "aaguthu", "aagum", "panren", "panniten", "pannitan", "irunthen",
 }
 
 # Latin + every Indic script this agent supports. Devanagari (Hindi), Telugu

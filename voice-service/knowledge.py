@@ -83,6 +83,7 @@ _NOISE_PAT = re.compile(
 
 _embedder: Any = None
 _embed_lock = asyncio.Lock()
+_has_kb_cache: dict[str, tuple[float, bool]] = {}
 
 
 # ── embeddings ───────────────────────────────────────────────────────────────
@@ -92,10 +93,87 @@ def _load_embedder() -> Any:
     if _embedder is None:
         from fastembed import TextEmbedding
         t0 = time.monotonic()
-        _embedder = TextEmbedding(EMBED_MODEL)
+        # Cap ONNX threads so embedding never starves realtime audio / Silero VAD.
+        _embedder = TextEmbedding(EMBED_MODEL, threads=2)
         logger.info("knowledge_embedder_loaded", model=EMBED_MODEL, dim=EMBED_DIM,
                     load_ms=int((time.monotonic() - t0) * 1000), source="KNOWLEDGE")
     return _embedder
+
+
+async def has_knowledge(assistant_id: str) -> bool:
+    """Fast cached check whether this assistant has any indexed chunks."""
+    if not assistant_id:
+        return False
+    now = time.monotonic()
+    cached = _has_kb_cache.get(assistant_id)
+    # Cache True for 30s, but False for only 2s so newly uploaded docs on the
+    # Assistant page become active immediately without restarting the worker.
+    if cached and (now - cached[0]) < (30.0 if cached[1] else 2.0):
+        return cached[1]
+    try:
+        pool = await db.get_pool()
+        cnt = await pool.fetchval(
+            "SELECT COUNT(*) FROM knowledge_chunks WHERE assistant_id = $1 AND embedding IS NOT NULL",
+            assistant_id,
+        )
+        ok = bool(cnt and int(cnt) > 0)
+        _has_kb_cache[assistant_id] = (now, ok)
+        return ok
+    except Exception:
+        return False
+
+
+async def get_brain_digest(assistant_id: str, max_chars: int = 500) -> str:
+    """Return a compact, structured digest of the assistant's uploaded documents
+    and website sources so the assistant has an instant 'brain' overview from
+    Turn 0 (even when the caller asks in Tamil/Tanglish about an English PDF)."""
+    if not assistant_id:
+        return ""
+    try:
+        pool = await db.get_pool()
+        rows = await pool.fetch(
+            """SELECT c.title, c.url, c.content, c.metadata, s.type, s.file_name
+                 FROM knowledge_chunks c
+                 LEFT JOIN knowledge_sources s ON s.id = c.source_id
+                WHERE c.assistant_id = $1
+                ORDER BY CASE WHEN s.type != 'URL' THEN 0 ELSE 1 END,
+                         c.created_at DESC
+                LIMIT 16""",
+            assistant_id,
+        )
+        if not rows:
+            return ""
+        # Prioritize uploaded documents (PDF/DOCX/TXT/CSV/IMAGE) first, then URLs
+        lines = [
+            "[UPLOADED KNOWLEDGE BRAIN — Key business facts to answer customer questions:]"
+        ]
+        used = len(lines[0])
+        seen_labels: set[str] = set()
+        noise_re = re.compile(
+            r"\b(SYSTEM_AUTH|ENCRYPTED_SSL_TLS|BUILD_ID_\S+|SECURE_CHANNEL_\S+|CPU \d+(\.\d+)?%|VIMS_SYSTEM_READY|CONNECTION:\s*\S+|CONFIGURE_MODULES)\b",
+            re.I,
+        )
+        for r in rows:
+            label = r["file_name"] or r["title"] or r["url"] or "Source"
+            if label in seen_labels:
+                continue
+            seen_labels.add(label)
+            snippet = " ".join((r["content"] or "").split())
+            if not snippet:
+                continue
+            snippet = noise_re.sub("", snippet).strip()
+            snippet = re.sub(r"\s+", " ", snippet)
+            if len(snippet) > 280:
+                snippet = snippet[:280] + "..."
+            entry = f"• [{label}]: {snippet}"
+            if used + len(entry) + 2 > max_chars:
+                break
+            lines.append(entry)
+            used += len(entry) + 1
+        return "\n".join(lines) if len(lines) > 1 else ""
+    except Exception as exc:
+        logger.warning("knowledge_brain_digest_failed", error=str(exc)[:160], source="KNOWLEDGE")
+        return ""
 
 
 def embedder_status() -> dict:
@@ -540,6 +618,7 @@ async def sync_source(source_id: str) -> dict:
                 "last_synced_at=NOW(), error=NULL, updated_at=NOW() WHERE id=$1",
                 source_id, title, page_count or len(result.pages))
 
+    _has_kb_cache.pop(aid, None)
     logger.info("knowledge_sync_completed", source_id=source_id, assistant_id=aid, url=url,
                 pages=len(result.pages), chunks=len(rows),
                 elapsed_ms=int((time.monotonic() - t0) * 1000), source="KNOWLEDGE")
@@ -897,6 +976,7 @@ async def delete_source(assistant_id: str, source_id: str) -> dict:
     res = await pool.execute(
         "DELETE FROM knowledge_sources WHERE id=$1 AND assistant_id=$2", source_id, assistant_id)
     ok = res.endswith("1")
+    _has_kb_cache.pop(assistant_id, None)
     if ok and row and row["file_path"]:
         try:
             # Only ever inside the uploads directory.
@@ -912,7 +992,52 @@ async def delete_source(assistant_id: str, source_id: str) -> dict:
 
 
 # ── retrieval ────────────────────────────────────────────────────────────────
-async def search(assistant_id: str, query: str, top_k: int = 4) -> list[dict]:
+async def _keyword_fallback_search(assistant_id: str, query: str, top_k: int = 4) -> list[dict]:
+    """Fast non-blocking SQL keyword search used during a live call if the ONNX
+    embedder is still warming up in the background."""
+    words = [w for w in re.findall(r"[a-zA-Z0-9\u0B80-\u0BFF]{3,}", query.lower())
+             if w not in {"what", "where", "when", "which", "who", "how", "can", "you",
+                          "your", "the", "for", "and", "are", "this", "that", "have",
+                          "with", "from", "about", "please", "tell", "hello"}]
+    if not words:
+        return []
+    try:
+        pool = await db.get_pool()
+        rows = await pool.fetch(
+            """SELECT id, source_id, metadata, url, title, content
+                 FROM knowledge_chunks
+                WHERE assistant_id = $1
+                LIMIT 60""",
+            assistant_id,
+        )
+        scored: list[tuple[float, Any]] = []
+        for r in rows:
+            txt = f"{r['title'] or ''} {r['content'] or ''}".lower()
+            matched = sum(1 for w in words if w in txt)
+            if matched > 0:
+                sim = min(0.85, 0.35 + 0.15 * matched)
+                scored.append((sim, r))
+        if not scored and rows:
+            for r in rows[:top_k]:
+                scored.append((0.35, r))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        hits = []
+        for sim, r in scored[:top_k]:
+            hits.append({
+                "url": r["url"], "title": r["title"], "content": r["content"],
+                "similarity": round(sim, 3),
+                "chunkId": r["id"], "sourceId": r["source_id"],
+                "metadata": _meta_of(r["metadata"]),
+                "label": (_meta_of(r["metadata"]).get("page_label")
+                          or page_label(r["url"], r["title"], 0)),
+            })
+        return hits
+    except Exception:
+        return []
+
+
+async def search(assistant_id: str, query: str, top_k: int = 4,
+                 *, allow_cold_load: bool = True) -> list[dict]:
     """Most relevant chunks for THIS assistant, or [] when nothing is relevant.
 
     Returning [] is a feature: the caller then tells the model it has no
@@ -921,6 +1046,13 @@ async def search(assistant_id: str, query: str, top_k: int = 4) -> list[dict]:
     q = (query or "").strip()
     if not q or not assistant_id:
         return []
+    if not allow_cold_load:
+        if not await has_knowledge(assistant_id):
+            return []
+        if _embedder is None or _embed_lock.locked():
+            logger.info("knowledge_search_fast_fallback", assistant_id=assistant_id,
+                        reason="embedder_warming_or_busy", source="KNOWLEDGE")
+            return await _keyword_fallback_search(assistant_id, q, top_k=top_k)
     try:
         vec = (await embed_texts([q]))[0]
     except Exception as exc:

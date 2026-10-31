@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -236,12 +237,69 @@ class AppointmentTools(llm.ToolContext):
         # to the confirmation string, so a repeated tool call in the same call
         # returns the first result instead of booking twice.
         self._booked_keys: dict[str, str] = {}
+        self._remembered_insights: list[str] = []
         # Human call forwarding. Destinations are loaded per assistant at call
         # start; the LLM only ever names a category.
         self.transfer_targets: dict[str, dict] = {}
         # Set once a transfer is accepted, so a second tool call cannot start
         # another REFER on a call that is already being handed over.
         self._transfer_started = False
+
+    def _extract_caller_details(self, service_hint: str = "") -> tuple[str, str, str]:
+        """Extract (email, age, phone) from remembered insights, CallState facts,
+        service string, and recent conversation transcript without inflating tool
+        schema tokens."""
+        corpus_parts: list[str] = list(self._remembered_insights)
+        if service_hint:
+            corpus_parts.append(service_hint)
+        if self.call_state is not None:
+            try:
+                corpus_parts.extend(getattr(self.call_state, "facts", []) or [])
+            except Exception:
+                pass
+        sess = getattr(self, "_session", None)
+        if sess is not None:
+            try:
+                chat_ctx = getattr(sess, "chat_ctx", None)
+                items = list(getattr(chat_ctx, "items", []) or []) if chat_ctx else []
+                for it in items:
+                    if str(getattr(it, "role", "")).lower() == "user":
+                        txt = getattr(it, "text_content", "") or ""
+                        if txt:
+                            corpus_parts.append(str(txt))
+            except Exception:
+                pass
+        blob = " | ".join(corpus_parts)
+        # Normalize spoken email patterns ("at gmail dot com" -> "@gmail.com")
+        norm_email_blob = re.sub(
+            r"\s+at\s+([a-zA-Z0-9\-]+)\s+dot\s+([a-zA-Z]{2,})",
+            r"@\1.\2",
+            blob,
+            flags=re.I,
+        )
+        norm_email_blob = re.sub(r"\s*@\s*", "@", norm_email_blob)
+        email_match = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", norm_email_blob)
+        email = email_match.group(0).lower() if email_match else ""
+
+        age = ""
+        for pat in (
+            r"(?:age|vayasu|வயசு|வயது)\s*(?:is|:|-)?\s*(\d{1,2})\b",
+            r"\b(\d{1,2})\s*(?:years?\s*old|yrs?\b|வயசு|வயது)",
+        ):
+            m_age = re.search(pat, blob, flags=re.I)
+            if m_age:
+                val = int(m_age.group(1))
+                if 1 <= val <= 110:
+                    age = str(val)
+                    break
+
+        phone = ""
+        for m_ph in re.finditer(r"(?:\+?91[\s\-]?)?([6-9]\d{9})\b", re.sub(r"(\d)\s+(?=\d)", r"\1", blob)):
+            phone = f"+91{m_ph.group(1)}"
+            break
+        if not phone and self.phone_number and self.phone_number not in ("unknown", "demo"):
+            phone = self.phone_number
+        return email, age, phone
 
     # ── CallState writers (Step B): record CONFIRMED tool facts safely ────────
     def _cs_tool(self, label: str, state: str, unresolved: str | None = None) -> None:
@@ -336,13 +394,14 @@ class AppointmentTools(llm.ToolContext):
                 if not cal_free:
                     logger.info("CALENDAR_SLOT_UNAVAILABLE", source="calcom", date=date, time=time, call_id=call_id)
                     self._cs_tool("availability", f"unavailable:{date} {time}", unresolved="slot_unavailable")
-                    return f"unavailable: {date} at {time} is already booked. Please suggest another time."
+                    return (f"unavailable: {date} at {time} is already booked. "
+                            f"Tell the caller this time is already scheduled and ask if they would like to book another time.")
             # 2. Local JillJill DB — must also be free.
             if not await db.check_slot(date, time):
                 nxt = await db.get_next_available(date, time)
                 logger.info("CALENDAR_SLOT_UNAVAILABLE", source="local", date=date, time=time, call_id=call_id)
                 self._cs_tool("availability", f"unavailable:{date} {time}", unresolved=f"next_free:{nxt}")
-                return f"unavailable: next available slot is {nxt}"
+                return f"unavailable: next available slot is {nxt} ({date} at {time} is already scheduled; ask if another time works)"
             logger.info("CALENDAR_SLOT_AVAILABLE", date=date, time=time, call_id=call_id)
             # Record the requested slot (overridable) + the confirmed check result.
             if self.call_state:
@@ -363,11 +422,17 @@ class AppointmentTools(llm.ToolContext):
         # 1. Validate.
         if not _valid_date(date) or not _valid_time(time):
             return "That date or time wasn't clear. Please confirm the date (YYYY-MM-DD) and time (HH:MM)."
-        # The caller's phone is already known from the call; email (if any) is
-        # captured via remember_details — neither is a tool parameter, to keep
-        # the schema (sent every turn) small.
-        phone = self.phone_number or ""
-        email = ""  # not collected over voice; kept for the calendar/DB calls below
+        # Extract caller details (email, age, phone) from remembered insights & transcript
+        email, age, extracted_phone = self._extract_caller_details(service)
+        phone = extracted_phone or self.phone_number or ""
+        notes_bits = [f"Service: {service}"]
+        if age:
+            notes_bits.append(f"Age: {age}")
+        if phone:
+            notes_bits.append(f"Phone: {phone}")
+        if email:
+            notes_bits.append(f"Email: {email}")
+        notes = " | ".join(notes_bits) if (age or email) else ""
         # Duplicate protection: if the voice runtime invokes the tool twice for
         # the same slot in this call, return the first confirmation unchanged.
         dedup_key = f"{call_id}:{date}:{time}:{phone}"
@@ -441,7 +506,7 @@ class AppointmentTools(llm.ToolContext):
                     nxt = await db.get_next_available(date, time)
                     return f"That slot was just taken. The next available is {nxt}."
                 # 3. Book Cal.com first — abort without a local write if it fails.
-                res = await calcom_book(name, email, phone, date, time, service, "", call_id)
+                res = await calcom_book(name, email, phone, date, time, service, notes, call_id)
                 if not res["success"]:
                     return ("I couldn't confirm that booking on our calendar. "
                             "Our team will follow up shortly to finalise it.")
@@ -453,7 +518,8 @@ class AppointmentTools(llm.ToolContext):
             try:
                 booking_id = await db.insert_appointment(
                     name, phone, date, time, service,
-                    calcom_uid=calcom_uid, email=email or None, reminder_at=reminder_at,
+                    calcom_uid=calcom_uid, email=email or None,
+                    notes=notes or None, reminder_at=reminder_at,
                 )
                 logger.info("LOCAL_APPOINTMENT_SAVED", booking_id=booking_id,
                             calcom_uid=calcom_uid, call_id=call_id)
@@ -735,6 +801,8 @@ class AppointmentTools(llm.ToolContext):
     @llm.function_tool
     async def remember_details(self, insight: str) -> str:
         """Store an insight about the lead. Triggers Gemini Flash compression at ≥5 entries."""
+        if insight:
+            self._remembered_insights.append(str(insight))
         if not self.phone_number or self.phone_number == "unknown":
             return "Cannot remember — no phone number for this call."
         try:

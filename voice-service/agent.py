@@ -45,6 +45,7 @@ from livekit.agents import (  # noqa: E402
     APIConnectOptions,
     JobContext,
     RoomInputOptions,
+    StopResponse,
     WorkerOptions,
     cli,
     llm,  # noqa: F401
@@ -88,7 +89,29 @@ PROVIDER_HEALTH = _ph.ProviderHealth(log=lambda ev, **kw: logger.warning(ev, **k
 # Build marker logged at worker boot (_prewarm) and per job (entrypoint). Bump
 # this string whenever agent.py changes so the live logs prove which code the
 # running worker actually loaded. Absent from logs ⇒ worker not restarted.
-AGENT_BUILD = "2026-10-07-initfix"
+AGENT_BUILD = "2026-10-25-zerolag"
+
+
+def _warm_linecache() -> None:
+    """Pre-load local Python source files into linecache and disable checkcache
+    stat calls so traceback extraction never blocks the event loop on /mnt/c/."""
+    try:
+        import linecache
+        base = Path(__file__).resolve().parent
+        for py in base.glob("*.py"):
+            try:
+                p_str = str(py)
+                if p_str not in linecache.cache:
+                    lines = py.read_text(encoding="utf-8", errors="ignore").splitlines(True)
+                    linecache.cache[p_str] = (len(lines), None, lines, p_str)
+            except Exception:
+                pass
+        linecache.checkcache = lambda filename=None: None  # type: ignore[assignment]
+    except Exception:
+        pass
+
+
+_warm_linecache()
 
 # The only languages allowed to drive the spoken reply language. Deepgram "multi"
 # mis-maps Indian-accented / Tamil speech to unrelated languages (notably Spanish);
@@ -135,6 +158,37 @@ _RE_PRESENCE = re.compile(
     r"^\s*(hello+|hallo+|hi+|you\s+there|are\s+you\s+(there|still\s+there)"
     r"|can\s+you\s+hear\s+me|still\s+there|helo+)\s*[?.!]*\s*$"
     r"|கேக்குதா|கேட்குதா|இருக்கீ\w*|கேட்குதா|ஹலோ",
+    re.I,
+)
+
+# Android / carrier call-recording consent announcements played by the caller's
+# handset when they toggle call recording. Never spoken by the human caller:
+# must not lock language to English, arm dead-air, or trigger an LLM reply.
+_RE_CARRIER_ANNOUNCEMENT = re.compile(
+    r"\bthis\s+call\s+is\s+(now\s+)?being\s+recorded\b"
+    r"|\bcall\s+recording\s+has\s+(now\s+)?(started|ended|stopped)\b"
+    r"|\byour\s+call\s+is\s+being\s+recorded\b"
+    r"|இந்த\s+அழைப்பு\s+(இப்போது\s+)?பதிவு\s+செய்யப்படு",
+    re.I,
+)
+
+# Purely conversational/greeting/identity turns that do not need a pgvector/ONNX
+# document lookup before the LLM starts speaking.
+_RE_SKIP_KB = re.compile(
+    r"^\s*(hello+|hi+|hey+|vanakkam|வணக்கம்|ஹலோ|கேக்குதா|கேக்குதுங்களா"
+    r"|யாரு\s*பேசு\w*|நீங்க\s*யாரு|who\s+is\s+(this|speaking)|who\s+are\s+you"
+    r"|can\s+you\s+hear\s+me|are\s+you\s+there|yes|no|okay|ok|சரி|ஆமா|இல்லை)\s*[?.!]*\s*$"
+    r"|\b(book\s*(pannu\w*|panna|seiy\w*|panren|pannid\w*)|appointment\s*(book|venum|vaik\w*|fix|schedule)|schedule\s*pannu\w*)\b"
+    r"|\b(புக்\s*பண்ண\w*|அப்பாயின்ட்மென்ட்\s*புக்|பண்ணலாம்|பண்ணுங்க|புக்\s*பண்ணுங்க)\b"
+    r"|\b(சாப்டி\w*|என்ன\s*பண்ற\w*|prompt|code|system\s*instruction|சாப்பிட்டாச்சா)\b"
+    r"|@|gmail|yahoo|\.com|\.in"
+    r"|^\s*(\d{1,2}[:.]\d{2}|\d{1,2}\s*(am|pm|மணி|clock)|\b(morning|evening|afternoon)\b)\s*$",
+    re.I,
+)
+
+_RE_RECOVERY_LINE = re.compile(
+    r"miss ஆயிடுச்சு|கேட்டுக்கிட்டு இருக்கேன்|still listening|missed that|இன்னொரு முறை சொல்லுங்க"
+    r"|சரியா கேக்கல|சொல்ல முடியுமா|didn't catch that",
     re.I,
 )
 
@@ -326,6 +380,19 @@ def _build_fallback_llm(route: "llm_routing.LlmRoute") -> tuple[Any, str | None]
     if llm_obj is None:
         return None, None
     return llm_obj, f"{route.fallback_provider}/{route.fallback_model}"
+
+
+def _build_tertiary_llm(route: "llm_routing.LlmRoute") -> tuple[Any, str | None]:
+    """Optional 3rd-tier fallback model (e.g. gpt-oss-120b on Groq) to survive multi-turn rate limits."""
+    if route.primary_provider == "groq":
+        used_models = {route.primary_model, route.fallback_model}
+        candidates = ["openai/gpt-oss-120b", "allam-2-7b", "openai/gpt-oss-20b"]
+        for m in candidates:
+            if m not in used_models:
+                obj = llm_routing.build_llm("groq", m)
+                if obj is not None:
+                    return obj, f"groq/{m}"
+    return None, None
 
 
 def _classify_llm_error(err: BaseException | None) -> tuple[str, int | None]:
@@ -649,7 +716,12 @@ def _shared_vad() -> Any:
     global _VAD_SINGLETON
     if _VAD_SINGLETON is None:
         try:
-            _VAD_SINGLETON = silero.VAD.load()
+            _VAD_SINGLETON = silero.VAD.load(
+                sample_rate=8000,
+                min_speech_duration=0.25,
+                min_silence_duration=0.42,
+                activation_threshold=0.65,
+            )
             logger.info("vad_loaded", provider="silero",
                         purpose="stream_adapter_and_barge_in", source="STT")
         except Exception as exc:  # noqa: BLE001
@@ -687,6 +759,34 @@ def _build_selected_stt(prof_stt: str, profile: dict,
 
     lang = (profile.get("stt_language") or config.STT_LANGUAGE or "").strip()
     model = (profile.get("stt_model") or "").strip()
+
+    # A saved model belonging to a DIFFERENT provider must never be sent.
+    #
+    # MEASURED on room call-917397075913-4812: the assistant's sttProvider was
+    # changed to SARVAM while sttModel still held "nova-2" — a Deepgram model
+    # id, and a field the Assistant UI does not expose, so it could not be
+    # corrected from the dashboard. Every builder below reads
+    # `model or <provider default>`, and "nova-2" is truthy, so the stale id won
+    # and Sarvam closed the socket:
+    #     close_code 4000 "Invalid model 'nova-2'. Only 'saarika:v2.5',
+    #     'saaras:v3' or 'saaras:v4' are supported"
+    # STT then never started, the AgentSession never ran, and the greeting
+    # failed with "AgentSession isn't running".
+    #
+    # The PROVIDER selection is untouched — only an unusable model is dropped
+    # so the provider's own default is used, and it is logged as an error.
+    # This mirrors llm_routing.vet_model, which already guards the LLM path.
+    if model and d.models and model not in d.models:
+        logger.error(
+            "stt_model_foreign_to_provider", provider=prof_stt,
+            configured_model=model, provider_accepts=list(d.models),
+            using_model=provider_registry.default_model_for("STT", prof_stt) or "(plugin default)",
+            impact="the saved model cannot be served by the selected STT provider; "
+                   "the provider's own default is used instead",
+            remedy="update the assistant's sttModel to one this provider accepts",
+            source="STT")
+        model = ""
+
     engine: Any = None
 
     if prof_stt == "sarvam" and _sarvam is not None:
@@ -727,7 +827,13 @@ def _build_selected_stt(prof_stt: str, profile: dict,
                     source="STT")
 
     logger.info("stt_provider_initialized", provider=prof_stt,
-                model=model or "(plugin default)", language=lang or "(plugin default)",
+                # Name the model that will ACTUALLY run. When the guard above
+                # cleared a foreign id, `model` is "" and the provider's own
+                # default takes over — reporting "(plugin default)" there hides
+                # which model the call is really using.
+                model=(model or provider_registry.default_model_for("STT", prof_stt)
+                       or "(plugin default)"),
+                language=lang or "(plugin default)",
                 credential_source=source, streaming=d.streaming,
                 emits_interim=d.emits_interim, wrapped_in_vad=d.needs_vad,
                 plugin_adapter=d.adapter, source="STT")
@@ -1204,6 +1310,7 @@ class BoundedAgent(Agent):
     def __init__(self, *args: Any, tool_tokens: int = 0,
                  business_context_tokens: int = 0,
                  fallback_llm: Any = None, fallback_label: str | None = None,
+                 tertiary_llm: Any = None, tertiary_label: str | None = None,
                  llm_route: "llm_routing.LlmRoute | None" = None,
                  assistant_id: str | None = None,
                  room_id: str = "", lang_state: Any = None, call_state: Any = None, **kwargs: Any) -> None:
@@ -1212,6 +1319,8 @@ class BoundedAgent(Agent):
         self._business_context_tokens = business_context_tokens
         self._fallback_llm = fallback_llm
         self._fallback_label = fallback_label
+        self._tertiary_llm = tertiary_llm
+        self._tertiary_label = tertiary_label
         self._room_id = room_id
         self._lang_state = lang_state  # persistent conversation language
         self._call_state = call_state  # deterministic structured CallState
@@ -1256,14 +1365,22 @@ class BoundedAgent(Agent):
         spoken ONLY when every provider failed. Varies on a repeat so the caller
         never hears the same sentence twice in a row."""
         active = getattr(self._lang_state, "active", "en") if self._lang_state else "en"
-        repeat = self._consec_recovery > 1
+        c = max(1, self._consec_recovery)
         if active == "ta":
-            return ("சொல்லுங்க, நான் இன்னும் கேட்டுக்கிட்டு இருக்கேன்."
-                    if repeat else
-                    "Sorry, last-a சொன்னது miss ஆயிடுச்சு. இன்னொரு முறை சொல்லுங்க?")
-        return ("Please go ahead, I'm still listening."
-                if repeat else
-                "Sorry, I missed that. Could you say it once more?")
+            variants = [
+                "மன்னிச்சிருங்க, உங்க குரல் சரியா கேக்கல. கொஞ்சம் திரும்ப சொல்ல முடியுமா?",
+                "சொல்லுங்க, நான் கேட்டுக்கிட்டு இருக்கேன்.",
+                "லைன்லதான் இருக்கேன், ஒரு நிமிஷம் திரும்ப சொல்லுங்க.",
+                "கேக்குதுங்க, கொஞ்சம் மெதுவா சொல்ல முடியுமா?",
+            ]
+            return variants[(c - 1) % len(variants)]
+        variants_en = [
+            "Sorry, I didn't catch that clearly. Could you say it once more?",
+            "Please go ahead, I'm listening.",
+            "I'm right here on the line, please go ahead.",
+            "I hear you, could you please repeat that a little more slowly?",
+        ]
+        return variants_en[(c - 1) % len(variants_en)]
 
     async def _knowledge_context(self, chat_ctx: Any) -> str:
         """Grounding block for the caller's latest question, or "".
@@ -1283,6 +1400,14 @@ class BoundedAgent(Agent):
                     break
             if not latest.strip():
                 return ""
+            if (
+                _RE_CARRIER_ANNOUNCEMENT.search(latest)
+                or _RE_SKIP_KB.search(latest.strip())
+                or lang.is_short_ack(latest)
+            ):
+                return ""
+            if not await knowledge.has_knowledge(self._assistant_id):
+                return ""
             # TIME-BOUNDED. This runs inside llm_node BEFORE the LLM is called,
             # so an unbounded wait here means the caller hears nothing at all.
             # Measured on this host: a warm lookup is ~130 ms, but the FIRST one
@@ -1291,15 +1416,14 @@ class BoundedAgent(Agent):
             # repeated "Hello?" cancels this node and the next turn starts the
             # wait again, so the agent could never reach the LLM.
             #
-            # Budget 2.0 s: measured steady state is ~130 ms and the first
-            # pgvector query of the process ~1.1 s, so real context is kept;
-            # meanwhile the LLM always starts long before the 5 s dead-air
-            # threshold. A cold or stalled embedder costs one turn's knowledge
-            # rather than the whole conversation.
+            # allow_cold_load=False falls back to fast SQL keyword search (~15 ms)
+            # whenever the ONNX embedder is still cold or busy warming.
             _kb_t0 = time.monotonic()
             hits = await asyncio.wait_for(
-                knowledge.search(self._assistant_id, latest.strip(), top_k=4),
-                timeout=float(os.getenv("KNOWLEDGE_LOOKUP_TIMEOUT_S", "2.0")),
+                knowledge.search(
+                    self._assistant_id, latest.strip(), top_k=4, allow_cold_load=False
+                ),
+                timeout=float(os.getenv("KNOWLEDGE_LOOKUP_TIMEOUT_S", "1.0")),
             )
             # Timed explicitly. Without this the knowledge stage is invisible: it
             # runs before llm_start is stamped, so its cost hides inside
@@ -1310,19 +1434,24 @@ class BoundedAgent(Agent):
                         hits=len(hits) if hits else 0,
                         call_id=self._room_id, source="KNOWLEDGE")
             if not hits:
-                # Nothing relevant: tell the model so, rather than leaving it to
-                # fill the silence with invention.
-                return ("[BUSINESS INFORMATION] Nothing in the saved business "
-                        "information covers this question. Say you don't have that "
-                        "confirmed and offer to connect them or take details — "
-                        "never guess specifics.")
+                # Nothing relevant: guide the model without sabotaging normal
+                # conversational or appointment-booking turns.
+                return (
+                    "[BUSINESS INFORMATION] No specific document excerpt matched this turn. "
+                    "If the caller asks general knowledge or asks if we provide services outside "
+                    "our business (e.g. dental, medical, loans, etc.), answer clearly using what you "
+                    "know: state what VIMS Enterprise provides (Software, AI Automation, Web, Content) "
+                    "and that we do not provide those other services. NEVER transfer to human unless "
+                    "the caller explicitly asks for a human. If they ask for an unknown specific company "
+                    "fact/price not in your prompt, say: 'மன்னிக்கவும், அதைப் பற்றிய உறுதியான தகவல் என்னிடம் இல்லை.'"
+                )
             return knowledge.build_context(hits)
         except (TimeoutError, asyncio.TimeoutError):
             # Logged distinctly (not as a generic failure) because this is the
             # one that silences a turn: the LLM still runs, just without
             # business context for this question.
             logger.warning("knowledge_lookup_timeout",
-                           timeout_s=float(os.getenv("KNOWLEDGE_LOOKUP_TIMEOUT_S", "2.0")),
+                           timeout_s=float(os.getenv("KNOWLEDGE_LOOKUP_TIMEOUT_S", "1.0")),
                            impact="turn proceeds to the LLM without business context",
                            call_id=self._room_id, source="KNOWLEDGE")
             return ""
@@ -1337,6 +1466,41 @@ class BoundedAgent(Agent):
         retry, fallback), so the language survives fallback/retry/tool turns
         (rule 10). Returns a COPY of chat_ctx so the shared history is untouched."""
         st = self._lang_state
+        # Synchronously observe the latest user message in chat_ctx before building
+        # the directive: with preemptive_generation=True, AgentSession's internal
+        # listener can invoke llm_node BEFORE the entrypoint's _lang_route handler
+        # runs, which previously left _lang_state un-established on turn 1!
+        if st is not None:
+            try:
+                latest_user = ""
+                for item in reversed(list(getattr(chat_ctx, "items", []) or [])):
+                    if str(getattr(item, "role", "")).lower() == "user":
+                        c = getattr(item, "content", "")
+                        latest_user = " ".join(str(x) for x in c) if isinstance(c, list) else str(c)
+                        break
+                if latest_user.strip() and not _RE_CARRIER_ANNOUNCEMENT.search(latest_user):
+                    explicit = (
+                        "en" if _RE_SWITCH_EN.search(latest_user)
+                        else ("ta" if _RE_SWITCH_TA.search(latest_user) else None)
+                    )
+                    changed = st.observe(None, latest_user, explicit)
+                    if getattr(st, "established", False):
+                        if self._call_state is not None:
+                            self._call_state.set_language(st.active)
+                        if changed:
+                            _sess = getattr(self, "session", None)
+                            _ml_tts = getattr(_sess, "_jj_tts", None)
+                            _ml_prov = getattr(_sess, "_jj_tts_provider", "")
+                            if (
+                                _ml_prov in ("sarvam", "elevenlabs", "cartesia")
+                                and _ml_tts is not None
+                                and hasattr(_ml_tts, "update_options")
+                            ):
+                                _rt = lang.tts_route(st.active, _ml_prov)
+                                if _rt:
+                                    _ml_tts.update_options(**{_rt["kwarg"]: _rt["lang"]})
+            except Exception:
+                pass
         directive = lang.llm_language_directive(getattr(st, "active", "en")) if (st and getattr(st, "established", False)) else None
         # Deterministic structured memory (Step B): survives history truncation,
         # carries confirmed tool facts + known slots + pending question so the
@@ -1510,7 +1674,10 @@ class BoundedAgent(Agent):
         # fallback had already 429'd five turns earlier and was still being
         # called on every turn. Skipping straight to the repair line also gets
         # the caller an answer sooner than two doomed round-trips would.
-        if groq_cooling and fallback_cooling:
+        tertiary_cooling = bool(
+            self._tertiary_label and self._cooling(self._tertiary_label, now_mono, turn_id, rid)
+        )
+        if groq_cooling and fallback_cooling and (self._tertiary_llm is None or tertiary_cooling):
             resumes_in = max(0.0, min(self._model_cooldown.values()) - now_mono)
             logger.warning(
                 "llm_all_models_cooling", primary=primary_label,
@@ -1644,6 +1811,41 @@ class BoundedAgent(Agent):
                 self._enter_model_cooldown(self._fallback_label, now_mono, turn_id,
                                            rid, fs, r2.get("err"))
 
+        # ── Tertiary fallback model (Groq pool) if primary and fallback failed ──
+        if self._tertiary_llm is not None and not tertiary_cooling:
+            logger.info("llm_provider_failover", **{"from": self._fallback_label or self._route.primary_provider},
+                        to=self._tertiary_label,
+                        is_cross_provider=False,
+                        reason="secondary_fallback_failed",
+                        turn_id=turn_id, call_id=rid, room=rid, source="LLM")
+            logger.info("tertiary_llm_started", provider=self._tertiary_label,
+                        turn_id=turn_id, call_id=rid, room=rid, language=self._lang(), source="LLM")
+            _record_tokens = getattr(self, "_record_spend", None)
+            if _record_tokens is not None:
+                _record_tokens(self._tertiary_label, _pred)
+            r3: dict = {}
+            async for c in _stamp(_stream_gated(self._tertiary_llm, chat_ctx, tools, tool_choice, conn, r3)):
+                yield c
+            if r3["status"] == "ok":
+                self._consec_recovery = 0
+                t_prov, t_mod = (
+                    self._tertiary_label.split("/", 1)
+                    if "/" in self._tertiary_label
+                    else ("groq", self._tertiary_label)
+                )
+                self._route.record_use(t_prov, t_mod)
+                logger.info("tertiary_llm_completed", provider=t_prov, model=t_mod,
+                            turn_id=turn_id, call_id=rid, room=rid, language=self._lang(), source="LLM")
+                return
+            if r3["status"] == "error_after_output":
+                return
+            te, ts = (_classify_llm_error(r3["err"]) if r3.get("err") else ("incomplete_generation", None))
+            logger.warning("tertiary_llm_failed", provider=self._tertiary_label,
+                           error_type=te, status_code=ts, turn_id=turn_id,
+                           call_id=rid, room=rid, source="LLM")
+            if te == "rate_limit" and self._tertiary_label:
+                self._enter_model_cooldown(self._tertiary_label, now_mono, turn_id, rid, ts, r3.get("err"))
+
         # ── Every provider genuinely failed: ONE short conversational REPAIR ──
         self._consec_recovery += 1
         logger.error("llm_all_providers_failed", turn_id=turn_id, call_id=rid, room=rid,
@@ -1769,6 +1971,34 @@ class BoundedAgent(Agent):
         self, turn_ctx: "llm.ChatContext", new_message: "llm.ChatMessage"
     ) -> None:
         try:
+            _new_txt = str(getattr(new_message, "text_content", "") or "").strip()
+            if _new_txt and _RE_CARRIER_ANNOUNCEMENT.search(_new_txt):
+                logger.info(
+                    "carrier_announcement_ignored",
+                    text=_new_txt[:160],
+                    call_id=self._room_id,
+                    source="STT",
+                )
+                raise StopResponse()
+        except StopResponse:
+            raise
+        except Exception:
+            pass
+        try:
+            # Purge any recovery lines from history so the LLM never imitates them
+            items = getattr(turn_ctx, "items", None)
+            if isinstance(items, list):
+                turn_ctx.items = [
+                    it for it in items
+                    if not (str(getattr(it, "role", "")).lower() == "assistant"
+                            and _RE_RECOVERY_LINE.search(str(getattr(it, "text_content", "") or "")))
+                ]
+            if hasattr(self, "_chat_ctx") and isinstance(getattr(self._chat_ctx, "items", None), list):
+                self._chat_ctx.items = [
+                    it for it in self._chat_ctx.items
+                    if not (str(getattr(it, "role", "")).lower() == "assistant"
+                            and _RE_RECOVERY_LINE.search(str(getattr(it, "text_content", "") or "")))
+                ]
             before = len(turn_ctx.items)
             if before > MAX_HISTORY_ITEMS:
                 turn_ctx.truncate(max_items=MAX_HISTORY_ITEMS)
@@ -2230,8 +2460,14 @@ async def _maybe_start_recording(ctx: JobContext, profile: dict, agent_tools: An
 async def entrypoint(ctx: JobContext) -> None:
     # Start the Live Logs drain on THIS job's event loop so worker-side
     # structlog events (STT/LLM/TTS/turn/call lifecycle) reach the dashboard.
-    from observability import start_log_drain
+    from observability import attach_sdk_log_bridge, start_log_drain
     start_log_drain()
+    # The SDK logs its own failures through stdlib logging inside THIS job
+    # subprocess, whose stdout is not captured in output/logs/worker.log (that
+    # file holds only the parent's capacity lines). Without this bridge, lines
+    # like "AgentSession is closing due to unrecoverable error" are lost, which
+    # is why the 2026-10-17 PRE_DIAL aborts had no recoverable cause.
+    attach_sdk_log_bridge()
     _job_room = getattr(getattr(ctx, "room", None), "name", "") or ""
     # Build marker: confirms the RUNNING worker is this agent.py version. If this
     # value is not in your live logs, the worker was not restarted after editing.
@@ -2280,7 +2516,7 @@ async def entrypoint(ctx: JobContext) -> None:
             # that delay — see _billable_seconds.
             try:
                 ctx._jj_hangup_mono = time.monotonic()   # type: ignore[attr-defined]
-                ctx._jj_hangup_at = datetime.now(UTC)    # type: ignore[attr-defined]
+                ctx._jj_hangup_at = _db_utc_now()        # type: ignore[attr-defined]
             except Exception:
                 pass
         # The SIP leg leaving IS the end of the call — end the session now.
@@ -2368,11 +2604,27 @@ async def entrypoint(ctx: JobContext) -> None:
                                room=_lk_rid, source="RECORDING")
 
     meta = _parse_metadata(ctx)
+    # Diagnostic seam: run the whole real job INCLUDING the pre-dial gate but
+    # stop before create_sip_participant, so the pre-dial session state can be
+    # reproduced in the real job subprocess without ringing a customer or
+    # incurring a carrier charge. Opt-in per dispatch; absent, nothing changes.
+    _dry_run = bool(meta.get("dry_run"))
     phone, name = _extract_caller_phone(ctx, meta)
 
     if is_rate_limited(phone):
-        logger.warning("rate_limited", phone=phone)
+        logger.warning("rate_limited", phone=phone,
+                       limit_per_hour=config.RATE_LIMIT_CALLS_PER_HOUR,
+                       impact="no call placed; this dispatch was blocked by our own "
+                              "per-number hourly limit, not by the carrier",
+                       call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
         await db.log_error("agent", f"rate-limit blocked {phone}")
+        # MEASURED 2026-10-17: this return had no ctx.shutdown(), so every
+        # rate-limited dispatch left the job alive with the agent still in the
+        # room, holding min_size=2 Supabase connections for the life of the
+        # subprocess. Four blocked dispatches were enough to exhaust the
+        # session-mode pooler's 15-client cap, after which unrelated jobs died
+        # in _resolve_profile with EMAXCONNSESSION.
+        await _release_job(ctx, "rate_limited")
         return
 
     # ── Inbound routing (Feature Pack 3 / Task 2) ────────────────────────────
@@ -2489,6 +2741,17 @@ async def entrypoint(ctx: JobContext) -> None:
     # build_prompt ("don't invent names, prices, policies, availability or
     # facts…"), so no extra per-call paragraph is added here — saves input tokens
     # on every Groq request (free-tier ITPM budget).
+    try:
+        _kb_digest = await knowledge.get_brain_digest(profile.get("id") or "", max_chars=450)
+        if _kb_digest:
+            system_prompt = f"{system_prompt}\n\n{_kb_digest}"
+            logger.info("knowledge_brain_digest_loaded",
+                        assistant_id=profile.get("id"),
+                        chars=len(_kb_digest),
+                        call_id=ctx.room.name, room=ctx.room.name, source="KNOWLEDGE")
+    except Exception as _kb_exc:
+        logger.warning("knowledge_brain_digest_error", error=str(_kb_exc)[:160],
+                       call_id=ctx.room.name, source="KNOWLEDGE")
     tokens = count_tokens(system_prompt)
     logger.info("prompt_built", system_prompt_tokens=tokens,
                 call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
@@ -2580,6 +2843,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # is what the call is billed on.
     _llm_route = llm_routing.resolve_route(profile)
     _fallback_llm, _fallback_label = _build_fallback_llm(_llm_route)
+    _tertiary_llm, _tertiary_label = _build_tertiary_llm(_llm_route)
     if _fallback_llm is None:          # keep the route honest for logs/billing
         _llm_route.fallback_provider = ""
         _llm_route.fallback_model = ""
@@ -2594,6 +2858,9 @@ async def entrypoint(ctx: JobContext) -> None:
                 is_cross_provider=bool(_llm_route.fallback_provider
                                        and _llm_route.fallback_provider != _llm_route.selected_provider),
                 **_route_fields, call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
+    if _tertiary_label:
+        logger.info("tertiary_llm_configured", label=_tertiary_label,
+                    call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
     logger.info("provider_health",
                 primary=f"{_llm_route.primary_provider}/{_llm_route.primary_model}",
                 fallback=_fallback_label or "none",
@@ -2613,6 +2880,7 @@ async def entrypoint(ctx: JobContext) -> None:
     agent = BoundedAgent(instructions=system_prompt, tools=tool_list,
                          tool_tokens=_tool_tokens, business_context_tokens=_biz_tokens,
                          fallback_llm=_fallback_llm, fallback_label=_fallback_label,
+                         tertiary_llm=_tertiary_llm, tertiary_label=_tertiary_label,
                          room_id=ctx.room.name, lang_state=_lang_state, call_state=_call_state,
                          llm_route=_llm_route, assistant_id=profile.get("id"))
     # This organisation's own provider credentials (BYOK), loaded once per call
@@ -2630,6 +2898,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = _build_session(tools=tool_list, system_prompt=system_prompt, profile=profile,
                              route=_llm_route, tenant_keys=_tenant_provider_keys)
+    agent_tools._session = session
 
     is_demo = phone == "demo"
     # Demo (browser) calls: NO server-side noise cancellation. BVC() was found to
@@ -2701,6 +2970,9 @@ async def entrypoint(ctx: JobContext) -> None:
                     call_id=ctx.room.name, room=ctx.room.name, source="LIVEKIT")
 
     await session.start(room=ctx.room, agent=agent, room_input_options=room_input)
+    # Record WHO first asks this session to close. A PRE_DIAL abort names the
+    # state (closing) but not the initiator; this names the initiator.
+    _shutdown_trace = _install_shutdown_tracer(session, ctx.room.name)
     await db.upsert_active_call(ctx.room.name, phone, name, "active")
 
     # ── High-signal diagnostics: agent/user state + reply-speech creation ──────
@@ -2852,8 +3124,9 @@ async def entrypoint(ctx: JobContext) -> None:
         if old == "speaking" and new != "speaking":
             logger.info("user_turn_committed", call_id=_dbg_rid, room=_dbg_rid, source="TURN_DETECTION")
             _turn_watch["t"]["speech_end"] = time.monotonic()
-        # Prolonged silence -> gently check in, once.
-        if new == "away" and not _reengage["done"]:
+        # Prolonged silence -> gently check in, once (only after greeting completed
+        # and when not already generating/awaiting a turn reply).
+        if new == "away" and not _reengage["done"] and _greeted["done"] and not _turn_watch["awaiting_audio"]:
             _reengage["done"] = True
             try:
                 session.say("Are you still there?", allow_interruptions=True)
@@ -2938,14 +3211,39 @@ async def entrypoint(ctx: JobContext) -> None:
                 # the same config just loops. Emit ONE CRITICAL breakpoint event
                 # (req A3) with root cause + impact, and attempt a same-language
                 # failure clip (best-effort; the session may already be closing).
-                is_cfg = (status == 400) or ("400" in msg) or ("invalid" in low and "config" in low)
+                # A provider rejects a bad stream config either as HTTP 400 or,
+                # over a websocket, as a 4xxx close code (Sarvam uses 4000).
+                # Both are PERMANENT for this call — retrying the same config
+                # just loops.
+                is_close_4xxx = bool(re.search(r'close_code"?\s*:\s*4\d{3}', msg))
+                is_cfg = ((status == 400) or ("400" in msg) or is_close_4xxx
+                          or ("invalid" in low and ("config" in low or "model" in low)))
                 if is_cfg and not _stt_fail["critical"]:
                     _stt_fail["critical"] = True
+                    # NAME THE PROVIDER THAT ACTUALLY FAILED. This impact line
+                    # used to say "Deepgram" literally, so a Sarvam websocket
+                    # rejection was reported in Live Logs as a Deepgram HTTP 400
+                    # and the real provider was invisible to whoever read it.
+                    _fail_prov = (getattr(session, "_jj_stt_provider", "") or "").lower() or "the STT provider"
+                    _fail_sel = (profile.get("stt_provider") or "").lower() or None
+                    _fail_model = (profile.get("stt_model") or "").strip() or "(provider default)"
+                    _close = re.search(r'close_code"?\s*:\s*(\d{4})', msg)
+                    # The reason is JSON-quoted, so stop at the closing double quote and
+                    # allow apostrophes inside (model ids are quoted: 'nova-2').
+                    _reason = re.search(r'close_reason"?\s*:\s*"([^"]{0,180})', msg)
                     logger.critical(
-                        "stt_stream_invalid_config", detail=msg[:300], status_code=status or 400,
+                        "stt_stream_invalid_config", detail=msg[:300],
+                        status_code=status or (int(_close.group(1)) if _close else 400),
+                        provider=_fail_prov, selected_provider=_fail_sel,
+                        configured_model=_fail_model,
+                        close_code=(int(_close.group(1)) if _close else None),
+                        close_reason=(_reason.group(1) if _reason else None),
+                        error_category="invalid_configuration",
+                        last_ok_stage="stt_connected",
                         breakpoint="STT", retryable=False,
-                        impact="Deepgram rejected the STT stream (HTTP 400) → AgentSession cannot "
-                               "transcribe; no STT fallback exists, so the call ends without dialogue.",
+                        impact=f"{_fail_prov} rejected the STT stream as invalid configuration "
+                               "→ AgentSession cannot transcribe; no STT fallback exists, so the "
+                               "call ends without dialogue.",
                         call_id=_dbg_rid, room=_dbg_rid, source="STT")
                     _play_local_clip(session, "unavailable", _clip_lang())
                 elif not is_cfg:
@@ -2980,7 +3278,7 @@ async def entrypoint(ctx: JobContext) -> None:
             _tid = _turn_watch["turn_id"] + 1 if is_final else _turn_watch["turn_id"]
             logger.info(evt, text=str(text)[:300], is_final=bool(is_final),
                         turn_id=_tid, call_id=_dbg_rid, room=_dbg_rid, source="STT")
-            if is_final:
+            if is_final and not _RE_CARRIER_ANNOUNCEMENT.search(str(text)):
                 # ── STT observability (safe; no secrets) ──────────────────────
                 # Deepgram per-utterance metadata surfaced by the LiveKit event,
                 # best-effort (attrs vary by plugin version). Lets a real call
@@ -3071,9 +3369,16 @@ async def entrypoint(ctx: JobContext) -> None:
         def _on_pb_started(_ev: Any) -> None:  # noqa: ANN401 — runtime event
             logger.info("agent_audio_publish_started", call_id=_dbg_rid, room=_dbg_rid,
                         provider="livekit", tts_provider=_tts_prov, source="LIVEKIT")
-            # Audio is now reaching the caller, so there is something real to
-            # interrupt — hand barge-in back to the caller.
-            _arm_greeting_barge_in("first_audio")
+            # Protect the first 1.8s of the opening identity ("Hi, this is Priya from...")
+            # from pick-up line noise or carrier recording announcements, then hand
+            # barge-in back to the caller.
+            if _greeting.get("handle") is not None and not _greeting["armed"]:
+                try:
+                    asyncio.get_running_loop().call_later(
+                        1.8, lambda: _arm_greeting_barge_in("first_audio")
+                    )
+                except Exception:
+                    _arm_greeting_barge_in("first_audio")
             # First audio for this turn → disarm the dead-air watchdog and emit the
             # full per-turn latency breakdown (the Phase-1 measurement signal).
             if _turn_watch["awaiting_audio"]:
@@ -3222,8 +3527,21 @@ async def entrypoint(ctx: JobContext) -> None:
     def _on_input_speech(_ev: Any) -> None:  # noqa: ANN401 — runtime event
         logger.info("audio_frames_started", call_id=_dbg_rid, room=_dbg_rid, source="STT")
 
-    # STT initialized + ready for this call (Deepgram realtime pipeline).
-    logger.info("stt_connected", provider=config.DEFAULT_STT_PROVIDER, model=config.STT_MODEL,
+    # STT initialized + ready for this call.
+    #
+    # This used to log config.DEFAULT_STT_PROVIDER / config.STT_MODEL — the ENV
+    # DEFAULTS, not what was actually built. On room call-917397075913-4812 it
+    # printed "deepgram / nova-3" while the session was running Sarvam, so the
+    # Live Logs blamed Deepgram for a Sarvam WebSocket failure and the real
+    # provider was invisible. Report what the session is actually holding.
+    _conn_prov = (getattr(session, "_jj_stt_provider", "") or "").lower() or "unknown"
+    _conn_def = provider_registry.get(_conn_prov, "STT") if _conn_prov != "unknown" else None
+    _conn_model = ((profile.get("stt_model") or "").strip()
+                   or provider_registry.default_model_for("STT", _conn_prov)
+                   or "(plugin default)")
+    logger.info("stt_connected", provider=_conn_prov, model=_conn_model,
+                selected_provider=(profile.get("stt_provider") or "").lower() or None,
+                provider_name=(_conn_def.name if _conn_def else None),
                 call_id=_dbg_rid, room=_dbg_rid, source="STT")
     # When the STT stream opened, so its real lifetime can be measured at
     # teardown. There were 99 stt_connected events in the log table and ZERO
@@ -3231,8 +3549,8 @@ async def entrypoint(ctx: JobContext) -> None:
     # inferred: we could show no audio was transcribed after the hangup, but
     # not when the stream actually closed.
     agent_tools._stt_connected_mono = time.monotonic()
-    agent_tools._stt_provider = config.DEFAULT_STT_PROVIDER
-    agent_tools._stt_model = config.STT_MODEL
+    agent_tools._stt_provider = _conn_prov
+    agent_tools._stt_model = _conn_model
 
     # Real per-turn provider metrics (truthful latency, not state-derived).
     # Which assistant the usage belongs to, for per-assistant cost attribution.
@@ -3319,47 +3637,45 @@ async def entrypoint(ctx: JobContext) -> None:
             detected = getattr(event, "language", None)
             base = lang.normalize_lang(detected)
             text = str(getattr(event, "transcript", None) or getattr(event, "text", None) or "")
-            words = len(text.split())
-            logger.info("LANGUAGE_DETECTED", detected=str(detected), base=base,
-                        words=words, call_id=_rid)
-            logger.info("STT_LANGUAGE", language=str(detected), call_id=_rid)
-            # An EXPLICIT instruction ("English la sollunga", "in Tamil") always
-            # wins and (re)locks the conversation language (rule 6).
-            explicit = "en" if _RE_SWITCH_EN.search(text) else ("ta" if _RE_SWITCH_TA.search(text) else None)
-            prev = _lang_state.active
-            was_established = _lang_state.established
-            changed = _lang_state.observe(detected, text, explicit)
-            if explicit:
-                logger.info("conversation_language_changed_explicitly",
-                            to=_lang_state.active, call_id=_rid, room=_rid, source="SESSION")
-                logger.info("LANGUAGE_SWITCH_EXPLICIT", to=_lang_state.active, call_id=_rid)
-            if _lang_state.established and not was_established:
-                logger.info("conversation_language_locked", language=_lang_state.active,
-                            call_id=_rid, room=_rid, source="SESSION")
-            if not changed:
-                return
-            base = _lang_state.active
-            _call_state.set_language(base)   # mirror into structured state → LLM directive
-            logger.info("language_lock_changed", **{"previous_language": prev},
-                        new_language=base,
-                        reason=("explicit_request" if explicit else "established_from_speech"),
-                        call_id=_rid, room=_rid, source="SESSION")
-            logger.info("LANGUAGE_CHANGED", **{"from": prev}, to=base,
-                        established=_lang_state.established, call_id=_rid)
-            logger.info("LLM_RESPONSE_LANGUAGE", language=base, call_id=_rid)
-            # Provider-specific TTS re-route (skipped for text-driven TTS like Gemini).
-            if not _tts_needs_route:
-                return
-            route = lang.tts_route(base, _ml_provider)
-            if route is None:
-                return
-            try:
-                _ml_tts.update_options(**{route["kwarg"]: route["lang"]})
-                logger.info("TTS_LANGUAGE_SELECTED", language=route["lang"],
-                            provider=route["provider"], call_id=_rid)
-            except Exception as exc:
-                logger.warning("tts_language_switch_failed", base=base,
-                               error=str(exc), call_id=_rid)
+            if not _RE_CARRIER_ANNOUNCEMENT.search(text):
+                words = len(text.split())
+                logger.info("LANGUAGE_DETECTED", detected=str(detected), base=base,
+                            words=words, call_id=_rid)
+                logger.info("STT_LANGUAGE", language=str(detected), call_id=_rid)
+                # An EXPLICIT instruction ("English la sollunga", "in Tamil") always
+                # wins and (re)locks the conversation language (rule 6).
+                explicit = "en" if _RE_SWITCH_EN.search(text) else ("ta" if _RE_SWITCH_TA.search(text) else None)
+                prev = _lang_state.active
+                was_established = _lang_state.established
+                changed = _lang_state.observe(detected, text, explicit)
+                if explicit:
+                    logger.info("conversation_language_changed_explicitly",
+                                to=_lang_state.active, call_id=_rid, room=_rid, source="SESSION")
+                    logger.info("LANGUAGE_SWITCH_EXPLICIT", to=_lang_state.active, call_id=_rid)
+                if _lang_state.established and not was_established:
+                    logger.info("conversation_language_locked", language=_lang_state.active,
+                                call_id=_rid, room=_rid, source="SESSION")
+                if changed:
+                    base = _lang_state.active
+                    _call_state.set_language(base)   # mirror into structured state → LLM directive
+                    logger.info("language_lock_changed", **{"previous_language": prev},
+                                new_language=base,
+                                reason=("explicit_request" if explicit else "established_from_speech"),
+                                call_id=_rid, room=_rid, source="SESSION")
+                    logger.info("LANGUAGE_CHANGED", **{"from": prev}, to=base,
+                                established=_lang_state.established, call_id=_rid)
+                    logger.info("LLM_RESPONSE_LANGUAGE", language=base, call_id=_rid)
+                    # Provider-specific TTS re-route (skipped for text-driven TTS like Gemini).
+                    if _tts_needs_route:
+                        route = lang.tts_route(base, _ml_provider)
+                        if route is not None:
+                            try:
+                                _ml_tts.update_options(**{route["kwarg"]: route["lang"]})
+                                logger.info("TTS_LANGUAGE_SELECTED", language=route["lang"],
+                                            provider=route["provider"], call_id=_rid)
+                            except Exception as exc:
+                                logger.warning("tts_language_switch_failed", base=base,
+                                               error=str(exc), call_id=_rid)
 
     user_in_room = any("sip_" in p.identity for p in ctx.room.remote_participants.values())
     direction = "INBOUND" if user_in_room else "OUTBOUND"
@@ -3460,7 +3776,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # tells the cost view which figures are provider-grade.
     if user_in_room and getattr(agent_tools, "_answered_mono", None) is None:
         agent_tools._answered_mono = time.monotonic()
-        agent_tools._answered_at = datetime.now(UTC)
+        agent_tools._answered_at = _db_utc_now()
         agent_tools._ringing_seconds = 0.0
         logger.info("call_answered", phone=phone, ringing_seconds=0.0,
                     answer_source="inbound_participant_present_at_start",
@@ -3476,7 +3792,69 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.warning("dnd_race_caught", phone=phone)
             await db.log_error("agent", f"DND race caught for {phone}")
             agent_tools._closed_outcome = "OPT_OUT"
-            await db.remove_active_call(ctx.room.name)
+            await _release_job(ctx, "pre_dial_opt_out")
+            return
+
+        # ── Pre-dial readiness gate ─────────────────────────────────────────
+        # The last thing checked before a real phone rings. See
+        # _session_terminal_failure: only terminal conditions stop the dial, so
+        # a healthy call is never blocked and a transient error never reaches
+        # here. INBOUND is unaffected — this sits inside the outbound branch,
+        # which only runs when no SIP participant is already in the room.
+        _dead = _session_terminal_failure(session, _stt_fail)
+        if _dry_run:
+            _cl = getattr(session, "_is_closing", False)
+            _cl = _cl() if callable(_cl) else bool(_cl)
+            logger.critical(
+                "dial_dry_run", gate_decision=_dead or "CLEAR_TO_DIAL",
+                would_dial=not _dead, phone=phone,
+                session_has_activity=getattr(session, "_activity", None) is not None,
+                session_is_closing=_cl,
+                session_closing_task=getattr(session, "_closing_task", None) is not None,
+                session_closing_flag=getattr(session, "_closing", None),
+                stt_critical=bool(_stt_fail.get("critical")),
+                first_shutdown_origin=(_shutdown_trace.get("origin") or "(none)"),
+                first_shutdown_stack=(_shutdown_trace.get("stack") or ""),
+                impact="dry run: no SIP dial was attempted",
+                call_id=ctx.room.name, room=ctx.room.name, source="VOBIZ")
+            await _release_job(ctx, "dial_dry_run")
+            return
+        if _dead:
+            logger.critical(
+                "outbound_dial_aborted", reason=_dead, phone=phone,
+                breakpoint="PRE_DIAL", retryable=False,
+                impact="the voice session is terminally failed, so no call was placed — "
+                       "the customer is NOT rung by a dead agent",
+                remedy=("check the stt_* events immediately above for the provider "
+                        "and close reason"),
+                # Which sub-condition fired, and WHO closed the session. Without
+                # these, room call-917397075913-7512 (2026-10-17 10:20) reported
+                # reason=agent_session_closing with ~28 preceding INFO events and
+                # no error anywhere, and its cause could not be established after
+                # the fact. A recurrence is now self-diagnosing.
+                session_has_activity=getattr(session, "_activity", None) is not None,
+                session_closing_task=getattr(session, "_closing_task", None) is not None,
+                session_closing_flag=getattr(session, "_closing", None),
+                stt_critical=bool(_stt_fail.get("critical")),
+                first_shutdown_origin=(_shutdown_trace.get("origin") or "(none)"),
+                first_shutdown_stack=(_shutdown_trace.get("stack") or ""),
+                shutdown_requests=_shutdown_trace.get("count", 0),
+                call_id=ctx.room.name, room=ctx.room.name, source="VOBIZ")
+            agent_tools._closed_outcome = "FAILED"
+            # Release the campaign slot explicitly: the shutdown hook that
+            # normally settles the target is not registered until after this
+            # point, so returning here would otherwise strand the target in
+            # DISPATCHED and hold a concurrency slot forever.
+            try:
+                if await db.settle_campaign_target(
+                        ctx.room.name, status="FAILED", error=f"pre-dial: {_dead}"):
+                    await db.refresh_campaign_counters(ctx.room.name)
+                    logger.info("campaign_slot_released", reason=_dead,
+                                call_id=ctx.room.name, room=ctx.room.name, source="CAMPAIGN")
+            except Exception as exc:
+                logger.warning("campaign_slot_release_failed", error=str(exc)[:200],
+                               call_id=ctx.room.name, source="CAMPAIGN")
+            await _release_job(ctx, "pre_dial_gate_abort")
             return
 
         _dial_mono = time.monotonic()
@@ -3501,7 +3879,7 @@ async def entrypoint(ctx: JobContext) -> None:
             # and Vobiz recorded "Call picked 13:51:25". Everything billable
             # starts here; the ringing before it is not connected time.
             agent_tools._answered_mono = time.monotonic()
-            agent_tools._answered_at = datetime.now(UTC)
+            agent_tools._answered_at = _db_utc_now()
             _ring_s = round(agent_tools._answered_mono - _dial_mono, 2)
             agent_tools._ringing_seconds = _ring_s
             logger.info("call_answered", phone=phone, ringing_seconds=_ring_s,
@@ -3511,7 +3889,7 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.error("dial_out_failed", error=str(exc), phone=phone,
                          call_id=ctx.room.name, room=ctx.room.name, source="VOBIZ")
             await db.log_error("agent", "dial out failed", str(exc))
-            await db.remove_active_call(ctx.room.name)
+            await _release_job(ctx, "dial_out_failed")
             return
 
     # The call is now genuinely connected (outbound answered, or an in-room
@@ -3560,9 +3938,13 @@ async def entrypoint(ctx: JobContext) -> None:
     # first real question hits a warm embedder. Fire-and-forget: the turn path is
     # separately time-bounded, so if this is slow or fails nothing waits on it.
     try:
-        if resolved_assistant_id:
+        _kb_aid = profile.get("id") or resolved_assistant_id
+        if _kb_aid:
             async def _warm_knowledge() -> None:
                 try:
+                    await asyncio.sleep(0.2)
+                    if not await knowledge.has_knowledge(_kb_aid):
+                        return
                     t0 = time.monotonic()
                     await knowledge.embed_texts(["warm"])
                     logger.info("knowledge_prewarm_done",
@@ -3700,18 +4082,10 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.error("FIRST_GREETING_FAILED", error=str(exc), call_id=ctx.room.name)
     else:
         # Real calls: speak the assistant's configured first_message DETERMINISTICALLY
-        # (via TTS) as soon as the call is answered — don't depend on the LLM
-        # producing an opening turn, and don't wait for the customer to speak
-        # first. Falls back to a prompt-driven generate_reply only when the
-        # assistant has no first_message.
+        # via TTS as soon as the call is answered.
         first_message = (profile.get("first_message") or "").strip()
         if first_message:
-            # Fill template placeholders so the caller doesn't hear a literal
-            # "{lead_name}"/"{business_name}". Uses the SAME resolved identity as
-            # the system prompt. When the customer name is unknown, the name is
-            # dropped gracefully ("Hi {lead_name}, this is Priya…" -> "Hi, this is
-            # Priya…") rather than greeting a placeholder like "there" or leaking
-            # the "Dashboard Monitor" diagnostics participant.
+            # Fill template placeholders using the same resolved identity as the prompt.
             _bn = business_name
             _svc = str(meta.get("service_type") or "your enquiry")
             if customer_name:
@@ -3735,6 +4109,8 @@ async def entrypoint(ctx: JobContext) -> None:
             # Tidy any double spaces / stray leading punctuation left by removals.
             first_message = re.sub(r"\s{2,}", " ", first_message)
             first_message = re.sub(r"^(Hi|Hello)\s*,\s*,", r"\1,", first_message).strip()
+            if direction == "INBOUND" and re.search(r"\b(calling from|is now a good time)\b", first_message, re.I):
+                first_message = f"Hi, welcome to {_bn}! This is Priya. How may I help you today?"
             logger.info("FIRST_GREETING_STARTED", source="first_message",
                         has_customer_name=bool(customer_name), call_id=ctx.room.name)
             try:
@@ -3796,6 +4172,254 @@ async def _handle_voicemail(session, msg: str, ctx: JobContext) -> None:
 
 
 # ── Shutdown hook ────────────────────────────────────────────────────────────
+
+def _sanitized_stack(skip: int = 2, limit: int = 14) -> str:
+    """Caller frames as "file:line in func", newest last. No argument values.
+
+    Deliberately omits locals and arguments so a stack can never carry a
+    credential, a caller number or transcript text into the logs.
+    """
+    import traceback as _tb
+    frames = _tb.extract_stack()[:-skip][-limit:]
+    return " <- ".join(
+        f"{f.filename.rsplit(chr(92), 1)[-1].rsplit('/', 1)[-1]}:{f.lineno} in {f.name}"
+        for f in reversed(frames)
+    )
+
+
+def _install_shutdown_tracer(session: Any, rid: str) -> dict:
+    """Record the FIRST request to close this AgentSession, with a stack.
+
+    Why this exists: a PRE_DIAL abort reports that the session is closing, but
+    not WHO closed it. The SDK's own account ("AgentSession is closing due to
+    unrecoverable error") goes to the stdlib logger inside a job SUBPROCESS
+    whose stdout is not captured, so on 2026-10-17 four calls aborted with no
+    recoverable evidence of the initiator.
+
+    Wraps every entry point that can begin a close and logs the first one at
+    CRITICAL through the structlog bridge, so it reaches Live Logs and the DB.
+    Later calls are counted but not re-logged: the FIRST trigger is the cause,
+    the rest are consequences. Observability only — nothing is suppressed, and
+    each wrapper delegates to the original.
+    """
+    state: dict = {"origin": "", "stack": "", "mono": None, "count": 0}
+
+    def _record(origin: str, detail: str = "") -> None:
+        state["count"] += 1
+        if state["origin"]:
+            logger.info("subsequent_shutdown_request", origin=origin,
+                        first_origin=state["origin"], n=state["count"],
+                        call_id=rid, room=rid, source="SESSION")
+            return
+        state["origin"] = origin
+        state["mono"] = time.monotonic()
+        state["stack"] = _sanitized_stack(skip=3)
+        # WARNING, not CRITICAL: every healthy call ends by closing its
+        # session, so this fires once per normal teardown too. The pre-dial
+        # abort re-reports the same origin at CRITICAL, where it genuinely
+        # means a customer was not called.
+        logger.warning(
+            "first_shutdown_trigger", origin=origin, detail=detail[:300],
+            stack=state["stack"],
+            impact="what began closing the AgentSession; if a PRE_DIAL abort "
+                   "follows, this is its cause, not a consequence",
+            call_id=rid, room=rid, source="SESSION")
+
+    def _wrap_sync(name: str) -> None:
+        orig = getattr(session, name, None)
+        if orig is None or getattr(orig, "_jj_traced", False):
+            return
+
+        def traced(*a: Any, **kw: Any):  # noqa: ANN401
+            _record(name, repr(kw.get("reason", "")) if kw else "")
+            return orig(*a, **kw)
+
+        traced._jj_traced = True          # type: ignore[attr-defined]
+        try:
+            setattr(session, name, traced)
+        except Exception:
+            pass
+
+    def _wrap_async(name: str) -> None:
+        orig = getattr(session, name, None)
+        if orig is None or getattr(orig, "_jj_traced", False):
+            return
+
+        async def traced(*a: Any, **kw: Any):  # noqa: ANN401
+            _record(name, repr(kw.get("reason", "")) if kw else "")
+            return await orig(*a, **kw)
+
+        traced._jj_traced = True          # type: ignore[attr-defined]
+        try:
+            setattr(session, name, traced)
+        except Exception:
+            pass
+
+    def _wrap_on_error() -> None:
+        """_on_error is how the SDK self-closes on an unrecoverable provider
+        error (agent_session.py:_on_error). It is the single most likely
+        initiator, and it names the failing component."""
+        orig = getattr(session, "_on_error", None)
+        if orig is None or getattr(orig, "_jj_traced", False):
+            return
+
+        def traced(err: Any) -> Any:  # noqa: ANN401
+            try:
+                recoverable = getattr(err, "recoverable", None)
+                etype = getattr(err, "type", "")
+                if recoverable is False:
+                    _record("_on_error",
+                            f"type={etype} recoverable=False "
+                            f"error={str(getattr(err, 'error', ''))[:160]}")
+                else:
+                    logger.info("session_error_recoverable", error_type=etype,
+                                recoverable=recoverable, call_id=rid, room=rid,
+                                source="SESSION")
+            except Exception:
+                pass
+            return orig(err)
+
+        traced._jj_traced = True          # type: ignore[attr-defined]
+        try:
+            setattr(session, "_on_error", traced)
+        except Exception:
+            pass
+
+    for n in ("_close_soon", "shutdown"):
+        _wrap_sync(n)
+    _wrap_async("aclose")
+    _wrap_on_error()
+    logger.info("shutdown_tracer_installed",
+                traced=["_close_soon", "shutdown", "aclose", "_on_error"],
+                call_id=rid, room=rid, source="SESSION")
+    return state
+
+
+async def _close_job_db(where: str) -> None:
+    """Flush pending Live Logs rows, then close THIS job's pool. Idempotent."""
+    try:
+        from observability import flush_logs
+        left = await flush_logs()
+        if left:
+            logger.warning("live_logs_unflushed", rows=left, where=where,
+                           source="WORKER")
+    except Exception:
+        pass
+    try:
+        await db.close_pool()
+    except Exception as exc:
+        logger.warning("db_pool_close_failed", error=str(exc)[:160], where=where,
+                       source="WORKER")
+
+
+async def _release_job(ctx: Any, reason: str) -> None:
+    """Drop the active-call row and END the job.
+
+    Returning from `entrypoint` does NOT end a LiveKit job: the SDK only
+    records an `entrypoint_returned` event on the job span
+    (ipc/job_proc_lazy_main.py) and the agent stays in the room until something
+    calls ctx.shutdown(). MEASURED 2026-10-17 -- four pre-dial returns left
+    four rooms alive, two of them still holding the agent as a participant,
+    each pinning a worker slot and a Neon connection until LiveKit reaped it.
+
+    Idempotent, and shares the `_jj_ending` guard with the caller-hangup
+    handler so no path can shut the job down twice.
+    """
+    try:
+        await db.remove_active_call(ctx.room.name)
+    except Exception as exc:
+        logger.warning("remove_active_call_failed", error=str(exc)[:160],
+                       call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
+    # Settle the call row. create_call writes IN_PROGRESS before the dial, and
+    # the shutdown hook that would normally finalise it is not registered until
+    # after the dial, so without this the row stayed IN_PROGRESS with a NULL
+    # answeredAt forever and the dashboard counted an unconnected call as live
+    # (19 such rows on 2026-10-17). Narrow by design: only an unanswered
+    # IN_PROGRESS row is touched.
+    try:
+        if await db.fail_unconnected_call(ctx.room.name, f"pre-dial: {reason}"):
+            logger.info("call_row_failed_unconnected", reason=reason,
+                        call_id=ctx.room.name, room=ctx.room.name, source="DATABASE")
+    except Exception as exc:
+        logger.warning("call_row_settle_failed", error=str(exc)[:160], reason=reason,
+                       call_id=ctx.room.name, room=ctx.room.name, source="DATABASE")
+    if getattr(ctx, "_jj_ending", False):
+        logger.info("job_already_ending", reason=reason,
+                    call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
+        return
+    ctx._jj_ending = True          # type: ignore[attr-defined]
+    try:
+        ctx.shutdown(reason=reason)
+        logger.info("job_released", reason=reason,
+                    call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
+    except Exception as exc:
+        logger.warning("job_shutdown_failed", error=str(exc)[:160], reason=reason,
+                       call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
+    # No shutdown hook is registered this early, so nothing else will close
+    # the pool for a pre-dial exit.
+    await _close_job_db(reason)
+
+
+def _session_terminal_failure(session: Any, stt_fail: dict) -> str:
+    """"" if the session can still carry a call, else why it cannot.
+
+    Checked immediately before an outbound dial. On room
+    call-917397075913-4812 the STT stream was rejected at t=5.37s and the
+    dialer fired at t=5.58s regardless: the carrier rang, the customer
+    answered, and there was no agent behind it — the greeting then failed with
+    "AgentSession isn't running". A customer must never be called by an agent
+    that is already dead.
+
+    Only TERMINAL conditions count. `session.start()` is awaited long before
+    this point, so by now a healthy session has an activity; a missing one is
+    genuine failure, not slow initialisation. The signals are the SDK's own —
+    `_activity is None` is exactly what `say()`/`generate_reply()` raise on —
+    plus our own stt_fail flag, which is set only for a provider rejection
+    already classified as permanent (retryable=False). Transient transport
+    errors deliberately do NOT set it, so a recoverable blip never blocks a
+    healthy call.
+    """
+    if stt_fail.get("critical"):
+        return "stt_initialization_failed"
+    if getattr(session, "_activity", None) is None:
+        return "agent_session_not_running"
+    # `_is_closing` is a METHOD on AgentSession (agent_session.py:1250), while
+    # `_activity` is a plain attribute. A bare getattr therefore hands back the
+    # bound method, which is ALWAYS truthy, so this aborted EVERY outbound dial
+    # at PRE_DIAL with reason=agent_session_closing even though nothing had
+    # requested a shutdown (4 calls on 2026-10-17, 09:47-09:52). Call it when it
+    # is callable, so the gate keeps working whichever shape the SDK exposes.
+    _closing = getattr(session, "_is_closing", False)
+    if callable(_closing):
+        try:
+            _closing = _closing()
+        except Exception:
+            # A private API that cannot answer is not proof of closure; the
+            # _activity check above already caught a session that never ran.
+            _closing = False
+    if _closing:
+        return "agent_session_closing"
+    return ""
+
+
+def _db_utc_now() -> datetime:
+    """UTC 'now' in the form the calls table accepts.
+
+    Every timestamp column on `calls` is `timestamp WITHOUT time zone`
+    (Prisma maps DateTime that way), so asyncpg must be handed a NAIVE value
+    holding UTC. Passing an aware datetime made the driver try to reconcile it
+    against a naive column and fail the whole UPDATE:
+
+        invalid input for query argument $23 ...
+        can't subtract offset-naive and offset-aware datetimes
+
+    That took the entire call row down with it — log_call_failed — which also
+    hid the STT failure that had caused the call to fail in the first place.
+    The value is still UTC; only the tzinfo tag is dropped, at the DB boundary
+    and nowhere else, so nothing in the app reasons about a naive clock.
+    """
+    return datetime.now(UTC).replace(tzinfo=None)
+
 
 def _billable_seconds(ctx: JobContext, agent_tools) -> tuple[int, str]:
     """(seconds, basis) — the duration the call is BILLED on.
@@ -3999,6 +4623,14 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
 
     log_call_ok = False
     call_id = getattr(agent_tools, "_call_id", None)
+    extracted_email = ""
+    try:
+        if hasattr(agent_tools, "call_state") and agent_tools.call_state:
+            extracted_email = agent_tools.call_state.entities.get("email", "")
+        if not extracted_email and hasattr(agent_tools, "_extract_caller_details"):
+            extracted_email, _, _ = agent_tools._extract_caller_details()
+    except Exception:
+        pass
     try:
         if call_id:
             await db.complete_call(
@@ -4009,6 +4641,8 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
                 sentiment=sentiment, cost_usd=cost_usd,
                 interrupt_count=getattr(agent_tools, "interrupt_count", 0),
                 was_booked=was_booked, transcript=transcript,
+                notes=reason,
+                email=extracted_email or None,
                 llm_input_tokens=llm_input_tokens,
                 llm_output_tokens=llm_output_tokens,
                 llm_provider_used=llm_provider_used,
@@ -4229,6 +4863,13 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
     except Exception as exc:
         logger.warning("db_webhook_dispatch_failed", error=str(exc))
 
+    # Release this job's Supabase connections. Pools are keyed per event loop
+    # and every job runs on a NEW loop inside a REUSED subprocess, so without
+    # this each job leaked min_size=2 connections; after ~7 jobs in one
+    # subprocess the session-mode pooler's 15-client cap was reached and new
+    # jobs died in _resolve_profile with EMAXCONNSESSION (observed 2026-10-17).
+    await _close_job_db("shutdown_hook")
+
 
 # ── Worker entry ─────────────────────────────────────────────────────────────
 
@@ -4241,6 +4882,8 @@ def _prewarm(proc: Any) -> None:  # noqa: ANN401 — livekit JobProcess
     (time-bounded, falls back to an estimate), so it is left to warm lazily."""
     logger.info("VOICE_WORKER_BUILD", build=AGENT_BUILD, phase="prewarm", source="WORKER")
     try:
+        _warm_linecache()
+        _shared_vad()
         import pytz
         pytz.timezone("Asia/Kolkata")            # cheap, local (was ~2.9s first use)
         from prompts import get_ist_time_context
@@ -4250,6 +4893,13 @@ def _prewarm(proc: Any) -> None:  # noqa: ANN401 — livekit JobProcess
         uuid.uuid4()
         import redactor
         redactor.redact("warm 9999999999 test@example.com")
+        import threading
+        def _bg_warm_embedder() -> None:
+            try:
+                knowledge._load_embedder()
+            except Exception:
+                pass
+        threading.Thread(target=_bg_warm_embedder, daemon=True).start()
     except Exception as exc:
         logger.warning("prewarm_failed", error=str(exc))
 

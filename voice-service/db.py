@@ -81,12 +81,33 @@ async def get_pool() -> asyncpg.Pool:
             dsn = os.environ.get("DATABASE_URL")
             if not dsn:
                 raise RuntimeError("DATABASE_URL environment variable is not set")
+            # Pool ceilings must fit the pooler's CLIENT-SESSION budget, which
+            # is shared by every process: the worker, the API and the dashboard's
+            # Prisma pool all connect to the same Supabase pooler on port 5432
+            # (session mode), where the cap is 15 clients.
+            #
+            # MEASURED 2026-10-17: with max_size=10 a single 4-minute call grew
+            # the worker's pool to 8 established connections (asyncpg does not
+            # shrink a pool), and dashboard 5 + API 3 took the total to 16. The
+            # NEXT call's job then died in _resolve_profile with
+            # "(EMAXCONNSESSION) max clients reached in session mode", so it
+            # never reached the dial: the phone never rang and the dashboard sat
+            # on "Calling...". Verified by killing the worker, which dropped the
+            # count from 16 to 8.
+            #
+            # 4 is ample for one call (profile, prompt, call row, 1s log batches,
+            # campaign and booking queries are effectively sequential) and keeps
+            # worker + API + dashboard at ~13, inside the budget. Tunable per
+            # deployment without a code change; raise it only together with the
+            # pooler's capacity (port 6543 = transaction mode allows far more
+            # clients, and this code is already compatible via
+            # statement_cache_size=0).
             pool = await asyncpg.create_pool(
                 dsn=dsn,
-                min_size=2,
-                max_size=10,
+                min_size=int(os.getenv("DB_POOL_MIN", "1")),
+                max_size=int(os.getenv("DB_POOL_MAX", "4")),
                 command_timeout=30,
-                statement_cache_size=0,  # Neon pgbouncer doesn't support prepared statements
+                statement_cache_size=0,  # pgbouncer/Supavisor cannot do prepared statements
             )
             with _registry_lock:
                 _pools[loop] = pool
@@ -660,6 +681,7 @@ async def complete_call(
     was_booked: bool = False,
     transcript: str | None = None,
     notes: str | None = None,
+    email: str | None = None,
     # Usage breakdown — captured for live-rate cost recomputation in the
     # dashboard. All optional; missing fields just leave the column null.
     llm_input_tokens: int | None = None,
@@ -691,6 +713,20 @@ async def complete_call(
     ``usage × current ProviderRate`` whenever rates change, instead of being
     locked to the snapshot ``cost_usd`` baked in at the time of the call.
     """
+    # Boundary guard for the whole calls table: every timestamp column is
+    # `timestamp WITHOUT time zone`, so asyncpg must receive NAIVE values.
+    # An aware datetime fails the entire UPDATE with
+    #   "can't subtract offset-naive and offset-aware datetimes"
+    # which loses the call row AND masks whatever ended the call. Converting
+    # to UTC first keeps the instant correct; only the tzinfo tag is dropped.
+    def _naive_utc(v: "datetime | None") -> "datetime | None":
+        if v is None or v.tzinfo is None:
+            return v
+        return v.astimezone(UTC).replace(tzinfo=None)
+
+    answered_at = _naive_utc(answered_at)
+    ended_at = _naive_utc(ended_at)
+
     pool = await get_pool()
     await pool.execute(
         """UPDATE calls SET
@@ -736,16 +772,22 @@ async def complete_call(
     )
     if phone_number:
         await pool.execute(
-            """INSERT INTO contacts (id, phone_number, name, total_calls, last_call_at, last_outcome, is_booked, created_at, updated_at)
-               VALUES ($1, $2, $3, 1, now(), $4, $5, now(), now())
+            """INSERT INTO contacts (id, phone_number, name, email, notes, total_calls, last_call_at, last_outcome, is_booked, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, 1, now(), $6, $7, now(), now())
                ON CONFLICT (phone_number) DO UPDATE SET
                  total_calls   = contacts.total_calls + 1,
                  last_call_at  = now(),
                  last_outcome  = EXCLUDED.last_outcome,
                  is_booked     = contacts.is_booked OR EXCLUDED.is_booked,
                  name          = COALESCE(contacts.name, EXCLUDED.name),
+                 email         = COALESCE(EXCLUDED.email, contacts.email),
+                 notes         = CASE
+                                   WHEN EXCLUDED.notes IS NOT NULL AND EXCLUDED.notes <> ''
+                                   THEN COALESCE(contacts.notes || E'\n' || EXCLUDED.notes, EXCLUDED.notes)
+                                   ELSE contacts.notes
+                                 END,
                  updated_at    = now()""",
-            str(uuid.uuid4()), phone_number, lead_name, outcome.upper(), was_booked,
+            str(uuid.uuid4()), phone_number, lead_name, email, notes, outcome.upper(), was_booked,
         )
 
 
@@ -815,6 +857,43 @@ async def get_calls_by_phone(phone: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def fail_unconnected_call(
+    room: str,
+    reason: str,
+    ended_reason: str = "PIPELINE_ERROR",
+) -> bool:
+    """Finalise a call row for a call that never connected. Returns True if updated.
+
+    `create_call` writes status IN_PROGRESS as soon as the row exists, which is
+    BEFORE the SIP dial. On a pre-dial exit the shutdown hook that would
+    normally call `complete_call` is not registered yet, so the row stayed
+    IN_PROGRESS with answeredAt/endedAt NULL forever and the dashboard counted
+    it as a live call. MEASURED 2026-10-17: 19 such rows, including the four
+    aborted dials to +917397075913.
+
+    Deliberately narrow: only a row that is still IN_PROGRESS and has never
+    been answered is touched, so this can never overwrite a real conversation
+    or a row another path already settled.
+    """
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        UPDATE calls
+           SET status = 'FAILED'::"CallStatus",
+               "endedReason" = $2::"EndedReason",
+               reason = $3,
+               "endedAt" = COALESCE("endedAt", $4),
+               "durationSeconds" = COALESCE("durationSeconds", 0)
+         WHERE "livekitRoomName" = $1
+           AND status = 'IN_PROGRESS'::"CallStatus"
+           AND "answeredAt" IS NULL
+        RETURNING id
+        """,
+        room, ended_reason, reason[:300], datetime.now(UTC).replace(tzinfo=None),
+    )
+    return row is not None
+
+
 async def update_call_notes(call_id: str, notes: str) -> bool:
     pool = await get_pool()
     result = await pool.execute(
@@ -827,11 +906,19 @@ async def update_call_notes(call_id: str, notes: str) -> bool:
 
 async def add_contact_memory(phone: str, insight: str) -> None:
     pool = await get_pool()
-    await pool.execute(
-        """INSERT INTO contact_memory (id, phone_number, insight, created_at)
-           VALUES ($1, $2, $3, now())""",
-        str(uuid.uuid4()), phone, insight[:1000],
-    )
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """INSERT INTO contacts (id, phone_number, name, total_calls, created_at, updated_at)
+                   VALUES ($1, $2, 'Caller', 0, now(), now())
+                   ON CONFLICT (phone_number) DO NOTHING""",
+                str(uuid.uuid4()), phone,
+            )
+            await conn.execute(
+                """INSERT INTO contact_memory (id, phone_number, insight, created_at)
+                   VALUES ($1, $2, $3, now())""",
+                str(uuid.uuid4()), phone, insight[:1000],
+            )
 
 
 async def get_contact_memory(phone: str) -> list[dict]:
@@ -1115,6 +1202,18 @@ async def get_call_vobiz_recording(call_id: str) -> dict | None:
     row = await pool.fetchrow(
         'SELECT id, "providerRecordingUrl", "providerRecordingId", '
         '"providerRecordingStatus", "recordingSource" FROM calls WHERE id = $1',
+        call_id,
+    )
+    return dict(row) if row else None
+
+
+async def get_call_metadata(call_id: str) -> dict | None:
+    """Metadata needed to match Vobiz carrier recordings for LiveKit inbound calls."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        '''SELECT id, "toNumber", "fromNumber", "durationSeconds",
+                  COALESCE("endedAt", "updatedAt", "createdAt") AS finished_at
+             FROM calls WHERE id = $1''',
         call_id,
     )
     return dict(row) if row else None

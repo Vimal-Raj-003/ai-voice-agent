@@ -113,7 +113,10 @@ async def require_token(request: Request) -> None:
 # ── Lifespan: open/close DB pool ──────────────────────────────────────────────
 @app.on_event("startup")
 async def _startup_db() -> None:
-    await db.get_pool()
+    try:
+        await db.get_pool()
+    except Exception as exc:
+        logger.warning("startup_db_unavailable", error=str(exc), source="API")
     # Start the Live Logs drain on the FastAPI loop so server-side structlog
     # events reach the error_logs table / dashboard SSE stream.
     start_log_drain()
@@ -939,7 +942,10 @@ async def _start_scheduler() -> None:
     global _scheduler
     _scheduler = AsyncIOScheduler(timezone=_ist())
     _scheduler.start()
-    await _reload_scheduled_campaigns()
+    try:
+        await _reload_scheduled_campaigns()
+    except Exception as exc:
+        logger.warning("startup_campaign_reload_failed", error=str(exc), source="API")
     # 3-hourly LLM rate refresh from OpenRouter. Run once at startup so the
     # rates table is fresh from boot — then every 3 hours on the wall clock.
     # coalesce=True collapses missed runs into one (e.g. if the boot run is

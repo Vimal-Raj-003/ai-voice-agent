@@ -60,20 +60,28 @@ def _frame_to_mono(frame: Any, target_rate: int) -> np.ndarray | None:
         raw = bytes(frame.data)
         if not raw:
             return None
-        pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        pcm_i16 = np.frombuffer(raw, dtype=np.int16)
         ch = int(getattr(frame, "num_channels", 1) or 1)
         if ch > 1:                       # interleaved -> mono average
-            usable = (len(pcm) // ch) * ch
-            pcm = pcm[:usable].reshape(-1, ch).mean(axis=1)
+            usable = (len(pcm_i16) // ch) * ch
+            pcm = pcm_i16[:usable].reshape(-1, ch).mean(axis=1, dtype=np.float32)
+        else:
+            pcm = pcm_i16.astype(np.float32)
         sr = int(getattr(frame, "sample_rate", target_rate) or target_rate)
-        if sr != target_rate and len(pcm):
-            # Linear resample — adequate for speech and dependency-free.
-            n_out = max(1, int(round(len(pcm) * target_rate / sr)))
-            pcm = np.interp(
-                np.linspace(0.0, len(pcm) - 1, n_out, dtype=np.float32),
-                np.arange(len(pcm), dtype=np.float32),
-                pcm,
-            ).astype(np.float32)
+        n_in = len(pcm)
+        if sr != target_rate and n_in:
+            if sr == 48000 and target_rate == 16000:
+                pcm = pcm[::3]
+            elif sr == 32000 and target_rate == 16000:
+                pcm = pcm[::2]
+            elif sr == 8000 and target_rate == 16000:
+                pcm = np.repeat(pcm, 2)
+            else:
+                # Fast zero-float64 index resample so 50 frames/s never block the event loop.
+                n_out = max(1, int(round(n_in * target_rate / sr)))
+                idx = (np.arange(n_out, dtype=np.int32) * sr) // target_rate
+                np.clip(idx, 0, n_in - 1, out=idx)
+                pcm = pcm[idx]
         return pcm
     except Exception:
         return None
@@ -110,7 +118,9 @@ class CallRecorder:
     def start(self) -> bool:
         """Allocate the buffer + verify disk. False = recording unavailable."""
         try:
-            free_mb = shutil.disk_usage(_ensure_dir(self.base_dir)).free / (1024 * 1024)
+            target_dir = _ensure_dir(self.base_dir)
+            self.base_dir = target_dir
+            free_mb = shutil.disk_usage(target_dir).free / (1024 * 1024)
             if free_mb < config.RECORDING_MIN_FREE_MB:
                 self.failed_reason = f"low disk: {free_mb:.0f}MB free"
                 logger.warning("recording_disk_low", free_mb=round(free_mb),
@@ -118,8 +128,11 @@ class CallRecorder:
                                room=self.room, source="RECORDING")
                 return False
             self._max_samples = int(self.rate * 60 * config.RECORDING_MAX_MINUTES)
-            self._ch[_CH_CALLER] = np.zeros(self._max_samples, dtype=np.float32)
-            self._ch[_CH_AGENT] = np.zeros(self._max_samples, dtype=np.float32)
+            # Allocate 5 minutes upfront (~19 MB total instead of 460 MB) and grow
+            # on demand up to _max_samples so OS page faults never stall a live call.
+            init_samples = min(self._max_samples, int(self.rate * 60 * 5))
+            self._ch[_CH_CALLER] = np.zeros(init_samples, dtype=np.float32)
+            self._ch[_CH_AGENT] = np.zeros(init_samples, dtype=np.float32)
             self.started_at = time.monotonic()
             ts = time.gmtime()
             self.rel_key = (f"{ts.tm_year:04d}/{ts.tm_mon:02d}/{ts.tm_mday:02d}/"
@@ -161,6 +174,12 @@ class CallRecorder:
             pcm = pcm[: self._max_samples - start]
             end = self._max_samples
             self._truncated = True
+        if end > len(buf):
+            new_cap = min(self._max_samples, max(end, len(buf) * 2))
+            grown = np.zeros(new_cap, dtype=np.float32)
+            grown[:len(buf)] = buf
+            self._ch[ch] = grown
+            buf = grown
         buf[start:end] += pcm
         self._written[ch] = max(self._written[ch], end)
         if end > self._high_water:
@@ -270,15 +289,16 @@ class CallRecorder:
             # a real call clipped 115 agent samples. Scaling only the offending
             # channel, only when it actually exceeds range, removes that without
             # touching levels on a leg that was already within range.
-            stereo = np.empty((n, 2), dtype=_DTYPE)
+            stereo = np.zeros((n, 2), dtype=_DTYPE)
             for idx, leg in ((0, left), (1, right)):
-                sig = leg[:n]
-                peak = float(np.max(np.abs(sig))) if n else 0.0
+                m = min(n, len(leg))
+                sig = leg[:m]
+                peak = float(np.max(np.abs(sig))) if m else 0.0
                 if peak > _INT16_MAX:
                     sig = sig * (_INT16_MAX / peak)
                     logger.info("recording_channel_limited", channel="caller" if idx == 0 else "agent",
                                 peak=int(peak), room=self.room, source="RECORDING")
-                stereo[:, idx] = np.clip(sig, -_INT16_MAX, _INT16_MAX).astype(_DTYPE)
+                stereo[:m, idx] = np.clip(sig, -_INT16_MAX, _INT16_MAX).astype(_DTYPE)
 
             tmp = self.path + ".part"
             with wave.open(tmp, "wb") as w:
@@ -325,20 +345,37 @@ def _safe(name: str) -> str:
 
 
 def _ensure_dir(path: str) -> str:
-    os.makedirs(path, exist_ok=True)
-    return path
+    try:
+        os.makedirs(path, exist_ok=True)
+        # Test writability
+        test_file = os.path.join(path, ".probe")
+        with open(test_file, "w") as f:
+            f.write("probe")
+        os.remove(test_file)
+        return path
+    except Exception:
+        fallback = os.path.expanduser("~/.jilljill/recordings")
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
 
 
 def resolve_recording_path(rel_key: str) -> str | None:
-    """Map a stored key to an absolute path INSIDE RECORDINGS_DIR.
+    """Map a stored key to an absolute path INSIDE RECORDINGS_DIR (or fallback).
 
     Rejects traversal (`..`, absolute keys) so a crafted DB value can never read
     an arbitrary file off the host.
     """
     if not rel_key:
         return None
+    clean = rel_key.lstrip("/\\")
+    # 1. Configured base directory
     base = os.path.abspath(config.RECORDINGS_DIR)
-    full = os.path.abspath(os.path.join(base, rel_key.lstrip("/\\")))
-    if not full.startswith(base + os.sep) and full != base:
-        return None
-    return full if os.path.isfile(full) else None
+    full = os.path.abspath(os.path.join(base, clean))
+    if (full.startswith(base + os.sep) or full == base) and os.path.isfile(full):
+        return full
+    # 2. Fallback directory
+    fallback_base = os.path.abspath(os.path.expanduser("~/.jilljill/recordings"))
+    fallback_full = os.path.abspath(os.path.join(fallback_base, clean))
+    if (fallback_full.startswith(fallback_base + os.sep) or fallback_full == fallback_base) and os.path.isfile(fallback_full):
+        return fallback_full
+    return None

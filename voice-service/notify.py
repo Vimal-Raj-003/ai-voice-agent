@@ -56,6 +56,24 @@ def send_whatsapp(to_phone: str, message: str) -> bool:
         return False
 
 
+def send_sms(to_phone: str, message: str) -> bool:
+    sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
+    tok = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    frm = os.environ.get("TWILIO_FROM_NUMBER", "")
+    if not sid or not tok or not frm:
+        return False
+    try:
+        r = httpx.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
+            auth=(sid, tok), data={"From": frm, "To": to_phone, "Body": message}, timeout=8.0,
+        )
+        r.raise_for_status()
+        return True
+    except Exception as exc:
+        logger.warning("sms_failed", error=str(exc))
+        return False
+
+
 def notify_booking_confirmed(caller_name: str, caller_phone: str, booking_time_iso: str,
                              booking_id: str, notes: str = "", tts_voice: str = "") -> bool:
     try:
@@ -75,7 +93,9 @@ def notify_booking_confirmed(caller_name: str, caller_phone: str, booking_time_i
         f"━━━━━━━━━━━━━━━━━━━━━━\n_OutboundAI_"
     )
     sent = send_telegram(msg)
-    send_whatsapp(caller_phone, f"✅ Hi {caller_name}, your appointment is confirmed for {readable}.")
+    wa_ok = send_whatsapp(caller_phone, f"✅ Hi {caller_name}, your appointment is confirmed for {readable}.")
+    if not wa_ok:
+        send_sms(caller_phone, f"Hi {caller_name}, your appointment is confirmed for {readable} with VIMS Enterprise.")
     return sent
 
 

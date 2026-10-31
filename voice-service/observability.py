@@ -87,6 +87,20 @@ def _mask(key: str, value: object) -> object:
     return "***redacted***"
 
 
+
+async def flush_logs(timeout: float = 3.0) -> int:
+    """Wait (bounded) for the buffered Live Logs rows to reach the DB.
+
+    Called just before a job closes its connection pool: without it the last
+    rows -- the ones explaining why the job ended -- would be dropped when the
+    pool goes away. Condition-based, not a fixed delay: it returns as soon as
+    the buffer is empty. Returns the number of rows still unsent.
+    """
+    deadline = asyncio.get_running_loop().time() + max(0.0, timeout)
+    while _log_buffer and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+    return len(_log_buffer)
+
 def _bridge_processor(logger, method_name, event_dict):
     """structlog processor: enqueue a normalized Live Logs row, then return the
     event_dict unchanged so existing console (stderr) output is untouched."""
@@ -180,6 +194,67 @@ def init_observability() -> None:
     for noisy in ("httpx", "httpcore", "hpack", "google.auth.transport", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
+
+
+# ── SDK (stdlib logging) -> Live Logs bridge ─────────────────────────────────
+# The LiveKit SDK logs through stdlib `logging`, not structlog, and a LiveKit
+# job runs in a SUBPROCESS whose stdout never reached output/logs/worker.log
+# (that file holds only the parent's capacity lines). So SDK-side errors --
+# including "AgentSession is closing due to unrecoverable error", which is the
+# ONLY record of why a session self-closes -- were invisible in the log file
+# AND in Live Logs. That blind spot is why the 2026-10-17 PRE_DIAL aborts
+# could not be explained from the evidence. Forwarding WARNING+ records into
+# the same buffer makes the SDK's own account of a failure visible.
+class _SdkLogBridge(logging.Handler):
+    """Forward WARNING+ stdlib records into the Live Logs buffer."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            meta: dict = {
+                "sdk_logger": record.name,
+                "func": record.funcName,
+                "line": record.lineno,
+                "pid": record.process,
+            }
+            # Structured extras the SDK attaches (room, close reason, ...).
+            for k, v in getattr(record, "__dict__", {}).items():
+                if k in _SDK_RECORD_SKIP or k.startswith("_"):
+                    continue
+                meta[k] = _mask(k, v)
+            if record.exc_info:
+                import traceback as _tb
+                meta["exception"] = "".join(
+                    _tb.format_exception(*record.exc_info))[-1500:]
+            _log_buffer.append({
+                "id": str(uuid.uuid4()),
+                "source": "LIVEKIT",
+                "level": "CRITICAL" if record.levelno >= logging.CRITICAL else (
+                    "ERROR" if record.levelno >= logging.ERROR else "WARNING"),
+                "message": str(record.getMessage())[:500],
+                "detail": json.dumps(meta, default=str)[:2000],
+                "timestamp": datetime.now(UTC).replace(tzinfo=None),
+            })
+        except Exception:
+            pass  # logging must never raise
+
+
+_SDK_RECORD_SKIP = frozenset((
+    "args", "msg", "message", "exc_info", "exc_text", "stack_info", "created",
+    "msecs", "relativeCreated", "levelname", "levelno", "pathname", "filename",
+    "module", "funcName", "lineno", "name", "process", "processName",
+    "thread", "threadName", "taskName",
+))
+
+
+def attach_sdk_log_bridge(level: int = logging.WARNING) -> None:
+    """Send the LiveKit SDK's own WARNING+ logs to Live Logs. Idempotent."""
+    for name in ("livekit", "livekit.agents"):
+        lg = logging.getLogger(name)
+        if any(isinstance(h, _SdkLogBridge) for h in lg.handlers):
+            continue
+        h = _SdkLogBridge()
+        h.setLevel(level)
+        lg.addHandler(h)
 
 def get_logger(name: str) -> structlog.BoundLogger:
     # Bind the module name so the bridge can derive a stable source label. (The

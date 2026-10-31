@@ -35,6 +35,7 @@ _NO = {"no", "nope", "இல்ல", "இல்லை", "illa", "illai"}
 ENTITY_KEYS = (
     "name", "date", "time", "service", "product", "order_id", "budget",
     "company", "payment_date", "choice", "confirmed", "team_size",
+    "email", "phone", "age", "requirement",
 )
 
 
@@ -152,7 +153,7 @@ class CallState:
         if not t:
             return False
         slug = self.pending_slug
-        if slug in ("date", "time", "name", "service", "choice", "order_id", "company", "product"):
+        if slug in ("date", "time", "name", "service", "choice", "order_id", "company", "product", "email", "phone", "age", "requirement"):
             ok = self.update_entity(slug, t)
             if ok:
                 self.clear_pending()

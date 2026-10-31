@@ -24,7 +24,7 @@
 // `methodFactory` (the same hook livekit uses) is the only way to change where
 // a line goes without patching `console` globally.
 
-import { getLogger, LoggerNames, type Room, RoomEvent } from "livekit-client";
+import { ConnectionState, getLogger, LoggerNames, type Room, RoomEvent } from "livekit-client";
 
 /** Substrings of the WebRTC/livekit teardown messages we treat as expected. */
 const BENIGN_TEARDOWN = [
@@ -40,13 +40,39 @@ const BENIGN_TEARDOWN = [
 let teardownDepth = 0;
 const disconnecting = new Set<Room>();
 
+/** Rooms we are observing, so a live call can be told apart from teardown. */
+const observed = new Set<Room>();
+
 /** Exported for tests: is a teardown window currently open? */
 export function isInTeardownWindow(): boolean {
   return inTeardown();
 }
 
+/** Is any room we know about actually connected right now? */
+function anyRoomConnected(): boolean {
+  for (const r of observed) {
+    try {
+      if (r.state === ConnectionState.Connected) return true;
+    } catch {
+      /* a disposed room cannot be connected */
+    }
+  }
+  return false;
+}
+
 function inTeardown(): boolean {
-  return teardownDepth > 0 || disconnecting.size > 0;
+  if (teardownDepth > 0 || disconnecting.size > 0) return true;
+  // Second, independent signal. The bookkeeping above lives at module scope,
+  // and `npm run dev` HMR replaces this module — resetting it — while a Room
+  // from the previous instance is still unwinding. Its DataChannel aborts then
+  // arrive with no window open, which is how these errors reached the Next.js
+  // overlay even though a suppressor was already in place.
+  //
+  // A DataChannel abort while NO room we observe is connected is teardown by
+  // definition, so it is still safe to downgrade. The honesty gate is intact:
+  // while a connected room exists, these messages surface exactly as livekit
+  // emitted them, so a genuine mid-call data channel failure is never hidden.
+  return !anyRoomConnected();
 }
 
 /** Exported for tests: is this one of the known benign teardown messages? */
@@ -133,12 +159,16 @@ export function attachRoomLifecycleLogging(room: Room, ctx: string): () => void 
   room.on(RoomEvent.Reconnecting, onReconnecting);
   room.on(RoomEvent.Reconnected, onReconnected);
   room.on(RoomEvent.Disconnected, onDisconnected);
+  // Observing the room is what lets inTeardown() distinguish a live call from
+  // a connection that has already gone away.
+  observed.add(room);
 
   return () => {
     room.off(RoomEvent.Connected, onConnected);
     room.off(RoomEvent.Reconnecting, onReconnecting);
     room.off(RoomEvent.Reconnected, onReconnected);
     room.off(RoomEvent.Disconnected, onDisconnected);
+    observed.delete(room);
   };
 }
 

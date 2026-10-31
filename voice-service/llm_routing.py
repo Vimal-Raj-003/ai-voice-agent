@@ -86,7 +86,7 @@ def _specs() -> dict[str, ProviderSpec]:
             # A DIFFERENT Groq model is a separate free-tier bucket, so it
             # survives a 429 on the primary without leaving Groq.
             fallback_models=(os.getenv("GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b"),
-                             "llama-3.3-70b-versatile", "openai/gpt-oss-20b"),
+                             "openai/gpt-oss-120b", "openai/gpt-oss-20b"),
         ),
         "openai": ProviderSpec(
             key="openai", env_key="OPENAI_API_KEY",

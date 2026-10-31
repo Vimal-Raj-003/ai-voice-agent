@@ -370,3 +370,36 @@ def test_gemini_route_drops_a_leftover_groq_model(monkeypatch):
         assert route.primary_provider == "gemini"
         assert route.model_honored is False
         assert llm_routing.vet_model("gemini", route.primary_model)[0] is True
+
+
+def test_a_valid_operator_fallback_model_is_honored_verbatim(monkeypatch):
+    """The operator's chosen fallback must win over the provider spec default.
+
+    Regression guard: the spec default fallback is openai/gpt-oss-20b, which was
+    serving every fallback turn (54 of them in error_logs) and answers a Tamil
+    or Tanglish turn in English, breaking the per-call language lock. An
+    operator who picks a language-capable fallback must actually get it.
+    """
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    monkeypatch.delenv("GROQ_FALLBACK_MODEL", raising=False)
+    spec_default = llm_routing._specs()["groq"].fallback_models[0]
+
+    route = llm_routing.resolve_route(
+        {"llm_provider": "groq", "model": "openai/gpt-oss-120b",
+         "fallback_model": "qwen/qwen3.8-27b"})
+
+    assert route.fallback_provider == "groq", "same provider, same key"
+    assert route.fallback_model == "qwen/qwen3.8-27b", (
+        f"operator choice must be honored verbatim, not replaced by {spec_default!r}")
+    assert route.fallback_model != spec_default
+    assert route.fallback_model != route.primary_model, "must be a separate token bucket"
+
+
+def test_an_operator_fallback_equal_to_the_primary_is_not_used(monkeypatch):
+    """A fallback identical to the primary shares one token bucket, so it cannot
+    rescue a rate-limited turn; resolution must pick a different model."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    route = llm_routing.resolve_route(
+        {"llm_provider": "groq", "model": "openai/gpt-oss-120b",
+         "fallback_model": "openai/gpt-oss-120b"})
+    assert route.fallback_model != route.primary_model
