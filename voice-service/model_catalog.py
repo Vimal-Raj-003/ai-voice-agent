@@ -63,7 +63,7 @@ _FALLBACK: dict[str, tuple[str, ...]] = {
     "groq": ("qwen/qwen3.8-27b", "openai/gpt-oss-20b", "openai/gpt-oss-120b",
              "llama-3.3-70b-versatile"),
     "openai": ("gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"),
-    "gemini": ("gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-pro"),
+    "gemini": ("gemini-3.8-flash", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-pro"),
     "anthropic": ("claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"),
     "openrouter": ("openai/gpt-4o-mini", "meta-llama/llama-3.3-70b-instruct"),
     "custom": (),

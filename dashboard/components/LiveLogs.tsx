@@ -1,5 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import CallLiveLogsDrawer, { type CallItem } from "@/components/CallLiveLogsDrawer";
+import { PhoneCall, ExternalLink } from "lucide-react";
 import {
   Pause, Play, Search, Trash2, Copy, Check, ArrowDown, Wifi, WifiOff, ChevronRight,
 } from "lucide-react";
@@ -148,6 +150,8 @@ export default function LiveLogs() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterKey>("ALL");
   const [callFilter, setCallFilter] = useState("");
+  const [callDrawerOpen, setCallDrawerOpen] = useState(false);
+  const [selectedCall, setSelectedCall] = useState<CallItem | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [newCount, setNewCount] = useState(0);
   const [conn, setConn] = useState<ConnState>("connecting");
@@ -387,9 +391,115 @@ export default function LiveLogs() {
 
   const jumpToLatest = () => { setAutoScroll(true); setNewCount(0); scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight); };
 
+
+function formatDetailedLog(l: Log): string {
+  const tsIso = new Date(l.ts).toISOString();
+  const m = l.meta || {};
+  const isErr = l.status === "ERROR" || l.status === "CRITICAL";
+
+  const lines: string[] = [];
+  lines.push(`--------------------------------------------------------------------------------`);
+  lines.push(`[${tsIso}] [${l.status.padEnd(8)}] [${l.category.padEnd(8)}] [${(l.source || "—").padEnd(8)}] ${l.message}`);
+
+  const corr = mf(m, "call_id", "room", "room_id");
+  const assistant = mf(m, "assistant", "assistant_id");
+  const provider = mf(m, "provider", "tts_provider", "stt_provider", "llm_provider");
+  const model = mf(m, "model", "tts_model", "stt_model", "llm_model");
+  const speaker = mf(m, "speaker", "voice_id");
+  const latency = mf(m, "latency_ms", "tts_latency_ms", "llm_latency_ms", "first_audio_ms", "total_ms");
+  const textSnippet = mf(m, "exact_text_sent_to_tts", "transcript", "text", "prompt", "reply");
+
+  const contextParts: string[] = [];
+  if (corr) contextParts.push(`Call: ${corr}`);
+  if (assistant) contextParts.push(`Assistant: ${assistant}`);
+  if (provider || model) contextParts.push(`Engine: ${[provider, model].filter(Boolean).join("/")}`);
+  if (speaker) contextParts.push(`Speaker: ${speaker}`);
+  if (latency) contextParts.push(`Latency: ${latency}ms`);
+  if (contextParts.length > 0) {
+    lines.push(`  Context: ${contextParts.join(" | ")}`);
+  }
+
+  if (textSnippet) {
+    lines.push(`  Content: "${textSnippet}"`);
+  }
+
+  const file = mf(m, "file", "filename", "sdk_logger");
+  const func = mf(m, "func", "function");
+  const line = mf(m, "line", "lineno");
+  const errorCode = mf(m, "error_code", "status_code", "http_status");
+  const errorMsg = mf(m, "error", "error_message", "reason", "detail");
+  const stack = mf(m, "stack", "exception", "traceback");
+
+  if (file || func || line || errorCode) {
+    const loc: string[] = [];
+    if (file) loc.push(`file: ${file}`);
+    if (func) loc.push(`func: ${func}`);
+    if (line) loc.push(`line: ${line}`);
+    if (errorCode) loc.push(`code: ${errorCode}`);
+    lines.push(`  Location: ${loc.join(" | ")}`);
+  }
+
+  if (errorMsg && errorMsg !== l.message) {
+    lines.push(`  Error: ${errorMsg}`);
+  }
+
+  if (stack) {
+    lines.push(`  Traceback / Stack:`);
+    lines.push(stack.split("\n").map((s) => "    " + s).join("\n"));
+  }
+
+  if (m && Object.keys(m).length > 0) {
+    lines.push(`  Full Payload:`);
+    lines.push(JSON.stringify(m, null, 2).split("\n").map((s) => "    " + s).join("\n"));
+  }
+
+  return lines.join("\n");
+}
+
+  const onSelectCall = useCallback((call: CallItem) => {
+    setSelectedCall(call);
+    setCallDrawerOpen(false);
+    const roomKey = call.room || call.id;
+    setCallFilter(roomKey);
+
+    // Fetch and ingest historical events for this specific call so older events appear
+    if (call.room) {
+      fetch(`/api/voice/events?room=${encodeURIComponent(call.room)}`, { cache: "no-store" })
+        .then((r) => r.json())
+        .then((j) => {
+          if (Array.isArray(j?.events)) {
+            for (const ev of j.events) {
+              ingest({ ...ev, synthetic: true });
+            }
+          }
+        })
+        .catch(() => {});
+    }
+  }, [ingest]);
+
   const onCopy = async () => {
-    const text = filtered.map((l) => `[${new Date(l.ts).toISOString()}] ${l.status.padEnd(8)} ${l.category.padEnd(9)} ${l.message}${l.detail ? " | " + l.detail : ""}`).join("\n");
-    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ }
+    const nowIso = new Date().toISOString();
+    const filterInfo = `Filter: ${filter}${callFilter ? ` | Call: ${callFilter}` : ""}${search ? ` | Search: "${search}"` : ""}`;
+    const header = [
+      `================================================================================`,
+      `JILLJILL VOICE LIVE LOGS DETAILED EXPORT`,
+      `Exported At: ${nowIso}`,
+      `Total Events: ${filtered.length}`,
+      filterInfo,
+      `================================================================================`,
+      ``,
+    ].join("\n");
+
+    const body = filtered.map(formatDetailedLog).join("\n\n");
+    const fullText = header + "\n" + body;
+
+    try {
+      await navigator.clipboard.writeText(fullText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* ignore */
+    }
   };
 
   const startedLabel = startedAt == null ? "Starting live session…" : TIME_FMT.format(startedAt);
@@ -397,7 +507,54 @@ export default function LiveLogs() {
   const connTone: "err" | "ok" | undefined = conn === "open" ? "ok" : (conn === "connecting" || conn === "reconnecting") ? undefined : "err";
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
+      {/* PAGE HEADER WITH CALL LIVE LOGS BUTTON */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">Live logs</h1>
+          <p className="text-sm text-gray-400 mt-1">
+            Real-time pipeline traces and per-call live diagnostics
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCallDrawerOpen(true)}
+          className="inline-flex items-center gap-2 rounded-xl border border-cyan-500/40 bg-cyan-500/10 hover:bg-cyan-500/20 px-3.5 py-2 text-xs font-semibold text-cyan-200 transition shadow-sm hover:shadow-[0_0_15px_rgba(34,211,238,0.25)] focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+        >
+          <PhoneCall size={14} className="text-cyan-400" />
+          <span>Call live logs</span>
+        </button>
+      </div>
+
+      {/* ACTIVE CALL FILTER BANNER */}
+      {selectedCall && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3.5 py-2 text-xs text-cyan-200">
+          <div className="flex items-center gap-2">
+            <PhoneCall size={14} className="text-cyan-400 shrink-0" />
+            <span>
+              Showing live logs for call: <strong>{selectedCall.phone || selectedCall.room}</strong> ({selectedCall.assistant ?? "Voice Agent"}) · <span className="font-mono">{selectedCall.status}</span>
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <a
+              href={`/calls/${selectedCall.id}/logs`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] text-cyan-300 underline hover:text-white"
+            >
+              Full Call Details &amp; Recording <ExternalLink size={10} />
+            </a>
+            <button
+              type="button"
+              onClick={() => { setSelectedCall(null); setCallFilter(""); }}
+              className="rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 px-2 py-0.5 text-[11px] text-gray-200 transition"
+            >
+              Clear call filter
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* TOP SUMMARY */}
       <div className="grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-white/[0.02] p-3 text-xs sm:grid-cols-6">
         <Stat label="Connection" value={CONN_LABEL[conn]} mono title={connErr || undefined} tone={connTone} />
@@ -472,8 +629,17 @@ export default function LiveLogs() {
           <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" />
           <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search message / error / event…" className="w-full rounded-lg border border-white/10 bg-black/40 pl-7 pr-2 py-1 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500/40" />
         </div>
-        <button type="button" onClick={onCopy} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-gray-300 hover:bg-white/10" title="Copy filtered logs">
-          {copied ? <Check size={12} /> : <Copy size={12} />}{copied ? "Copied" : "Copy"}
+        <button
+          type="button"
+          onClick={() => setCallDrawerOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-xs font-medium text-cyan-200 hover:bg-cyan-500/20 hover:border-cyan-500/50 transition"
+          title="Open Call live logs selector"
+        >
+          <PhoneCall size={12} className="text-cyan-400" />
+          <span>Call live logs</span>
+        </button>
+        <button type="button" onClick={onCopy} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-gray-300 hover:bg-white/10" title="Copy all detailed logs with line numbers, stack traces and payloads">
+          {copied ? <Check size={12} /> : <Copy size={12} />}{copied ? "Copied detailed logs" : "Copy"}
         </button>
         <button type="button" onClick={onClear} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-gray-400 hover:bg-white/10 hover:text-amber-300" title="Start a new live session (does NOT delete history)">
           <Trash2 size={12} />Clear live view
@@ -543,6 +709,14 @@ export default function LiveLogs() {
           </button>
         )}
       </div>
+
+      {/* CALL LIVE LOGS DRAWER */}
+      <CallLiveLogsDrawer
+        open={callDrawerOpen}
+        onClose={() => setCallDrawerOpen(false)}
+        onSelectCall={onSelectCall}
+        selectedRoom={selectedCall?.room ?? callFilter}
+      />
     </div>
   );
 }

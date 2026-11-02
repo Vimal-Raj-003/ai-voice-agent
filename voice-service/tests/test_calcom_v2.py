@@ -49,6 +49,7 @@ def calcom_env(monkeypatch):
     monkeypatch.setenv("CALCOM_API_KEY", "cal_test_key")
     monkeypatch.setenv("CALCOM_EVENT_TYPE_ID", EVENT_ID)
     monkeypatch.setenv("CALCOM_TIMEZONE", "Asia/Kolkata")
+    monkeypatch.setenv("CALCOM_FALLBACK_DOMAIN", "voiceagent.placeholder")
 
 
 def _slots_payload(*ist_times: str) -> dict:

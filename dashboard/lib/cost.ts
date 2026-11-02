@@ -224,13 +224,21 @@ export function aggregateCalls(
   calls: Array<{ id: string; createdAt: Date } & CallCostInput>,
   rateMap: Map<string, number>,
   daysBack = 14,
+  mode: "days" | "hours" = "days",
 ): CostAggregate {
   const today = new Date();
   const dayKeys: string[] = [];
-  for (let i = daysBack - 1; i >= 0; i--) {
-    const d = new Date(today);
-    d.setUTCDate(d.getUTCDate() - i);
-    dayKeys.push(d.toISOString().slice(0, 10));
+  if (mode === "hours") {
+    for (let i = 23; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 60 * 60 * 1000);
+      dayKeys.push(`${d.toISOString().slice(0, 13)}:00`.replace("T", " "));
+    }
+  } else {
+    for (let i = daysBack - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setUTCDate(d.getUTCDate() - i);
+      dayKeys.push(d.toISOString().slice(0, 10));
+    }
   }
   const providerTotals = new Map<string, number>();
   const dayProviderTotals = new Map<string, Map<string, number>>();
@@ -243,7 +251,10 @@ export function aggregateCalls(
     const { totalUsd: callTotal, lines } = computeCallCost(c, rateMap);
     totalUsd += callTotal;
     perCall.push({ id: c.id, costUsd: callTotal, createdAt: c.createdAt });
-    const dayKey = new Date(c.createdAt).toISOString().slice(0, 10);
+    const callDate = new Date(c.createdAt);
+    const dayKey = mode === "hours"
+      ? `${callDate.toISOString().slice(0, 13)}:00`.replace("T", " ")
+      : callDate.toISOString().slice(0, 10);
     const dayMap = dayProviderTotals.get(dayKey);
     for (const line of lines) {
       providerTotals.set(

@@ -112,6 +112,19 @@ def test_loanwords_inside_tamil_do_not_switch_to_english():
     assert st.active == "ta"
 
 
+def test_single_telugu_word_does_not_flip_established_tamil():
+    st = lang.LanguageState()
+    st.observe("ta", "வணக்கம், அப்பாயிண்ட்மெண்ட் வேணும்")
+    assert st.active == "ta"
+    assert st.established is True
+    # Deepgram acoustic hallucination emitting single Telugu word "చూడండి"
+    assert st.observe("te", "Okay. చూడండి.") is False
+    assert st.active == "ta"
+    # Genuine multi-word Telugu utterance flips
+    assert st.observe("te", "నాకు అపాయింట్‌మెంట్ కావాలి") is True
+    assert st.active == "te"
+
+
 def test_tamil_script_forces_tamil():
     st = lang.LanguageState()
     assert st.observe("en", "தமிழ்ல பேசுங்க") is True
@@ -164,6 +177,36 @@ def test_llm_language_directive_tamil_mentions_loanwords():
 
 def test_llm_language_directive_unknown_none():
     assert lang.llm_language_directive("fr") is None
+
+
+def test_detect_explicit_language_switch():
+    assert lang.detect_explicit_language_switch("இப்போ தெலுங்குல சொல்லுங்க அப்படியே") == "te"
+    assert lang.detect_explicit_language_switch("আমি Telugu lab বলছি।") == "te"
+    assert lang.detect_explicit_language_switch("Then talk with me in Telugu.") == "te"
+    assert lang.detect_explicit_language_switch("I want to talk in Telugu.") == "te"
+    assert lang.detect_explicit_language_switch("Now switch back to e-Tamil okay.") == "ta"
+    assert lang.detect_explicit_language_switch("Tamil la pesunga") == "ta"
+    assert lang.detect_explicit_language_switch("English la explain pannunga") == "en"
+    assert lang.detect_explicit_language_switch("Hindi-la sollunga") == "hi"
+    assert lang.detect_explicit_language_switch("Malayalam-la parayamo") == "ml"
+    assert lang.detect_explicit_language_switch("Do you know Tamil?") is None
+    assert lang.detect_explicit_language_switch("Do you know Telugu?") is None
+
+
+def test_observe_with_explicit_switch():
+    st = lang.LanguageState(initial="en")
+    st.observe("en", "hello, how are you")
+    assert st.active == "en"
+    # User asks in English to switch to Telugu
+    text_te = "Then talk with me in Telugu."
+    assert st.observe("en", text_te, explicit=lang.detect_explicit_language_switch(text_te)) is True
+    assert st.active == "te"
+    assert st.established is True
+    # User asks in English to switch to Tamil
+    text_ta = "Now switch back to e-Tamil okay."
+    assert st.observe("en", text_ta, explicit=lang.detect_explicit_language_switch(text_ta)) is True
+    assert st.active == "ta"
+    assert st.established is True
 
 
 # ── End-to-end support classification used in the report ────────────────────

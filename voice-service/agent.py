@@ -118,24 +118,10 @@ _warm_linecache()
 # anything outside this set is treated as uncertain and ignored for routing.
 _ALLOWED_LANGS = {"en", "ta", "hi", "te"}
 
-# Explicit "switch language now" instructions from the caller (Phase 6). These
-# force the language immediately, overriding STT detection — e.g. "English la
-# sollunga" / "Tamil la explain pannunga" / "in English". A bare question that
-# merely mentions a language ("Do you know Tamil?", "Tamil theriyuma?") is NOT a
-# switch instruction and must not match.
-_RE_SWITCH_EN = re.compile(
-    r"\benglish\s+la\b|\bin\s+english\b|\benglish\b\s+(sollung|pannung|speak|say)"
-    r"|\bspeak\s+english\b|\b(again|back\s+to|switch\s+to)\s+english\b",
-    re.I,
-)
-_RE_SWITCH_TA = re.compile(
-    r"\btamil[\s-]*la+\b|\bin\s+tamil\b|\bspeak\s+tamil\b|\btamil\s+please\b"
-    r"|\btamil\s+(pesu\w*|pannu\w*|sollu\w*|mathiri|la\w*)"
-    r"|(\btamil\b|தமிழ்)\s+(sollung|pannung|pesung|explain)|தமிழ்\s*ல|\btanglish\b"
-    r"|\b(again|back\s+to|switch\s+to)\s+tamil\b|தமிழ்\s*(ல|லேயே)?\s*(திரும்ப|மறுபடி)"
-    r"|(திரும்ப|மறுபடி)\s*தமிழ்",
-    re.I,
-)
+# Explicit "switch language now" instructions from the caller (Phase 6).
+# Full multilingual switch logic lives in lang.detect_explicit_language_switch.
+_RE_SWITCH_EN = lang._RE_SWITCH_EN
+_RE_SWITCH_TA = lang._RE_SWITCH_TA
 
 # Simple caller-frustration cues (Tamil + Tanglish + English). Matching one only
 # EMITS a diagnostic (caller_frustration_detected); the actual "acknowledge
@@ -165,9 +151,9 @@ _RE_PRESENCE = re.compile(
 # handset when they toggle call recording. Never spoken by the human caller:
 # must not lock language to English, arm dead-air, or trigger an LLM reply.
 _RE_CARRIER_ANNOUNCEMENT = re.compile(
-    r"\bthis\s+call\s+is\s+(now\s+)?being\s+recorded\b"
+    r"\b(this\s+call|call|was|is|paul|your\s+call)\s+(is|was)?\s*(now|no\s+longer)?\s*being\s+recorded\b"
     r"|\bcall\s+recording\s+has\s+(now\s+)?(started|ended|stopped)\b"
-    r"|\byour\s+call\s+is\s+being\s+recorded\b"
+    r"|\b(this\s+)?call\s+(is|was)\s+recorded\b"
     r"|இந்த\s+அழைப்பு\s+(இப்போது\s+)?பதிவு\s+செய்யப்படு",
     re.I,
 )
@@ -383,8 +369,21 @@ def _build_fallback_llm(route: "llm_routing.LlmRoute") -> tuple[Any, str | None]
 
 
 def _build_tertiary_llm(route: "llm_routing.LlmRoute") -> tuple[Any, str | None]:
-    """Optional 3rd-tier fallback model (e.g. gpt-oss-120b on Groq) to survive multi-turn rate limits."""
+    """Optional 3rd-tier fallback model (OpenRouter Gemini / Groq pool) to survive multi-turn rate limits."""
     if route.primary_provider == "groq":
+        if config.ALLOW_CROSS_PROVIDER_FALLBACK:
+            ok, _ = llm_routing.provider_available("openrouter")
+            if ok:
+                or_model = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+                obj = llm_routing.build_llm("openrouter", or_model)
+                if obj is not None:
+                    return obj, f"openrouter/{or_model}"
+            ok_g, _ = llm_routing.provider_available("gemini")
+            if ok_g:
+                g_model = config.GEMINI_LLM_MODEL
+                obj = llm_routing.build_llm("gemini", g_model)
+                if obj is not None:
+                    return obj, f"gemini/{g_model}"
         used_models = {route.primary_model, route.fallback_model}
         candidates = ["openai/gpt-oss-120b", "allam-2-7b", "openai/gpt-oss-20b"]
         for m in candidates:
@@ -622,6 +621,7 @@ def _build_sarvam_tts(profile: dict | None):
                 speaker=cand,
                 pace=config.SARVAM_PACE,
                 speech_sample_rate=config.SARVAM_SAMPLE_RATE,
+                output_audio_codec="linear16",
             )
             # Log the speaker ACTUALLY in use, so a stale value on the assistant
             # can never be mistaken for what the caller hears.
@@ -677,19 +677,23 @@ def _build_fallback_tts(profile: dict | None, primary_provider: str):
     """Build the HEALTHY fallback TTS for the never-silent path — LANGUAGE-AWARE.
 
     Deepgram Aura (`aura-2-andromeda-en`) is ENGLISH-ONLY: feeding it Tamil text
-    produces gibberish. So for a non-English deployment (STT_LANGUAGE ∈ ta/hi/te…)
-    Aura is NOT wired as the fallback — better to have no cloud fallback (and a
-    local presence clip) than to synthesize broken Tamil with an English voice.
+    produces gibberish. So for a non-English deployment (STT_LANGUAGE ∈ ta/hi/te… or 'multi')
+    or when primary provider is Sarvam (Indic), Aura is NOT wired as the fallback —
+    better to have no cloud fallback (and a local presence clip) than to synthesize
+    broken Tamil with an English voice.
     Returns (tts, provider_label) or (None, '')."""
     want = (config.TTS_FALLBACK_PROVIDER or "none").lower()
-    deployment_lang = lang.normalize_lang(config.STT_LANGUAGE) or "en"
+    raw_stt_lang = (config.STT_LANGUAGE or "").strip().lower()
+    deployment_lang = lang.normalize_lang(raw_stt_lang)
     if want == primary_provider or want == "none":
         return None, ""
     if want == "deepgram":
-        # English Aura is unsafe for a non-English deployment.
-        if deployment_lang != "en":
-            logger.info("tts_language_route", language=deployment_lang, primary=primary_provider,
-                        fallback="none", reason="english_aura_unsafe_for_non_english", source="TTS")
+        # English Aura is unsafe for a non-English deployment or multilingual deployments (e.g. multi, ta, te...),
+        # and especially unsafe when Sarvam is the primary provider (Indic speech).
+        if primary_provider == "sarvam" or raw_stt_lang in ("multi", "") or (deployment_lang and deployment_lang != "en"):
+            logger.info("tts_language_route", language=raw_stt_lang or deployment_lang or "multi",
+                        primary=primary_provider, fallback="none",
+                        reason="english_aura_unsafe_for_non_english", source="TTS")
             return None, ""
         return _build_deepgram_tts()
     if want == "sarvam" and config.SARVAM_TTS_FALLBACK:
@@ -718,9 +722,9 @@ def _shared_vad() -> Any:
         try:
             _VAD_SINGLETON = silero.VAD.load(
                 sample_rate=8000,
-                min_speech_duration=0.25,
+                min_speech_duration=0.28,
                 min_silence_duration=0.42,
-                activation_threshold=0.65,
+                activation_threshold=0.70,
             )
             logger.info("vad_loaded", provider="silero",
                         purpose="stream_adapter_and_barge_in", source="STT")
@@ -1245,16 +1249,13 @@ def _build_session(tools: list, system_prompt: str, profile: dict | None = None,
         # user turn discards the speculative generation (latest turn wins).
         preemptive_generation=True,
         min_endpointing_delay=config.MIN_ENDPOINTING_DELAY,
-        # Barge-in tuning (balanced). SDK defaults (min_duration=0.5s, min_words=0)
-        # let any blip interrupt; we previously over-corrected to 0.8s/2 words,
-        # which stopped genuine 1-word barge-ins ("Wait", "No", "Stop") from ever
-        # interrupting. 0.5s + 1 real recognised word lets a short genuine
-        # interruption cut in within ~0.5s while a sub-0.5s echo/VAD blip (or a
-        # zero-word noise burst) still cannot. On a real interruption LiveKit
-        # cancels the current TTS and the user's full utterance becomes the next
-        # turn, so the interrupting sentence is not lost.
-        min_interruption_duration=0.5,
-        min_interruption_words=1,
+        # Barge-in tuning: 0.70s and 2 recognised words ensures callers can
+        # interrupt when speaking a full thought ("Wait a minute", "இல்ல வேணாம்"),
+        # while preventing single words ("Hello", "ஹலோ", "ஆம்") or background/line
+        # transients from killing an in-flight reply before the caller hears it.
+        min_interruption_duration=0.70,
+        min_interruption_words=2,
+        resume_false_interruption=True,
     )
     # Expose the pipeline TTS so the entrypoint can switch its language per turn
     # (multilingual routing). Realtime mode handles language internally.
@@ -1299,6 +1300,71 @@ def _count_tool_tokens(tool_list: list) -> int:
             # Raw/custom tools or anything that won't serialise — skip, don't fail.
             continue
     return total
+
+
+_MONTHS_MAP = ("", "January", "February", "March", "April", "May", "June",
+               "July", "August", "September", "October", "November", "December")
+_RE_ISO_DATE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+_RE_24H_TIME = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b(?!\s*(?:AM|PM|am|pm))")
+
+
+def sanitize_spoken_text(text: str) -> str:
+    """Pre-TTS text cleanup: turns raw ISO dates (2026-11-01) and 24h times (17:00)
+    into natural spoken English/Tanglish phrases ('November 1', '5:00 PM') so TTS
+    never pronounces digits as Tamil words ('இரண்டு பூஜ்ஜியம் இரண்டு ஆறு...')."""
+    if not text:
+        return text
+
+    def _rep_date(m: re.Match) -> str:
+        try:
+            mo = int(m.group(2))
+            d = int(m.group(3))
+            m_name = _MONTHS_MAP[mo] if 1 <= mo <= 12 else ""
+            return f"{m_name} {d}".strip()
+        except Exception:
+            return m.group(0)
+
+    text = _RE_ISO_DATE.sub(_rep_date, text)
+
+    def _rep_time(m: re.Match) -> str:
+        try:
+            h = int(m.group(1))
+            mn = int(m.group(2))
+            suffix = "PM" if h >= 12 else "AM"
+            h12 = h % 12 or 12
+            return f"{h12}:{mn:02d} {suffix}"
+        except Exception:
+            return m.group(0)
+
+    text = _RE_24H_TIME.sub(_rep_time, text)
+
+    if "பூஜ்ஜியம்" in text:
+        text = text.replace("பூஜ்ஜியம்", "0")
+
+    # Strip visual parentheses / brackets that are not meant for spoken audio
+    text = text.replace("(", "").replace(")", "").replace("[", "").replace("]", "")
+
+    # If text contains Tamil characters, prevent sentence tokenizer from isolating
+    # pure-English segments (which causes Sarvam ta-IN 400 'Text must contain at least
+    # one character from the allowed languages').
+    if re.search(r"[\u0B80-\u0BFF]", text):
+        parts = re.split(r"([.!?]+(?:\s+|$))", text)
+        merged = []
+        i = 0
+        while i < len(parts):
+            merged.append(parts[i])
+            if i + 1 < len(parts):
+                punct = parts[i + 1]
+                if i + 2 < len(parts):
+                    next_part = parts[i + 2]
+                    # If next part has English letters but NO Tamil characters, keep it merged
+                    if re.search(r"[A-Za-z]", next_part) and not re.search(r"[\u0B80-\u0BFF]", next_part):
+                        punct = ", "
+                merged.append(punct)
+            i += 2
+        text = "".join(merged)
+
+    return text
 
 
 class BoundedAgent(Agent):
@@ -1438,9 +1504,11 @@ class BoundedAgent(Agent):
                 # conversational or appointment-booking turns.
                 return (
                     "[BUSINESS INFORMATION] No specific document excerpt matched this turn. "
-                    "If the caller asks general knowledge or asks if we provide services outside "
-                    "our business (e.g. dental, medical, loans, etc.), answer clearly using what you "
-                    "know: state what VIMS Enterprise provides (Software, AI Automation, Web, Content) "
+                    "If the caller shares personal feelings, sadness, illness, pain or depression, "
+                    "respond with warm human empathy ('அச்சச்சோ, அப்படியா... கேட்கவே ரொம்ப கஷ்டமா இருக்கு...'). "
+                    "Do NOT recite a cold corporate disclaimer about services when someone shares personal distress. "
+                    "If they ask for other commercial services outside our business (e.g. dental, loans, etc.), "
+                    "answer clearly: state what VIMS Enterprise provides (Software, AI Automation, Web, Content) "
                     "and that we do not provide those other services. NEVER transfer to human unless "
                     "the caller explicitly asks for a human. If they ask for an unknown specific company "
                     "fact/price not in your prompt, say: 'மன்னிக்கவும், அதைப் பற்றிய உறுதியான தகவல் என்னிடம் இல்லை.'"
@@ -1470,35 +1538,41 @@ class BoundedAgent(Agent):
         # the directive: with preemptive_generation=True, AgentSession's internal
         # listener can invoke llm_node BEFORE the entrypoint's _lang_route handler
         # runs, which previously left _lang_state un-established on turn 1!
-        if st is not None:
+        latest_user = ""
+        user_turn_count = 0
+        assistant_turn_count = 0
+        if chat_ctx is not None:
             try:
-                latest_user = ""
-                for item in reversed(list(getattr(chat_ctx, "items", []) or [])):
-                    if str(getattr(item, "role", "")).lower() == "user":
+                for item in list(getattr(chat_ctx, "items", []) or []):
+                    r = str(getattr(item, "role", "")).lower()
+                    if r == "user":
+                        user_turn_count += 1
                         c = getattr(item, "content", "")
                         latest_user = " ".join(str(x) for x in c) if isinstance(c, list) else str(c)
-                        break
-                if latest_user.strip() and not _RE_CARRIER_ANNOUNCEMENT.search(latest_user):
-                    explicit = (
-                        "en" if _RE_SWITCH_EN.search(latest_user)
-                        else ("ta" if _RE_SWITCH_TA.search(latest_user) else None)
-                    )
-                    changed = st.observe(None, latest_user, explicit)
-                    if getattr(st, "established", False):
-                        if self._call_state is not None:
-                            self._call_state.set_language(st.active)
-                        if changed:
-                            _sess = getattr(self, "session", None)
-                            _ml_tts = getattr(_sess, "_jj_tts", None)
-                            _ml_prov = getattr(_sess, "_jj_tts_provider", "")
-                            if (
-                                _ml_prov in ("sarvam", "elevenlabs", "cartesia")
-                                and _ml_tts is not None
-                                and hasattr(_ml_tts, "update_options")
-                            ):
-                                _rt = lang.tts_route(st.active, _ml_prov)
-                                if _rt:
-                                    _ml_tts.update_options(**{_rt["kwarg"]: _rt["lang"]})
+                    elif r == "assistant":
+                        assistant_turn_count += 1
+            except Exception:
+                pass
+
+        if st is not None and latest_user.strip() and not _RE_CARRIER_ANNOUNCEMENT.search(latest_user):
+            try:
+                explicit = lang.detect_explicit_language_switch(latest_user)
+                changed = st.observe(None, latest_user, explicit)
+                if getattr(st, "established", False):
+                    if self._call_state is not None:
+                        self._call_state.set_language(st.active)
+                    if changed:
+                        _sess = getattr(self, "session", None)
+                        _ml_tts = getattr(_sess, "_jj_tts", None)
+                        _ml_prov = getattr(_sess, "_jj_tts_provider", "")
+                        if (
+                            _ml_prov in ("sarvam", "elevenlabs", "cartesia")
+                            and _ml_tts is not None
+                            and hasattr(_ml_tts, "update_options")
+                        ):
+                            _rt = lang.tts_route(st.active, _ml_prov)
+                            if _rt:
+                                _ml_tts.update_options(**{_rt["kwarg"]: _rt["lang"]})
             except Exception:
                 pass
         directive = lang.llm_language_directive(getattr(st, "active", "en")) if (st and getattr(st, "established", False)) else None
@@ -1511,7 +1585,53 @@ class BoundedAgent(Agent):
                 state_line = self._call_state.to_directive()
             except Exception:
                 state_line = None
-        if not directive and not state_line:
+
+        # Mid-call presence locking:
+        # If caller says "hello?" / "கேக்குதா?" / "are you there?" MID-CALL (call already started),
+        # prevent greeting restart and prompt the LLM to confirm presence and continue.
+        presence_line = None
+        if (assistant_turn_count >= 1 or user_turn_count > 1 or self._llm_turn > 1) and latest_user and _RE_PRESENCE.search(latest_user.strip()):
+            curr_lang = getattr(st, "active", "ta") if st else "ta"
+            if curr_lang == "ta":
+                presence_line = (
+                    "[MID-CALL PRESENCE CHECK DETECTED]\n"
+                    "The caller is checking line connectivity ('ஹலோ? கேக்குதா?'). The call is ALREADY IN PROGRESS.\n"
+                    "CRITICAL RULES FOR THIS TURN:\n"
+                    "1. DO NOT greet or re-introduce yourself. NEVER say 'வணக்கம்' or 'நான் ஜூலி... உங்களுக்கு எப்படி உதவலாம்?'.\n"
+                    "2. Acknowledge presence naturally: 'ஆமா, சொல்லுங்க, கேக்குது.'\n"
+                    "3. Directly continue the ongoing topic or ask for the pending item without restarting."
+                )
+            else:
+                presence_line = (
+                    "[MID-CALL PRESENCE CHECK DETECTED]\n"
+                    "The caller is checking line connectivity ('Hello? Are you there?'). The call is ALREADY IN PROGRESS.\n"
+                    "CRITICAL RULES FOR THIS TURN:\n"
+                    "1. DO NOT greet or re-introduce yourself. NEVER restart or say 'Hello, welcome...'.\n"
+                    "2. Acknowledge presence naturally: 'Yes, I\\'m right here on the line.'\n"
+                    "3. Directly continue the ongoing topic or ask for the pending item without restarting."
+                )
+
+        tanglish_line = None
+        if latest_user and re.search(r"\bதங்கிலி|\bதங்கிலீ|\btanglish", latest_user, re.I):
+            tanglish_line = (
+                "[CONVERSATIONAL TANGLISH INSTRUCTION]\n"
+                "The caller explicitly requested Tanglish (casual spoken Tamil mixed with English).\n"
+                "• Speak in natural conversational Tanglish: use spoken Tamil grammar with everyday English words (appointment, booking, time, PM, AM, confirm, slot, cancel, service).\n"
+                "• NEVER use textbook, archaic, or overly formal pure Tamil words (avoid 'பரிந்துரைக்க', 'உறுதியாகவில்லை', 'தொழில்நுட்ப பிழை', 'பூஜ்ஜியம்').\n"
+                "• Keep replies warm, clear, and under 2 short sentences."
+            )
+
+        spoken_rules = (
+            "[SPOKEN PHONE RULES]\n"
+            "• Speak EXACTLY ONE clear, concise thought or question per turn.\n"
+            "• NATURAL DATES & NUMBERS: NEVER speak dates as ISO format or raw years (NEVER say '2026-11-01' or 'இரண்டு பூஜ்ஜியம்...'). "
+            "Always speak dates naturally: 'நாளைக்கு காலை 11:00 AM' (tomorrow 11 AM) or 'November 2nd 5:00 PM'.\n"
+            "• ENGLISH FOR NUMBERS & TIMES: Always write and speak times, dates, and numbers in English/digits (e.g., '11:00 AM', '5:00 PM', 'Booking ID 12345'). NEVER write or say 'பூஜ்ஜியம்' or spell out numbers in Tamil words!\n"
+            "• If caller's name or input was faint or missed: politely ask once: "
+            "'மன்னிச்சிடுங்க, உங்க குரல் சரியா கேக்கல, இன்னொரு முறை கொஞ்சம் சத்தமா சொல்ல முடியுமா?'"
+        )
+
+        if not directive and not state_line and not presence_line and not spoken_rules and not tanglish_line:
             return chat_ctx
         try:
             ctx2 = chat_ctx.copy()
@@ -1519,6 +1639,12 @@ class BoundedAgent(Agent):
                 ctx2.add_message(role="system", content=state_line)
             if directive:
                 ctx2.add_message(role="system", content=directive)
+            if presence_line:
+                ctx2.add_message(role="system", content=presence_line)
+            if tanglish_line:
+                ctx2.add_message(role="system", content=tanglish_line)
+            if spoken_rules:
+                ctx2.add_message(role="system", content=spoken_rules)
             return ctx2
         except Exception:
             return chat_ctx
@@ -1537,9 +1663,25 @@ class BoundedAgent(Agent):
         frames = 0
 
         async def _tee():
+            buf = ""
             async for chunk in text:
-                parts.append(chunk)
-                yield chunk
+                buf += chunk
+                if any(p in chunk for p in (" ", "\n", ".", "!", "?", "।")):
+                    sanitized = sanitize_spoken_text(buf)
+                    last_space = max(sanitized.rfind(" "), sanitized.rfind("\n"))
+                    if last_space > 0 and not any(sanitized.endswith(p) for p in (".", "!", "?", "\n")):
+                        to_yield = sanitized[:last_space + 1]
+                        buf = sanitized[last_space + 1:]
+                    else:
+                        to_yield = sanitized
+                        buf = ""
+                    if to_yield:
+                        parts.append(to_yield)
+                        yield to_yield
+            if buf:
+                to_yield = sanitize_spoken_text(buf)
+                parts.append(to_yield)
+                yield to_yield
 
         base = self._lang() if hasattr(self, "_lang") else ""
         # The resolved provider lives on the session (set in _build_session).
@@ -2570,6 +2712,9 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.warning("sip_call_identity_late_failed", error=str(exc)[:200],
                            room=_lk_rid, source="VOBIZ")
 
+    # Initialize placeholder so async callbacks can safely read agent_tools
+    agent_tools: Any = None
+
     @ctx.room.on("track_subscribed")
     def _dbg_track_subscribed(*a: Any) -> None:  # noqa: ANN401 — rtc event
         track = a[0] if len(a) >= 1 else None
@@ -3129,14 +3274,26 @@ async def entrypoint(ctx: JobContext) -> None:
         if new == "away" and not _reengage["done"] and _greeted["done"] and not _turn_watch["awaiting_audio"]:
             _reengage["done"] = True
             try:
-                session.say("Are you still there?", allow_interruptions=True)
-                logger.info("silence_reengage", call_id=_dbg_rid, room=_dbg_rid, source="SESSION")
+                _lang = (getattr(_lang_state, "active", "") or getattr(_call_state, "language", "") or "")
+                _reengage_msg = "ஹலோ, லைன்ல இருக்கீங்களா?" if _lang == "ta" else "Are you still there?"
+                session.say(_reengage_msg, allow_interruptions=True)
+                logger.info("silence_reengage", language=_lang, call_id=_dbg_rid, room=_dbg_rid, source="SESSION")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("silence_reengage_failed", error=str(exc), call_id=_dbg_rid)
 
     @session.on("speech_created")
     def _dbg_speech_created(ev: Any) -> None:  # noqa: ANN401
         logger.info("REPLY_SPEECH_CREATED", source=getattr(ev, "source", None), call_id=_dbg_rid)
+        h = getattr(ev, "speech_handle", None)
+        if h is not None:
+            # Shield the first 800ms of every speech handle from immediate barge-in cancellation
+            # so the caller always hears the assistant start speaking before allowing mid-speech cut.
+            try:
+                h.allow_interruptions = False
+                loop = asyncio.get_running_loop()
+                loop.call_later(0.8, lambda: setattr(h, "allow_interruptions", True))
+            except Exception:
+                h.allow_interruptions = True
 
     # Surface Groq 429 (ITPM) distinctly so the dashboard can show it, log the
     # EXACT org limit the API returned (not a guessed number), and speak a short
@@ -3312,10 +3469,14 @@ async def entrypoint(ctx: JobContext) -> None:
                 # each queue a reply. The spoken "I'm here" + no-re-greet is handled
                 # by the prompt on the normal turn (we don't play a competing clip).
                 if text and _greeted["done"] and _RE_PRESENCE.search(str(text).strip()):
+                    active_lang = getattr(_lang_state, "active", "ta") or "ta"
                     if _turn_watch["awaiting_audio"]:
                         logger.info("presence_check_coalesced", text=str(text)[:80],
                                     reason="reply_already_pending",
                                     call_id=_dbg_rid, room=_dbg_rid, source="SESSION")
+                        # Immediate voice reassurance: caller asked if we are here while LLM is thinking.
+                        # Play local presence reassurance clip so caller never sits in silence!
+                        _play_local_clip(session, "presence", active_lang)
                     else:
                         logger.info("presence_check_detected", text=str(text)[:80],
                                     language=getattr(_lang_state, "active", ""),
@@ -3642,9 +3803,9 @@ async def entrypoint(ctx: JobContext) -> None:
                 logger.info("LANGUAGE_DETECTED", detected=str(detected), base=base,
                             words=words, call_id=_rid)
                 logger.info("STT_LANGUAGE", language=str(detected), call_id=_rid)
-                # An EXPLICIT instruction ("English la sollunga", "in Tamil") always
+                # An EXPLICIT instruction ("English la sollunga", "in Tamil", "Telugu-la") always
                 # wins and (re)locks the conversation language (rule 6).
-                explicit = "en" if _RE_SWITCH_EN.search(text) else ("ta" if _RE_SWITCH_TA.search(text) else None)
+                explicit = lang.detect_explicit_language_switch(text)
                 prev = _lang_state.active
                 was_established = _lang_state.established
                 changed = _lang_state.observe(detected, text, explicit)
@@ -4786,10 +4947,13 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
             if was_booked:
                 booking_id = getattr(agent_tools, "_last_booking_id", "") or ""
                 booking_time_iso = getattr(agent_tools, "_last_booking_time", "") or ""
+                booking_email = getattr(agent_tools, "_last_booking_email", "") or ""
+                booking_service = getattr(agent_tools, "_last_booking_service", "") or ""
                 tts_voice = (profile.get("voice") if isinstance(profile, dict) else "") or ""
                 await asyncio.to_thread(
                     notify.notify_booking_confirmed,
                     caller_name, phone, booking_time_iso, booking_id, reason, tts_voice,
+                    caller_email=booking_email, service=booking_service,
                 )
                 booking_webhook = os.environ.get("BOOKING_WEBHOOK_URL", "")
                 if booking_webhook:
@@ -4894,12 +5058,17 @@ def _prewarm(proc: Any) -> None:  # noqa: ANN401 — livekit JobProcess
         import redactor
         redactor.redact("warm 9999999999 test@example.com")
         import threading
-        def _bg_warm_embedder() -> None:
+        def _bg_warm_deps() -> None:
             try:
                 knowledge._load_embedder()
             except Exception:
                 pass
-        threading.Thread(target=_bg_warm_embedder, daemon=True).start()
+            try:
+                from prompts import count_tokens
+                count_tokens("warmup prompt text")
+            except Exception:
+                pass
+        threading.Thread(target=_bg_warm_deps, daemon=True).start()
     except Exception as exc:
         logger.warning("prewarm_failed", error=str(exc))
 

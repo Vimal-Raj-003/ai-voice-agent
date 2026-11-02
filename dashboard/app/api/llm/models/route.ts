@@ -43,7 +43,7 @@ export async function GET(req: Request) {
     const r = await fetch(
       `${BASE}/api/llm/models?provider=${encodeURIComponent(provider)}&refresh=${refresh}`,
       { headers: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}, cache: "no-store",
-        signal: AbortSignal.timeout(20000) },
+        signal: AbortSignal.timeout(3000) },
     );
     if (!r.ok) {
       return Response.json(

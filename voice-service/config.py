@@ -48,7 +48,7 @@ GROQ_TEMPERATURE        = 0.7
 # a Groq 429 then cascades to llm_all_providers_failed. "gemini-flash-latest" is
 # a stable alias that always resolves to the current flash model and does not
 # 404. Override with GEMINI_LLM_MODEL if a specific pinned id is desired.
-GEMINI_LLM_MODEL        = os.getenv("GEMINI_LLM_MODEL", "gemini-flash-latest")
+GEMINI_LLM_MODEL        = os.getenv("GEMINI_LLM_MODEL", "gemini-3.8-flash")
 
 # The SELECTED provider controls both primary and fallback. Leaving the
 # selected provider for another vendor is a deliberate, logged decision —
@@ -124,10 +124,10 @@ SARVAM_STT_MODE         = os.getenv("SARVAM_STT_MODE", "codemix")
 SARVAM_SPEAKER          = os.getenv("SARVAM_SPEAKER", "ishita")
 # Seed language only — overridden per turn by the detected conversation language.
 SARVAM_LANGUAGE         = os.getenv("SARVAM_LANGUAGE", "en-IN")
-# Natural conversational pace (Sarvam allows 0.3–3.0). 0.95–1.0 reads naturally;
-# anything faster clips Indic syllables, slower sounds robotic.
-SARVAM_PACE             = min(3.0, max(0.3, float(os.getenv("SARVAM_PACE", "0.98"))))
-SARVAM_SAMPLE_RATE      = int(os.getenv("SARVAM_SAMPLE_RATE", "24000"))
+# Natural conversational pace (Sarvam allows 0.3–3.0). 1.05–1.10 provides brisk,
+# responsive speech without clipping Indic syllables.
+SARVAM_PACE             = min(3.0, max(0.3, float(os.getenv("SARVAM_PACE", "1.08"))))
+SARVAM_SAMPLE_RATE      = int(os.getenv("SARVAM_SAMPLE_RATE", "16000"))
 CARTESIA_MODEL          = "sonic-2"
 CARTESIA_VOICE          = "f786b574-daa5-4673-aa0c-cbe3e8534c02"
 

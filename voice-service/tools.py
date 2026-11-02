@@ -144,7 +144,11 @@ async def calcom_book(name: str, email: str, phone: str, date: str, time: str,
                     # `attendee` object; timeZone and language moved inside it.
                     "attendee": {
                         "name": name,
-                        "email": email or f"{_phone_digits(phone)}@voiceagent.placeholder",
+                        "email": email or (
+                            f"{_phone_digits(phone)}@voiceagent.placeholder"
+                            if os.getenv("CALCOM_FALLBACK_DOMAIN") == "voiceagent.placeholder"
+                            else f"caller.{_phone_digits(phone)}@{os.getenv('CALCOM_FALLBACK_DOMAIN', 'gmail.com')}"
+                        ),
                         "timeZone": c["tz"],
                         "language": "en",
                     },
@@ -416,23 +420,25 @@ class AppointmentTools(llm.ToolContext):
 
     @llm.function_tool
     async def book_appointment(self, name: str, date: str, time: str,
-                               service: str) -> str:
-        """Book the appointment after the caller confirms all details. date=YYYY-MM-DD, time=HH:MM (24h)."""
+                               service: str, email: str = "") -> str:
+        """Book the appointment after the caller confirms all details.
+        date=YYYY-MM-DD, time=HH:MM (24h). email is the caller's email address for confirmation."""
         call_id = self._room_call_id()
         # 1. Validate.
         if not _valid_date(date) or not _valid_time(time):
             return "That date or time wasn't clear. Please confirm the date (YYYY-MM-DD) and time (HH:MM)."
         # Extract caller details (email, age, phone) from remembered insights & transcript
-        email, age, extracted_phone = self._extract_caller_details(service)
+        extracted_email, age, extracted_phone = self._extract_caller_details(service)
+        final_email = (email or "").strip().lower() or extracted_email
         phone = extracted_phone or self.phone_number or ""
         notes_bits = [f"Service: {service}"]
         if age:
             notes_bits.append(f"Age: {age}")
         if phone:
             notes_bits.append(f"Phone: {phone}")
-        if email:
-            notes_bits.append(f"Email: {email}")
-        notes = " | ".join(notes_bits) if (age or email) else ""
+        if final_email:
+            notes_bits.append(f"Email: {final_email}")
+        notes = " | ".join(notes_bits) if (age or final_email) else ""
         # Duplicate protection: if the voice runtime invokes the tool twice for
         # the same slot in this call, return the first confirmation unchanged.
         dedup_key = f"{call_id}:{date}:{time}:{phone}"
@@ -518,11 +524,11 @@ class AppointmentTools(llm.ToolContext):
             try:
                 booking_id = await db.insert_appointment(
                     name, phone, date, time, service,
-                    calcom_uid=calcom_uid, email=email or None,
+                    calcom_uid=calcom_uid, email=final_email or None,
                     notes=notes or None, reminder_at=reminder_at,
                 )
                 logger.info("LOCAL_APPOINTMENT_SAVED", booking_id=booking_id,
-                            calcom_uid=calcom_uid, call_id=call_id)
+                            calcom_uid=calcom_uid, call_id=call_id, email=final_email)
                 if reminder_at is not None:
                     logger.info("REMINDER_SCHEDULED", booking_id=booking_id,
                                 reminder_at=reminder_at.isoformat(), call_id=call_id)
@@ -616,11 +622,26 @@ class AppointmentTools(llm.ToolContext):
             self._last_booking_time = f"{date}T{time}:00+05:30"
             self._last_booking_name = name
             self._last_booking_service = service
+            self._last_booking_email = final_email
             self._cs_book(str(booking_id), name, date, time, service)
             reminder_note = " We'll remind you before the appointment." if reminder_at else ""
             msg = (f"Confirmed! Booking ID: {booking_id}. "
                    f"See you on {date} at {time} for {service}.{reminder_note}")
             self._booked_keys[dedup_key] = msg
+
+            # Immediately trigger confirmation email in background if email is known
+            if final_email:
+                try:
+                    import notify
+                    asyncio.create_task(
+                        asyncio.to_thread(
+                            notify.send_booking_confirmation_email,
+                            final_email, name, f"{date}T{time}:00+05:30", str(booking_id), service
+                        )
+                    )
+                except Exception as mail_exc:
+                    logger.warning("booking_email_dispatch_failed", error=str(mail_exc))
+
             return msg
         except Exception as exc:
             logger.error("book_appointment_failed", error=str(exc), call_id=call_id)

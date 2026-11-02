@@ -18,14 +18,32 @@ import CostStackedBar from "@/components/charts/CostStackedBar";
 import { aggregateCalls, buildRateMap, computeCallCost } from "@/lib/cost";
 import { getUsdInrRate } from "@/lib/currency";
 import OverviewCosts from "@/components/OverviewCosts";
+import RangeSelector from "@/components/RangeSelector";
 import RatesPanel from "@/components/RatesPanel";
 import { type CallCostRow } from "@/components/CostsView";
 import Money from "@/components/Money";
 import { AlertTriangle } from "lucide-react";
 
-export default async function Overview() {
+export default async function Overview({
+  searchParams,
+}: {
+  searchParams?: Promise<{ range?: string }>;
+}) {
+  const sp = (await searchParams) ?? {};
+  const rawRange = (sp.range || "14d").toLowerCase();
+  const validRanges = ["24h", "7d", "14d", "30d"] as const;
+  const rangeKey = validRanges.includes(rawRange as any) ? rawRange : "14d";
+
+  const RANGE_CONFIG = {
+    "24h": { daysBack: 1, ms: 24 * 3600 * 1000, label: "Last 24 hours", badge: "24 hours", is24h: true },
+    "7d": { daysBack: 7, ms: 7 * 86400 * 1000, label: "Last 7 days", badge: "7 days", is24h: false },
+    "14d": { daysBack: 14, ms: 14 * 86400 * 1000, label: "Last 14 days", badge: "14 days", is24h: false },
+    "30d": { daysBack: 30, ms: 30 * 86400 * 1000, label: "Last 30 days", badge: "30 days", is24h: false },
+  } as const;
+
+  const currentConfig = RANGE_CONFIG[rangeKey as keyof typeof RANGE_CONFIG];
   const { id: orgId } = await getDefaultOrg();
-  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+  const since = new Date(Date.now() - currentConfig.ms);
 
   const [
     callCount,
@@ -89,21 +107,34 @@ export default async function Overview() {
     getUsdInrRate(),
   ]);
 
-  // Build the last-14-days timelines by binning recentCalls by ISO date.
-  // Same shape used by both the calls chart and the tokens chart.
+  // Build dynamic timelines binning recentCalls by hour (24h) or date (days).
   const timeline: { date: string; calls: number; booked: number }[] = [];
   const tokenTimeline: { date: string; input: number; output: number }[] = [];
   const today = new Date();
-  for (let i = 13; i >= 0; i--) {
-    const d = new Date(today);
-    d.setUTCDate(d.getUTCDate() - i);
-    const key = d.toISOString().slice(0, 10);
-    timeline.push({ date: key, calls: 0, booked: 0 });
-    tokenTimeline.push({ date: key, input: 0, output: 0 });
+
+  if (currentConfig.is24h) {
+    for (let i = 23; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 3600 * 1000);
+      const key = `${d.toISOString().slice(0, 13)}:00`.replace("T", " ");
+      timeline.push({ date: key, calls: 0, booked: 0 });
+      tokenTimeline.push({ date: key, input: 0, output: 0 });
+    }
+  } else {
+    for (let i = currentConfig.daysBack - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setUTCDate(d.getUTCDate() - i);
+      const key = d.toISOString().slice(0, 10);
+      timeline.push({ date: key, calls: 0, booked: 0 });
+      tokenTimeline.push({ date: key, input: 0, output: 0 });
+    }
   }
+
   const idx = new Map(timeline.map((p, i) => [p.date, i]));
   for (const c of recentCalls) {
-    const key = c.createdAt.toISOString().slice(0, 10);
+    const d = new Date(c.createdAt);
+    const key = currentConfig.is24h
+      ? `${d.toISOString().slice(0, 13)}:00`.replace("T", " ")
+      : d.toISOString().slice(0, 10);
     const i = idx.get(key);
     if (i !== undefined) {
       timeline[i].calls += 1;
@@ -117,7 +148,12 @@ export default async function Overview() {
 
   // Cost aggregation for the spend infograph + tile.
   const rateMap = buildRateMap(rates);
-  const costAgg = aggregateCalls(costCalls, rateMap, 14);
+  const costAgg = aggregateCalls(
+    costCalls,
+    rateMap,
+    currentConfig.daysBack,
+    currentConfig.is24h ? "hours" : "days",
+  );
   const activeCostProviders = costAgg.byProvider
     .filter((p) => p.costUsd > 0)
     .map((p) => p.provider);
@@ -208,10 +244,11 @@ export default async function Overview() {
           <h1 className="text-3xl font-bold">Overview</h1>
           <p className="text-sm text-gray-400 mt-1">
             Real-time view of the voice platform — calls, bookings, and live
-            activity in the last 14 days.
+            activity in the {currentConfig.label.toLowerCase()}.
           </p>
         </div>
       }
+      actions={<RangeSelector currentRange={rangeKey} />}
       costs={{
         totalUsd: costAgg.totalUsd,
         totalCalls: costTotalCalls,
@@ -262,14 +299,14 @@ export default async function Overview() {
             tiles follow the USD/INR toggle. A server-formatted "$..." string
             could never react to it - that was the Spend (14d) bug. */}
         <StatCard
-          label="Spend (14d)"
+          label={`Spend (${rangeKey})`}
           value={<Money usd={costAgg.totalUsd} />}
           hint={<>Today <Money usd={todaysSpend} decimals={4} /></>}
           icon={CircleDollarSign}
           tone="violet"
         />
         <StatCard
-          label="Tokens (14d)"
+          label={`Tokens (${rangeKey})`}
           value={
             totalInputTokens + totalOutputTokens > 1_000_000
               ? `${((totalInputTokens + totalOutputTokens) / 1_000_000).toFixed(2)}M`
@@ -303,11 +340,11 @@ export default async function Overview() {
             <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
               Calls timeline
             </h2>
-            <span className="text-[10px] text-gray-500 font-mono">14 days</span>
+            <span className="text-[10px] text-gray-500 font-mono">{currentConfig.badge}</span>
           </div>
           {recentCalls.length === 0 ? (
             <div className="h-[220px] flex items-center justify-center text-sm text-gray-500">
-              No calls in the last 14 days.
+              No calls in the {currentConfig.label.toLowerCase()}.
             </div>
           ) : (
             <CallsTimeline data={timeline} />
@@ -332,7 +369,7 @@ export default async function Overview() {
             <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
               Token usage
             </h2>
-            <span className="text-[10px] text-gray-500 font-mono">14 days</span>
+            <span className="text-[10px] text-gray-500 font-mono">{currentConfig.badge}</span>
           </div>
           {totalInputTokens + totalOutputTokens === 0 ? (
             <div className="h-[220px] flex flex-col items-center justify-center text-center">
@@ -352,7 +389,7 @@ export default async function Overview() {
             <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
               Spend by provider
             </h2>
-            <span className="text-[10px] text-gray-500 font-mono">14 days</span>
+            <span className="text-[10px] text-gray-500 font-mono">{currentConfig.badge}</span>
           </div>
           {costAgg.totalUsd === 0 ? (
             <div className="h-[220px] flex flex-col items-center justify-center text-center">

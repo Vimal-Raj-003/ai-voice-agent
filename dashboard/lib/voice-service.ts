@@ -1,17 +1,19 @@
 const URL_BASE = process.env.VOICE_SERVICE_URL || "http://localhost:8000";
 const TOKEN = process.env.VOICE_SERVICE_TOKEN || "";
 
-type FetchOpts = Omit<RequestInit, "body"> & { body?: unknown };
+type FetchOpts = Omit<RequestInit, "body"> & { body?: unknown; timeoutMs?: number };
 
 async function call<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   const headers = new Headers(opts.headers);
   headers.set("Content-Type", "application/json");
   if (TOKEN) headers.set("Authorization", `Bearer ${TOKEN}`);
+  const timeoutMs = opts.timeoutMs ?? 2500;
   const r = await fetch(`${URL_BASE}${path}`, {
     ...opts,
     headers,
     body: opts.body == null ? undefined : JSON.stringify(opts.body),
     cache: "no-store",
+    signal: opts.signal || AbortSignal.timeout(timeoutMs),
   });
   if (!r.ok) {
     const txt = await r.text();

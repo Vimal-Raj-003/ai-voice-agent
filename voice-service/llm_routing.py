@@ -108,8 +108,8 @@ def _specs() -> dict[str, ProviderSpec]:
         "openrouter": ProviderSpec(
             key="openrouter", env_key="OPENROUTER_API_KEY",
             base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-            default_model=os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
-            fallback_models=(os.getenv("OPENROUTER_FALLBACK_MODEL", "meta-llama/llama-3.3-70b-instruct"),),
+            default_model=os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash"),
+            fallback_models=(os.getenv("OPENROUTER_FALLBACK_MODEL", "openai/gpt-4o-mini"), "meta-llama/llama-3.3-70b-instruct"),
         ),
         "custom": ProviderSpec(
             key="custom", env_key=os.getenv("CUSTOM_LLM_API_KEY_NAME", "CUSTOM_LLM_API_KEY"),
@@ -391,7 +391,7 @@ def resolve_route(profile: dict | None = None) -> LlmRoute:
 def _cross_provider_fallback(exclude: str, specs: dict[str, ProviderSpec]) -> tuple[str, str]:
     """Best OTHER vendor that is actually usable. Only ever called when
     ALLOW_CROSS_PROVIDER_FALLBACK is true."""
-    for key in ("gemini", "openai", "anthropic", "groq", "openrouter", "custom"):
+    for key in ("openrouter", "gemini", "openai", "groq", "anthropic", "custom"):
         if key == exclude:
             continue
         ok, _ = provider_available(key)

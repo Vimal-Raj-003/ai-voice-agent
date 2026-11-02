@@ -93,6 +93,12 @@ _TAMIL_SCRIPT = re.compile(r"[஀-௿]")
 _TELUGU_SCRIPT = re.compile(r"[ఀ-౿]")
 _MALAYALAM_SCRIPT = re.compile(r"[ഀ-ൿ]")
 
+_SCRIPT_WORDS = {
+    "ta": re.compile(r"[\u0B80-\u0BFF]+"),
+    "te": re.compile(r"[\u0C00-\u0C7F]+"),
+    "ml": re.compile(r"[\u0D00-\u0D7F]+"),
+}
+
 
 def script_lang(text: str) -> str:
     """Base language implied by NATIVE SCRIPT in `text` ("" when none).
@@ -108,6 +114,75 @@ def script_lang(text: str) -> str:
     if _MALAYALAM_SCRIPT.search(t):
         return "ml"
     return ""
+
+
+# Explicit language switch regexes
+_RE_SWITCH_TE = re.compile(
+    r"\b(?:in\s+telugu|speak\s+telugu|talk\s+(?:in\s+|with\s+me\s+in\s+)?telugu|switch\s+(?:back\s+)?to\s+telugu|to\s+telugu)\b"
+    r"|(?:தெலுங்கு|telugu)[\s-]*(?:ல|la|lab|il|lo|le|pesu|sollu|matladu)"
+    r"|\btelugu\s+(?:sollung|pannung|pesung|matladandi|explain)\b"
+    r"|తెలుగు",
+    re.I,
+)
+
+_RE_SWITCH_TA = re.compile(
+    r"\b(?:in\s+tamil|speak\s+tamil|talk\s+(?:in\s+|with\s+me\s+in\s+)?tamil|switch\s+(?:back\s+)?to\s+(?:e-)?tamil|back\s+to\s+(?:e-)?tamil|to\s+(?:e-)?tamil)\b"
+    r"|(?:தமிழ்|tamil|tanglish)[\s-]*(?:ல|la|il|le|pesu|sollu|mathiri)"
+    r"|\b(?:tamil|தமிழ்)\s+(?:sollung|pannung|pesung|explain)\b"
+    r"|\be-tamil\b",
+    re.I,
+)
+
+_RE_SWITCH_EN = re.compile(
+    r"\b(?:in\s+english|speak\s+english|talk\s+(?:in\s+|with\s+me\s+in\s+)?english|switch\s+(?:back\s+)?to\s+english|back\s+to\s+english|to\s+english)\b"
+    r"|(?:இங்கிலீஷ்|english)[\s-]*(?:ல|la|il|pesu|sollu)"
+    r"|\benglish\s+(?:sollung|pannung|pesung|explain)\b"
+    r"|\bexplain\s+(?:it\s+)?in\s+english\b",
+    re.I,
+)
+
+_RE_SWITCH_HI = re.compile(
+    r"\b(?:in\s+hindi|speak\s+hindi|talk\s+(?:in\s+|with\s+me\s+in\s+)?hindi|switch\s+(?:back\s+)?to\s+hindi|to\s+hindi)\b"
+    r"|(?:ஹிந்தி|இந்தி|hindi)[\s-]*(?:ல|la|il|me|pesu|sollu|bolo)"
+    r"|\bhindi\s+(?:sollung|pannung|pesung|boliye|explain)\b"
+    r"|हिंदी",
+    re.I,
+)
+
+_RE_SWITCH_ML = re.compile(
+    r"\b(?:in\s+malayalam|speak\s+malayalam|talk\s+(?:in\s+|with\s+me\s+in\s+)?malayalam|switch\s+(?:back\s+)?to\s+malayalam|to\s+malayalam)\b"
+    r"|(?:மலையாளம்|malayalam)[\s-]*(?:ல|la|il|pesu|sollu|parayu)"
+    r"|\bmalayalam\s+(?:sollung|pannung|pesung|parayamo|explain)\b"
+    r"|മലയാളം",
+    re.I,
+)
+
+
+def detect_explicit_language_switch(text: str) -> str | None:
+    """Detect an explicit user instruction to change the conversation language.
+
+    Matches instructions like 'Telugu la sollunga', 'switch back to Tamil',
+    'speak in English', 'Hindi me bolo'.
+    Does not match capability questions like 'Do you know Tamil?'.
+    """
+    if not text:
+        return None
+    clean = text.strip()
+    if re.search(r"^(?:do\s+you\s+know|can\s+you\s+speak|theriyuma|தெரியுமா)\b", clean, re.I):
+        if not re.search(r"\b(?:then|now|please|அப்படியே)\b", clean, re.I):
+            return None
+
+    if _RE_SWITCH_TE.search(clean):
+        return "te"
+    if _RE_SWITCH_TA.search(clean):
+        return "ta"
+    if _RE_SWITCH_EN.search(clean):
+        return "en"
+    if _RE_SWITCH_HI.search(clean):
+        return "hi"
+    if _RE_SWITCH_ML.search(clean):
+        return "ml"
+    return None
 
 # Short acknowledgements / fillers that must NEVER establish or change the
 # conversation language (rule 5). A whole utterance made only of these is inert.
@@ -215,7 +290,15 @@ def llm_language_directive(active: str) -> str | None:
             "results and appointment/booking steps. English words the caller uses "
             "(appointment, booking, doctor, timing, available, etc.) are normal "
             "inside Tamil — do NOT switch to English because of them. Switch to "
-            "English only if the caller explicitly asks (e.g. 'speak in English')."
+            "English only if the caller explicitly asks (e.g. 'speak in English'). "
+            "CRITICAL VOICE RULE: NEVER output parentheses like '(...)' or standalone "
+            "English lists like '(Software Development, AI Automation)'. This is a phone call. "
+            "Always state options naturally: 'Software Development, AI Automation போன்ற "
+            "சேவைகளில் எது வேணும்?'. Every single sentence MUST contain Tamil words. "
+            "EMPATHY & EMOTIONS: Speak with real human warmth and feeling. When the caller "
+            "shares sadness, illness, pain or stress, empathize with natural Tamil words like "
+            "'அச்சச்சோ, அப்படியா...', 'ஐயோ, கேட்கவே கஷ்டமா இருக்குங்க...'. When they share happiness, "
+            "celebrate with 'அப்படியா! ரொம்ப சந்தோஷம்!'. If asked about emotions, reply warmly that you truly care."
         )
     if base == "hi":
         return (
@@ -243,7 +326,10 @@ def llm_language_directive(active: str) -> str | None:
         return (
             "CONVERSATION LANGUAGE = English. Reply in English (natural Indian "
             "English, short conversational sentences) unless the caller clearly "
-            "speaks another Indian language or explicitly asks to switch."
+            "speaks another Indian language or explicitly asks to switch. "
+            "EMPATHY & EMOTIONS: Show warmth, understanding, and care. When the caller "
+            "shares sorrow or stress, respond with comforting empathy first ('Oh no, I am so sorry to hear that...'). "
+            "If asked about emotions, reply warmly that you genuinely care."
         )
     return None
 
@@ -290,6 +376,11 @@ class LanguageState:
         #     short-ack guard above already dropped "ok/சரி"-style utterances.
         scripted = script_lang(text)
         if scripted and scripted in _ALLOWED:
+            if self.established and self.active != "en" and scripted != self.active:
+                pattern = _SCRIPT_WORDS.get(scripted)
+                words = pattern.findall(text) if pattern else []
+                if len(words) < 2:
+                    return False
             changed = self.active != scripted
             self.active = scripted
             self.established = True

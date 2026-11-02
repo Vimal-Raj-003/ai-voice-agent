@@ -213,7 +213,13 @@ export default async function CalendarPage({
               monthKey={monthKey}
             />
           </div>
-          <DayDrawer day={day} appts={dayList} />
+          <DayDrawer
+              day={day}
+              appts={dayList}
+              allMonthAppts={appts}
+              monthLabel={monthLabel}
+              statusFilter={statusFilter}
+            />
         </div>
       ) : (
         // Day / week: an agenda for the range, grouped by date.

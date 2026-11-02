@@ -64,6 +64,7 @@ export const LLM_PROVIDER_MODELS: Record<string, LlmModelOption[]> = {
     { value: "llama-3.3-70b-versatile", label: "llama-3.3-70b-versatile" },
   ],
   GEMINI: [
+    { value: "gemini-3.8-flash", label: "gemini-3.8-flash" },
     { value: "gemini-flash-latest", label: "gemini-flash-latest" },
     { value: "gemini-flash-lite-latest", label: "gemini-flash-lite-latest" },
     { value: "gemini-2.5-pro", label: "gemini-2.5-pro" },

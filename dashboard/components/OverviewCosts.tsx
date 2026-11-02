@@ -29,6 +29,7 @@ type Panel = "rates" | "calls" | null;
 export default function OverviewCosts({
   fx,
   header,
+  actions,
   children,
   costs,
   ratesPanel,
@@ -36,6 +37,8 @@ export default function OverviewCosts({
   fx: FxRate;
   /** The page title block, rendered beside the toggle. */
   header: React.ReactNode;
+  /** Action controls rendered alongside the currency toggle (e.g. RangeSelector). */
+  actions?: React.ReactNode;
   /** The existing Overview widgets, untouched. */
   children: React.ReactNode;
   /** Exactly the money/usage props CostsView already accepts, so this wrapper
@@ -77,7 +80,10 @@ export default function OverviewCosts({
       <div className="space-y-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           {header}
-          <CurrencyToggle fx={fx} currency={currency} onChange={setCurrency} />
+          <div className="flex items-center gap-3">
+            {actions}
+            <CurrencyToggle fx={fx} currency={currency} onChange={setCurrency} />
+          </div>
         </div>
 
         {children}

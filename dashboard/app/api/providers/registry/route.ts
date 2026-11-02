@@ -42,7 +42,7 @@ export async function GET(req: Request) {
     const r = await fetch(
       `${BASE}/api/providers/registry${qs.toString() ? `?${qs}` : ""}`,
       { headers: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}, cache: "no-store",
-        signal: AbortSignal.timeout(15000) },
+        signal: AbortSignal.timeout(3000) },
     );
     if (!r.ok) return Response.json({ providers: [], error: `voice-service ${r.status}` });
     return Response.json(await r.json());

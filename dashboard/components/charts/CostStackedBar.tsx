@@ -39,7 +39,7 @@ export default function CostStackedBar({
           fontSize={10}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(d: string) => d.slice(5)}
+          tickFormatter={(d: string) => (d.includes(" ") ? d.split(" ")[1] : d.slice(5))}
         />
         <YAxis
           stroke="var(--text-muted)"
