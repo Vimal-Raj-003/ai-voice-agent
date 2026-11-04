@@ -64,7 +64,7 @@ def test_build_tool_list_filters_by_enabled():
     t = AppointmentTools(ctx, "+91111", "Ravi")
     out = t.build_tool_list(["check_availability", "end_call"])
     names = {fn.__name__ for fn in out}
-    assert names == {"check_availability", "end_call"}
+    assert names == {"check_availability", "end_call", "update_call_details"}
 
 
 @pytest.mark.asyncio

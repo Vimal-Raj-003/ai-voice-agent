@@ -15,6 +15,7 @@ import { ChevronRight } from "lucide-react";
 import FormField from "./FormField";
 import InfoTooltip from "./InfoTooltip";
 import SystemPromptField from "./SystemPromptField";
+import { assistantPrompts } from "@/lib/assistant-prompts";
 import MessageField from "./MessageField";
 import UrlSetup from "./UrlSetup";
 import LlmStackFields from "./LlmStackFields";
@@ -231,6 +232,7 @@ export default function AssistantForm({
             </Field>
             <SystemPromptField
               defaultValue={initial?.systemPrompt ?? ""}
+              defaultOutboundValue={assistantPrompts(initial?.systemPrompt ?? "", initial?.metadata).outbound}
               rows={14}
             />
           </section>
@@ -399,7 +401,7 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
       <div className="grid grid-cols-1 gap-3 2xl:grid-cols-2">
         <Field
           label="End-of-speech sensitivity"
-          hint="How aggressively VAD declares the user has stopped speaking."
+          hint="Silence wait: Low 2s, Medium 1s, High 0.4s. The larger of this and Min pause is used; model/STT/TTS add response time. Saved changes apply to new calls."
         >
           <Select
             name="endOfSpeechSensitivity"
@@ -409,7 +411,7 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
         </Field>
         <Field
           label="Interruption threshold (ms)"
-          hint="Min. continuous user speech to interrupt the agent. 100–250 typical."
+          hint="Minimum continuous caller speech before stopping agent playback. Lower values react sooner and may treat short sounds as interruptions."
         >
           <input
             type="number"
@@ -459,7 +461,7 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
         <div className="grid grid-cols-1 gap-3 border-t border-white/10 p-3">
         <Field
           label="Min pause before agent responds (ms)"
-          hint="Floor to prevent trampling the customer. Industry default ~200."
+          hint="Minimum end-of-turn wait. The larger of this and the selected sensitivity is used. This is not a total voice-response latency guarantee."
         >
           <input
             type="number"
@@ -472,7 +474,7 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
         </Field>
         <Field
           label="STT confidence threshold (%)"
-          hint="Below this, agent asks the user to repeat. 0 = never. ~55 typical."
+          hint="Ask for clarification below this provider confidence score. 0 disables the gate. Providers such as Sarvam may not supply a probability; no score is invented."
         >
           <input
             type="number"

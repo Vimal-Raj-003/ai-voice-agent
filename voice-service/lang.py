@@ -172,12 +172,24 @@ def detect_explicit_language_switch(text: str) -> str | None:
         if not re.search(r"\b(?:then|now|please|அப்படியே)\b", clean, re.I):
             return None
 
-    if _RE_SWITCH_TE.search(clean):
-        return "te"
+    # Handle negative context / complaints like "why in Telugu", "edhukku telugu-la pesureenga", "telugu-la pesa vendam"
+    is_complaint = bool(re.search(
+        r"\b(?:why|ethukku|edhukku|எதுக்கு|ஏன்|வேண்டாம்|vendam|vendaam|பேசாதீங்க|pesatheenga|pesa\s*vendam)\b",
+        clean, re.I
+    ))
+
+    # Priority 1: Tamil is always prioritized when mentioned
     if _RE_SWITCH_TA.search(clean):
         return "ta"
+
+    # If it is a complaint or question about why speaking another language, do not switch to that language!
+    if is_complaint:
+        return None
+
     if _RE_SWITCH_EN.search(clean):
         return "en"
+    if _RE_SWITCH_TE.search(clean):
+        return "te"
     if _RE_SWITCH_HI.search(clean):
         return "hi"
     if _RE_SWITCH_ML.search(clean):
@@ -187,6 +199,9 @@ def detect_explicit_language_switch(text: str) -> str | None:
 # Short acknowledgements / fillers that must NEVER establish or change the
 # conversation language (rule 5). A whole utterance made only of these is inert.
 _SHORT_ACKS = {
+    "சரி", "ஆமா", "ஆம்", "ம்", "ம்ம்",
+    # STT may write the same neutral greeting in any detected script.
+    "हलो", "हेलो", "हैलो", "ஹலோ", "ஹலோவ்", "ഹലോ", "హలో",
     "hello", "hi", "hey", "hii", "helo", "yes", "yeah", "yep", "yup", "ya",
     "no", "nope", "ok", "okay", "okey", "k", "kk", "hmm", "hmmm", "mm", "mmm",
     "mhm", "right", "wait", "sure", "fine", "good", "great", "thanks", "thank",
@@ -236,7 +251,9 @@ _WORD_RE = re.compile(r"[a-zऀ-ॿ஀-௿ఀ-౿ഀ-ൿ]+", re.I)
 
 
 def _words(text: str) -> list[str]:
-    return _WORD_RE.findall((text or "").lower())
+    # Danda lies inside the Devanagari Unicode block; it is punctuation,
+    # not part of a greeting/word (e.g. Sarvam's exact transcript "हलो।").
+    return _WORD_RE.findall(re.sub(r'[।॥]', ' ', (text or '').lower()))
 
 
 def is_short_ack(text: str) -> bool:
@@ -285,7 +302,7 @@ def llm_language_directive(active: str) -> str | None:
             "written in TAMIL SCRIPT (not Latin transliteration). Common English "
             "terms the caller would normally say in English (appointment, "
             "booking, doctor, time, 4 PM) SHOULD stay in English inside the Tamil "
-            "sentence — e.g. 'ஆம், tomorrow 4 PMக்கு appointment book பண்ணலாம்.' "
+            "sentence. Language examples are not booking details; preserve the caller's actual date/time. "
             "Keep replying in Tamil on EVERY turn, including short confirmations, tool "
             "results and appointment/booking steps. English words the caller uses "
             "(appointment, booking, doctor, timing, available, etc.) are normal "
@@ -295,10 +312,10 @@ def llm_language_directive(active: str) -> str | None:
             "English lists like '(Software Development, AI Automation)'. This is a phone call. "
             "Always state options naturally: 'Software Development, AI Automation போன்ற "
             "சேவைகளில் எது வேணும்?'. Every single sentence MUST contain Tamil words. "
-            "EMPATHY & EMOTIONS: Speak with real human warmth and feeling. When the caller "
-            "shares sadness, illness, pain or stress, empathize with natural Tamil words like "
-            "'அச்சச்சோ, அப்படியா...', 'ஐயோ, கேட்கவே கஷ்டமா இருக்குங்க...'. When they share happiness, "
-            "celebrate with 'அப்படியா! ரொம்ப சந்தோஷம்!'. If asked about emotions, reply warmly that you truly care."
+            "TONE: Follow the caller's expressed situation and the contextual tone policy. "
+            "For illness, urgency or frustration stay calm, respectful and practical. "
+            "Use a brief acknowledgement naturally; do not repeat sympathy catchphrases "
+            "or claim human feelings. Do not guess a caller's hidden emotional state."
         )
     if base == "hi":
         return (
@@ -356,6 +373,8 @@ class LanguageState:
 
     def observe(self, detected: str | None, text: str = "", explicit: str | None = None) -> bool:
         text = text or ""
+        if explicit is None and len(_words(text)) >= 3:
+            explicit = detect_explicit_language_switch(text)
         # 1. Explicit caller request always wins and (re)locks the language.
         if explicit in _ALLOWED and explicit:
             changed = explicit != self.active
@@ -367,8 +386,35 @@ class LanguageState:
         #    transcript given", e.g. the detection-only update() shim.)
         if text.strip() and is_short_ack(text):
             return False
+        if getattr(self, 'strict_lock', False) and self.established and self.active != 'en':
+            return False
         base = normalize_lang(detected)
         tamilish = has_tamil_script(text) or looks_tanglish(text) or base == "ta"
+
+        # 2a. Tamil / Tanglish priority: As long as the caller speaks Tamil or Tanglish,
+        # ALWAYS stay in Tamil — never allow stray glitches to switch to Telugu/Malayalam.
+        if tamilish:
+            changed = self.active != "ta"
+            self.active = "ta"
+            self.established = True
+            return changed
+
+        # If already established in Tamil, protect it against accidental flips:
+        # Only switch if caller speaks a GENUINE sentence in another language (>= 3 script words)
+        # or genuine English (>= 3 words, no Tanglish).
+        if self.established and self.active == "ta":
+            scripted = script_lang(text)
+            if scripted and scripted in _ALLOWED and scripted != 'ta':
+                words = _SCRIPT_WORDS[scripted].findall(text)
+                if len(words) >= 3:
+                    self.active = scripted
+                    return True
+            if (base == 'en' and not scripted and not looks_tanglish(text)
+                    and not _mostly_loanwords(text) and len(_words(text)) >= 3):
+                self.active = 'en'
+                return True
+            return False
+
         # 2b. NATIVE SCRIPT = unambiguous evidence the caller switched language.
         #     This overrides the lock so the agent follows the caller turn-by-turn
         #     (English → Tamil → Telugu → Malayalam → …). Mis-detections cannot
@@ -376,9 +422,12 @@ class LanguageState:
         #     short-ack guard above already dropped "ok/சரி"-style utterances.
         scripted = script_lang(text)
         if scripted and scripted in _ALLOWED:
+            pattern = _SCRIPT_WORDS.get(scripted)
+            words = pattern.findall(text) if pattern else []
+            # Never switch to non-Tamil Indic languages (Malayalam, Telugu, Hindi) on single-word glitch
+            if scripted in ("ml", "te", "hi") and len(words) < 2:
+                return False
             if self.established and self.active != "en" and scripted != self.active:
-                pattern = _SCRIPT_WORDS.get(scripted)
-                words = pattern.findall(text) if pattern else []
                 if len(words) < 2:
                     return False
             changed = self.active != scripted
@@ -400,12 +449,6 @@ class LanguageState:
         #    only an explicit request (above) or native script (2b) moves it.
         if self.established and self.active != "en":
             return False
-        # 4. Tamil / Tanglish → Tamil, locked for the rest of the call.
-        if tamilish:
-            changed = self.active != "ta"
-            self.active = "ta"
-            self.established = True
-            return changed
         # 5. A bare STT language CODE may SEED the conversation language, but it
         #    may never FLIP one that is already established.
         #

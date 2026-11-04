@@ -995,7 +995,7 @@ async def delete_source(assistant_id: str, source_id: str) -> dict:
 async def _keyword_fallback_search(assistant_id: str, query: str, top_k: int = 4) -> list[dict]:
     """Fast non-blocking SQL keyword search used during a live call if the ONNX
     embedder is still warming up in the background."""
-    words = [w for w in re.findall(r"[a-zA-Z0-9\u0B80-\u0BFF]{3,}", query.lower())
+    words = [w for w in re.findall(r"[a-zA-Z0-9]{3,}|[\u0B80-\u0BFF]{3,}", query.lower())
              if w not in {"what", "where", "when", "which", "who", "how", "can", "you",
                           "your", "the", "for", "and", "are", "this", "that", "have",
                           "with", "from", "about", "please", "tell", "hello"}]
@@ -1017,9 +1017,6 @@ async def _keyword_fallback_search(assistant_id: str, query: str, top_k: int = 4
             if matched > 0:
                 sim = min(0.85, 0.35 + 0.15 * matched)
                 scored.append((sim, r))
-        if not scored and rows:
-            for r in rows[:top_k]:
-                scored.append((0.35, r))
         scored.sort(key=lambda x: x[0], reverse=True)
         hits = []
         for sim, r in scored[:top_k]:
@@ -1032,7 +1029,9 @@ async def _keyword_fallback_search(assistant_id: str, query: str, top_k: int = 4
                           or page_label(r["url"], r["title"], 0)),
             })
         return hits
-    except Exception:
+    except Exception as exc:
+        logger.warning('knowledge_keyword_search_failed', error_type=type(exc).__name__,
+                       assistant_id=assistant_id, source='KNOWLEDGE')
         return []
 
 
@@ -1083,6 +1082,10 @@ async def search(assistant_id: str, query: str, top_k: int = 4,
                 candidates=len(rows), kept=len(hits),
                 best=round(max((h["similarity"] for h in hits), default=0.0), 3),
                 source="KNOWLEDGE")
+    if not hits:
+        # A Tamil/code-mixed query can miss the multilingual vector floor
+        # while still naming an exact term in an English document.
+        return await _keyword_fallback_search(assistant_id, q, top_k=top_k)
     return hits
 
 

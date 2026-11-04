@@ -4,14 +4,8 @@ import { useState, useRef, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronDown, Calendar } from "lucide-react";
 
-export type RangeKey = "24h" | "7d" | "14d" | "30d";
-
-export const RANGE_OPTIONS: { value: RangeKey; label: string; daysBack: number }[] = [
-  { value: "24h", label: "Last 24 hours", daysBack: 1 },
-  { value: "7d", label: "Last 7 days", daysBack: 7 },
-  { value: "14d", label: "Last 14 days", daysBack: 14 },
-  { value: "30d", label: "Last 30 days", daysBack: 30 },
-];
+import { RANGE_OPTIONS, type RangeKey } from "@/lib/overview-range";
+export { RANGE_OPTIONS, type RangeKey } from "@/lib/overview-range";
 
 export default function RangeSelector({ currentRange = "14d" }: { currentRange?: string }) {
   const router = useRouter();
@@ -64,7 +58,7 @@ export default function RangeSelector({ currentRange = "14d" }: { currentRange?:
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-44 rounded-xl border border-white/10 bg-[#0d0f17]/95 backdrop-blur-xl p-1.5 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-100">
+        <div className="bg-elevated absolute right-0 mt-2 w-44 rounded-xl border border-white/10 p-1.5 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-100">
           <div className="space-y-0.5">
             {RANGE_OPTIONS.map((opt) => {
               const isSelected = opt.value === selected.value;

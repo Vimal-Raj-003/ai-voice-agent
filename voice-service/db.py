@@ -17,6 +17,7 @@ from observability import get_logger
 
 import config
 import provider_registry
+from assistant_prompts import outbound_prompt
 
 # ── Pool lifecycle ────────────────────────────────────────────────────────────
 #
@@ -440,6 +441,31 @@ async def mark_reminder_failed(reminder_id: str, error: str, max_retries: int) -
             WHERE id = $1""",
         reminder_id, (error or "")[:300], max_retries,
     )
+
+
+async def update_confirmation_email(booking_id: str, phone: str, email: str) -> bool:
+    """Verify appointment and contact recipients atomically, scoped to this caller.
+
+Does not modify Cal.com's attendee or recall an already sent email.
+"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """UPDATE appointments SET email = $3,
+                       notes = regexp_replace(notes, 'Email: [^|]+', 'Email: ' || $3 || ' ', 'g')
+                   WHERE booking_id = $1 AND phone_number = $2
+                     AND status = 'BOOKED'::"AppointmentStatus"
+                   RETURNING id, email""", booking_id, phone, email,
+            )
+            if row is None or row['email'] != email:
+                return False
+            await conn.execute('UPDATE contacts SET email = $2, updated_at = now() WHERE phone_number = $1', phone, email)
+            verified = await conn.fetchval(
+                'SELECT a.email = $2 AND c.email = $2 FROM appointments a JOIN contacts c ON c.phone_number = a.phone_number WHERE a.id = $1', row['id'], email)
+            if not verified:
+                raise RuntimeError('Recipient verification failed; transaction rolled back')
+            return True
 
 
 async def check_slot(date: str, time: str) -> bool:
@@ -1624,7 +1650,7 @@ async def get_assistant_as_profile(assistant_id: str) -> dict | None:
                   "voicemailMessage", "confidenceThresholdPct",
                   "hallucinationGuard", "minPauseMs",
                   "recordingEnabled", "recordingConsentMessage",
-                  "redactionEnabled", "isActive"
+                  "redactionEnabled", "isActive", metadata, "updatedAt"
              FROM assistants
             WHERE id = $1 AND "isActive" = true
             LIMIT 1''',
@@ -1636,9 +1662,11 @@ async def get_assistant_as_profile(assistant_id: str) -> dict | None:
     return {
         "id": r["id"],
         "name": r["name"],
+        "settings_updated_at": str(r.get('updatedAt') or ''),
         # Whose BYOK provider credentials apply to this call.
         "organization_id": r["organizationId"],
         "system_prompt": r["systemPrompt"],
+        "outbound_system_prompt": outbound_prompt(r.get('metadata')),
         "first_message": r["firstMessage"],
         "end_call_message": r["endCallMessage"],
         "llm_provider": (r["llmProvider"] or "OPENAI").lower(),

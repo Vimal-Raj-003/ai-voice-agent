@@ -111,6 +111,9 @@ export default async function SettingsPage({
     <div className={`space-y-6 ${isDocs || isApiKeys || isWebhooks ? "max-w-5xl" : "max-w-3xl"}`}>
       <div>
         <h1 className="text-3xl font-bold">Settings</h1>
+        <Link href="/settings/password" className="inline-flex mt-3 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-violet-300 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-violet-400">
+          Change password
+        </Link>
         <p className="text-sm text-gray-400 mt-1">
           {isWebhooks
             ? "HTTP endpoints notified on call lifecycle events — started, ended, failed and transcript updates."

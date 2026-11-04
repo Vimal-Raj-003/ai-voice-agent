@@ -92,8 +92,9 @@ STT_UTTERANCE_END_MS    = max(1000, int(os.getenv("STT_UTTERANCE_END_MS", "1000"
 # what produced the dead air, the lost context and the "sorry, I missed that"
 # loop — the LLM was answering half-sentences.
 # A natural thinking pause is 500-800ms, so finalise at 700ms instead.
-# Latency cost is small because preemptive_generation already starts the LLM on
-# the interim transcript: measured stt_final -> first_audio p50 was 987ms.
+# Pipeline turn_policy adds an adaptive pause floor separately. Speculative
+# generation is disabled by default; measure real audio/quota effects before
+# enabling VOICE_PREEMPTIVE_GENERATION.
 STT_ENDPOINTING_MS      = int(os.getenv("STT_ENDPOINTING_MS", "700"))
 MIN_ENDPOINTING_DELAY   = float(os.getenv("MIN_ENDPOINTING_DELAY", "0.5"))
 
@@ -128,6 +129,8 @@ SARVAM_LANGUAGE         = os.getenv("SARVAM_LANGUAGE", "en-IN")
 # responsive speech without clipping Indic syllables.
 SARVAM_PACE             = min(3.0, max(0.3, float(os.getenv("SARVAM_PACE", "1.08"))))
 SARVAM_SAMPLE_RATE      = int(os.getenv("SARVAM_SAMPLE_RATE", "16000"))
+SARVAM_MIN_BUFFER_SIZE  = max(30, min(200, int(os.getenv('SARVAM_MIN_BUFFER_SIZE', '30'))))
+SARVAM_MAX_CHUNK_LENGTH = max(50, min(500, int(os.getenv('SARVAM_MAX_CHUNK_LENGTH', '100'))))
 CARTESIA_MODEL          = "sonic-2"
 CARTESIA_VOICE          = "f786b574-daa5-4673-aa0c-cbe3e8534c02"
 

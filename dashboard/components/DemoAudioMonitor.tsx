@@ -33,7 +33,7 @@ function makeAnalyser(ctx: AudioContext, mst: MediaStreamTrack): AnalyserNode {
 }
 
 // RMS of the time-domain buffer → approximate dBFS.
-function levelFromAnalyser(analyser: AnalyserNode, buf: Float32Array): { rms: number; db: number } {
+function levelFromAnalyser(analyser: AnalyserNode, buf: Float32Array<ArrayBuffer>): { rms: number; db: number } {
   analyser.getFloatTimeDomainData(buf);
   let sum = 0;
   for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
@@ -42,7 +42,7 @@ function levelFromAnalyser(analyser: AnalyserNode, buf: Float32Array): { rms: nu
   return { rms, db };
 }
 
-function barsFromAnalyser(analyser: AnalyserNode, freq: Uint8Array): number[] {
+function barsFromAnalyser(analyser: AnalyserNode, freq: Uint8Array<ArrayBuffer>): number[] {
   analyser.getByteFrequencyData(freq);
   const out: number[] = new Array(BAR_COUNT);
   const per = Math.floor(freq.length / BAR_COUNT);

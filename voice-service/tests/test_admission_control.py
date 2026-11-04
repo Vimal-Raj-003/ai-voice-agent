@@ -68,6 +68,13 @@ def test_a_fresh_model_can_afford_a_turn():
     assert FakeAgent()._headroom(PRI, CTX) > 0
 
 
+def test_groq_budget_does_not_downgrade_openrouter_models():
+    a = FakeAgent()
+    label = "openrouter/meta-llama/llama-3.3-70b-instruct"
+    a._record_spend(label, 50000)
+    assert a._headroom(label, CTX) > 1_000_000
+
+
 def test_two_turns_fit_in_one_model_three_do_not():
     """8,000 less a 10% margin is 7,200; two turns is 6,532, three is 9,798."""
     a = FakeAgent()

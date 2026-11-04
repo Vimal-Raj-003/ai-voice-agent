@@ -1,5 +1,8 @@
-import { auth } from "@/lib/auth";
+import NextAuth from "next-auth";
+import { authConfig } from "@/lib/auth-config";
 import { NextResponse } from "next/server";
+
+const { auth } = NextAuth(authConfig);
 
 // Wrap the request with NextAuth's auth() — req.auth is now populated.
 // We:

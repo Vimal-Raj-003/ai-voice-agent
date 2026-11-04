@@ -401,7 +401,7 @@ def _cross_provider_fallback(exclude: str, specs: dict[str, ProviderSpec]) -> tu
 
 
 # ── Construction ─────────────────────────────────────────────────────────────
-def build_llm(provider: str, model: str) -> Any | None:
+def build_llm(provider: str, model: str, *, profile: dict | None = None) -> Any | None:
     """Instantiate the LLM for `provider`/`model`, or None if it cannot be built.
 
     `provider` decides the endpoint and credential; `model` is passed through
@@ -416,13 +416,28 @@ def build_llm(provider: str, model: str) -> Any | None:
                        root_cause=why, source="LLM")
         return None
     key = os.environ[spec.env_key]
+    profile = profile or {}
+    temperature = profile.get('temperature')
+    max_tokens = profile.get('max_tokens')
     try:
         if spec.native:                                   # Gemini via its own plugin
-            return _google_llm(model=model, api_key=key)
+            settings = {}
+            if temperature is not None:
+                settings['temperature'] = float(temperature)
+            if max_tokens is not None:
+                settings['max_output_tokens'] = int(max_tokens)
+            return _google_llm(model=model, api_key=key, **settings)
 
         kwargs: dict[str, Any] = {"model": model, "api_key": key, "max_completion_tokens": 512}
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
+        if provider == 'openrouter':
+            # Keep the selected model; rank its endpoints by latency rather
+            # than price and require support for the request's tool settings.
+            kwargs['extra_body'] = {'provider': {'sort': 'latency', 'require_parameters': True}}
+            # Voice task accuracy needs stable field/tool decisions. Leaving
+            # this unset used each endpoint's creative sampling default.
+            kwargs['temperature'] = 0.2
         if provider == "groq":
             kwargs["temperature"] = config.GROQ_TEMPERATURE
             # Reasoning models spend completion tokens on hidden "thinking" before
@@ -432,6 +447,10 @@ def build_llm(provider: str, model: str) -> Any | None:
             # Never let the SDK retry: on a 429 it honours Groq's retry-after
             # (up to ~20s) and freezes the turn. We own the fallback.
             kwargs["max_retries"] = 0
+        if temperature is not None:
+            kwargs['temperature'] = float(temperature)
+        if max_tokens is not None:
+            kwargs['max_completion_tokens'] = int(max_tokens)
         return _openai_plugin.LLM(**kwargs)
     except Exception as exc:
         logger.warning("llm_build_failed", provider=provider, model=model,

@@ -7,6 +7,7 @@ import { requireRole } from "@/lib/require-role";
 import { coerceModelForProvider } from "@/lib/llm-models";
 import { coerceVoiceForProvider } from "@/lib/tts-voices";
 import { TRANSFER_CATEGORIES, isE164 } from "@/lib/human-transfer";
+import { withOutboundPrompt } from "@/lib/assistant-prompts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function _bool(v: FormDataEntryValue | null): boolean {
@@ -14,8 +15,13 @@ function _bool(v: FormDataEntryValue | null): boolean {
 }
 
 function _int(v: FormDataEntryValue | null, fallback: number): number {
+  if (v === null || String(v).trim() === "") return fallback;
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function _range(v: FormDataEntryValue | null, fallback: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, _int(v, fallback)));
 }
 
 // Builds the shape that's common to both create and update so we don't
@@ -55,15 +61,16 @@ function readAssistantPayload(formData: FormData) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     sttProvider: String(formData.get("sttProvider") || "DEEPGRAM") as any,
     // Call accuracy & speech tuning
-    silenceTimeoutSeconds: _int(formData.get("silenceTimeoutSeconds"), 30),
-    maxDurationSeconds: _int(formData.get("maxDurationSeconds"), 1800),
+    silenceTimeoutSeconds: _range(formData.get("silenceTimeoutSeconds"), 30, 5, 300),
+    maxDurationSeconds: _range(formData.get("maxDurationSeconds"), 1800, 60, 7200),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     endOfSpeechSensitivity: String(
       formData.get("endOfSpeechSensitivity") || "LOW",
     ) as any,
-    interruptionThresholdMs: _int(
+    interruptionThresholdMs: _range(
       formData.get("interruptionThresholdMs"),
       150,
+      50, 2000,
     ),
     backgroundDenoising: _bool(formData.get("backgroundDenoising")),
     voicemailDetection: _bool(formData.get("voicemailDetection")),
@@ -74,7 +81,7 @@ function readAssistantPayload(formData: FormData) {
       Math.min(100, _int(formData.get("confidenceThresholdPct"), 0)),
     ),
     hallucinationGuard: _bool(formData.get("hallucinationGuard")),
-    minPauseMs: _int(formData.get("minPauseMs"), 200),
+    minPauseMs: _range(formData.get("minPauseMs"), 200, 0, 3000),
     recordingEnabled: _bool(formData.get("recordingEnabled")),
     recordingConsentMessage:
       String(formData.get("recordingConsentMessage") || "").trim() || null,
@@ -204,13 +211,21 @@ export async function saveAssistant(
     const transfer = readTransferTargets(formData);
     if (transfer.error) return { error: transfer.error };
     if (id) {
-      await prisma.assistant.update({ where: { id }, data });
+      const existing = await prisma.assistant.findUniqueOrThrow({ where: { id }, select: { metadata: true } });
+      await prisma.assistant.update({ where: { id }, data: {
+        ...data,
+        ...(formData.has("outboundSystemPrompt") ? {
+          metadata: withOutboundPrompt(existing.metadata, String(formData.get("outboundSystemPrompt") ?? "")),
+        } : {}),
+      } });
       await syncAssistantTools(id, readToolIds(formData));
       await syncTransferTargets(id, transfer.rows);
     } else {
       const { id: orgId } = await getDefaultOrg();
       const created = await prisma.assistant.create({
-        data: { organizationId: orgId, ...data },
+        data: { organizationId: orgId, ...data,
+          metadata: withOutboundPrompt(null, String(formData.get("outboundSystemPrompt") ?? data.systemPrompt)),
+        },
       });
       await syncAssistantTools(created.id, readToolIds(formData));
       await syncTransferTargets(created.id, transfer.rows);

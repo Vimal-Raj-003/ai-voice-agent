@@ -23,6 +23,7 @@ import RatesPanel from "@/components/RatesPanel";
 import { type CallCostRow } from "@/components/CostsView";
 import Money from "@/components/Money";
 import { AlertTriangle } from "lucide-react";
+import { overviewRange, overallDaysBack } from "@/lib/overview-range";
 
 export default async function Overview({
   searchParams,
@@ -30,20 +31,10 @@ export default async function Overview({
   searchParams?: Promise<{ range?: string }>;
 }) {
   const sp = (await searchParams) ?? {};
-  const rawRange = (sp.range || "14d").toLowerCase();
-  const validRanges = ["24h", "7d", "14d", "30d"] as const;
-  const rangeKey = validRanges.includes(rawRange as any) ? rawRange : "14d";
-
-  const RANGE_CONFIG = {
-    "24h": { daysBack: 1, ms: 24 * 3600 * 1000, label: "Last 24 hours", badge: "24 hours", is24h: true },
-    "7d": { daysBack: 7, ms: 7 * 86400 * 1000, label: "Last 7 days", badge: "7 days", is24h: false },
-    "14d": { daysBack: 14, ms: 14 * 86400 * 1000, label: "Last 14 days", badge: "14 days", is24h: false },
-    "30d": { daysBack: 30, ms: 30 * 86400 * 1000, label: "Last 30 days", badge: "30 days", is24h: false },
-  } as const;
-
-  const currentConfig = RANGE_CONFIG[rangeKey as keyof typeof RANGE_CONFIG];
+  const currentConfig = overviewRange(sp.range);
+  const rangeKey = currentConfig.value;
   const { id: orgId } = await getDefaultOrg();
-  const since = new Date(Date.now() - currentConfig.ms);
+  const dateFilter = currentConfig.since ? { createdAt: { gte: currentConfig.since } } : {};
 
   const [
     callCount,
@@ -63,7 +54,7 @@ export default async function Overview({
       where: { organizationId: orgId, status: "RUNNING" },
     }),
     prisma.call.findMany({
-      where: { organizationId: orgId, createdAt: { gte: since } },
+      where: { organizationId: orgId, ...dateFilter },
       select: {
         createdAt: true,
         outcome: true,
@@ -77,7 +68,7 @@ export default async function Overview({
     prisma.providerRate.findMany(),
     // Pull every column the cost lib needs for the spend infograph.
     prisma.call.findMany({
-      where: { organizationId: orgId, createdAt: { gte: since } },
+      where: { organizationId: orgId, ...dateFilter },
       orderBy: { createdAt: "asc" },
       select: {
         id: true,
@@ -111,6 +102,7 @@ export default async function Overview({
   const timeline: { date: string; calls: number; booked: number }[] = [];
   const tokenTimeline: { date: string; input: number; output: number }[] = [];
   const today = new Date();
+  const daysBack = currentConfig.daysBack ?? overallDaysBack(recentCalls[0]?.createdAt, today);
 
   if (currentConfig.is24h) {
     for (let i = 23; i >= 0; i--) {
@@ -120,7 +112,7 @@ export default async function Overview({
       tokenTimeline.push({ date: key, input: 0, output: 0 });
     }
   } else {
-    for (let i = currentConfig.daysBack - 1; i >= 0; i--) {
+    for (let i = daysBack - 1; i >= 0; i--) {
       const d = new Date(today);
       d.setUTCDate(d.getUTCDate() - i);
       const key = d.toISOString().slice(0, 10);
@@ -151,7 +143,7 @@ export default async function Overview({
   const costAgg = aggregateCalls(
     costCalls,
     rateMap,
-    currentConfig.daysBack,
+    daysBack,
     currentConfig.is24h ? "hours" : "days",
   );
   const activeCostProviders = costAgg.byProvider
@@ -244,7 +236,7 @@ export default async function Overview({
           <h1 className="text-3xl font-bold">Overview</h1>
           <p className="text-sm text-gray-400 mt-1">
             Real-time view of the voice platform — calls, bookings, and live
-            activity in the {currentConfig.label.toLowerCase()}.
+            activity {rangeKey === "overall" ? "across all recorded calls" : `in the ${currentConfig.label.toLowerCase()}`}.
           </p>
         </div>
       }
@@ -299,14 +291,14 @@ export default async function Overview({
             tiles follow the USD/INR toggle. A server-formatted "$..." string
             could never react to it - that was the Spend (14d) bug. */}
         <StatCard
-          label={`Spend (${rangeKey})`}
+          label={`Spend (${rangeKey === "overall" ? "Overall" : rangeKey})`}
           value={<Money usd={costAgg.totalUsd} />}
           hint={<>Today <Money usd={todaysSpend} decimals={4} /></>}
           icon={CircleDollarSign}
           tone="violet"
         />
         <StatCard
-          label={`Tokens (${rangeKey})`}
+          label={`Tokens (${rangeKey === "overall" ? "Overall" : rangeKey})`}
           value={
             totalInputTokens + totalOutputTokens > 1_000_000
               ? `${((totalInputTokens + totalOutputTokens) / 1_000_000).toFixed(2)}M`
@@ -344,7 +336,7 @@ export default async function Overview({
           </div>
           {recentCalls.length === 0 ? (
             <div className="h-[220px] flex items-center justify-center text-sm text-gray-500">
-              No calls in the {currentConfig.label.toLowerCase()}.
+              {rangeKey === "overall" ? "No calls recorded yet." : `No calls in the ${currentConfig.label.toLowerCase()}.`}
             </div>
           ) : (
             <CallsTimeline data={timeline} />

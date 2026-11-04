@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { Sparkles, Loader2, X, AlertCircle, Pencil } from "lucide-react";
 import InfoTooltip from "./InfoTooltip";
 import { generatePromptAction } from "@/app/(admin)/assistants/_actions/generate-prompt";
+import type { PromptDirection } from "@/lib/assistant-prompts";
 
 // System prompt field: a short preview in the form, with the full editor in a
 // dialog.
@@ -14,24 +15,26 @@ import { generatePromptAction } from "@/app/(admin)/assistants/_actions/generate
 // genuinely wants protected focus, so a dialog is the right container rather
 // than decoration.
 //
-// IMPORTANT — the textarea is mounted exactly ONCE and is never unmounted; only
-// its wrapper switches between `hidden` and the dialog panel. A hidden form
-// control still submits (only a disabled one does not), so:
-//   * the value is always in the FormData under name="systemPrompt",
-//   * closing the dialog cannot lose an edit,
-//   * nothing is written to the backend until the form's own Save runs.
-// The server-action contract and the AI generator are unchanged.
+// Each direction stays in its own draft. Hidden inputs submit both even when
+// the editor is closed or the other direction is selected.
 export default function SystemPromptField({
   defaultValue = "",
+  defaultOutboundValue = defaultValue,
   rows = 14,
 }: {
   defaultValue?: string;
+  defaultOutboundValue?: string;
   rows?: number;
 }) {
-  const [value, setValue] = useState(defaultValue);
+  const [direction, setDirection] = useState<PromptDirection>("INBOUND");
+  const [values, setValues] = useState({ INBOUND: defaultValue, OUTBOUND: defaultOutboundValue });
+  const value = values[direction];
+  const directionLabel = direction === "INBOUND" ? "Inbound" : "Outbound";
   const [open, setOpen] = useState(false);
   const [genOpen, setGenOpen] = useState(false);
-  const [description, setDescription] = useState("");
+  const [descriptions, setDescriptions] = useState({ INBOUND: "", OUTBOUND: "" });
+  const description = descriptions[direction];
+  const [generated, setGenerated] = useState<{ direction: PromptDirection; prompt: string } | null>(null);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
@@ -41,12 +44,11 @@ export default function SystemPromptField({
 
   const handleGenerate = () => {
     setError(null);
+    const target = direction;
     start(async () => {
-      const r = await generatePromptAction(description);
+      const r = await generatePromptAction(description, target);
       if (r.ok) {
-        setValue(r.prompt);
-        setGenOpen(false);
-        setDescription("");
+        setGenerated({ direction: target, prompt: r.prompt });
       } else {
         setError(r.error);
       }
@@ -69,10 +71,10 @@ export default function SystemPromptField({
   const editor = (
     <>
       {genOpen && (
-        <div className="rounded-xl border border-violet-400/30 bg-violet-500/[0.04] p-3 space-y-2">
+        <div className="max-h-[45vh] shrink-0 overflow-y-auto rounded-xl border border-violet-400/30 bg-violet-500/[0.04] p-3 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[10px] uppercase tracking-widest text-violet-200/80">
-              Describe the assistant
+              Describe the {directionLabel.toLowerCase()} assistant
             </span>
             <button
               type="button"
@@ -85,7 +87,9 @@ export default function SystemPromptField({
           </div>
           <textarea
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => setDescriptions((previous) => ({ ...previous, [direction]: e.target.value }))}
+            maxLength={2000}
+            aria-label={`${directionLabel} assistant description`}
             rows={3}
             placeholder="A warm receptionist for a dental clinic who books appointments…"
             className={inputCls}
@@ -95,19 +99,34 @@ export default function SystemPromptField({
               type="button"
               onClick={handleGenerate}
               disabled={pending || !description.trim()}
-              className="inline-flex items-center gap-1.5 rounded-md border border-violet-400/30 bg-violet-500/[0.12] px-2.5 py-1 text-[11px] font-semibold text-violet-100 transition hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md border border-violet-400/30 bg-violet-500/[0.12] px-2.5 py-1 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {pending ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
               {pending ? "Generating…" : "Generate"}
             </button>
             <span className="text-[10px] text-gray-500">
-              Replaces the current prompt.
+              Preview first, then apply to the {directionLabel.toLowerCase()} prompt only.
             </span>
           </div>
           {error && (
-            <div className="flex items-start gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-300">
+            <div role="alert" className="flex items-start gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-300">
               <AlertCircle size={11} className="shrink-0 mt-0.5" />
               {error}
+            </div>
+          )}
+          {generated?.direction === direction && (
+            <div className="space-y-2 border-t border-white/10 pt-3">
+              <label className="block text-xs text-gray-300">
+                Generated {directionLabel.toLowerCase()} prompt
+                <textarea readOnly value={generated.prompt} rows={7} className={inputCls + " mt-2 font-mono text-xs"} />
+              </label>
+              <button type="button" onClick={() => {
+                setValues((previous) => ({ ...previous, [generated.direction]: generated.prompt }));
+                setGenerated(null);
+                setGenOpen(false);
+              }} className="rounded-md border border-violet-400/30 bg-violet-500/20 px-3 py-1.5 text-xs text-violet-200">
+                Use {directionLabel.toLowerCase()} prompt
+              </button>
             </div>
           )}
         </div>
@@ -117,6 +136,8 @@ export default function SystemPromptField({
 
   return (
     <div>
+      <input type="hidden" name="systemPrompt" value={values.INBOUND} />
+      <input type="hidden" name="outboundSystemPrompt" value={values.OUTBOUND} />
       <div className="mb-1 flex items-center justify-between gap-2">
         <span className="flex items-center text-[10px] uppercase tracking-widest text-gray-400">
           System prompt
@@ -124,6 +145,8 @@ export default function SystemPromptField({
             What the AI follows during the call. The hallucination guard, if
             enabled, automatically appends a &quot;don&apos;t invent
             information&quot; clause to whatever you write here.
+            Inbound and outbound prompts are saved separately. A blank outbound
+            prompt uses the inbound prompt.
           </InfoTooltip>
         </span>
         <button
@@ -147,7 +170,7 @@ export default function SystemPromptField({
               {value}
             </span>
             <span className="mt-1 block text-[10px] text-gray-600">
-              {words.toLocaleString()} words · click to edit
+              {directionLabel} · {words.toLocaleString()} words · click to edit
             </span>
           </>
         ) : (
@@ -157,12 +180,10 @@ export default function SystemPromptField({
         )}
       </button>
 
-      {/* The ONE textarea. Hidden while the dialog is closed, so its value stays
-          in the form payload either way. */}
       <div
         className={
           open
-            ? "fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm sm:p-6"
+            ? "modal-backdrop fixed inset-0 z-[70] flex items-center justify-center p-4 sm:p-6"
             : "hidden"
         }
         role={open ? "dialog" : undefined}
@@ -177,8 +198,8 @@ export default function SystemPromptField({
             viewport (90vw x 85vh, capped on very wide screens) and lays out as
             a flex column: header and footer keep their natural height and the
             textarea absorbs everything left over. */}
-        <div className="flex h-[85vh] w-[90vw] max-w-[1800px] flex-col gap-3 rounded-2xl border border-white/10 bg-[#0d0f1a] p-5 shadow-2xl">
-          <div className="flex shrink-0 items-center justify-between gap-3">
+        <div className="modal-surface flex h-[85vh] w-[90vw] max-w-[1800px] flex-col gap-3 overflow-y-auto rounded-2xl p-5">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
             <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
               System prompt
             </h2>
@@ -205,14 +226,23 @@ export default function SystemPromptField({
             </div>
           </div>
 
+          <div role="group" aria-label="System prompt call direction" className="flex shrink-0 gap-1 self-start rounded-lg border border-white/10 bg-black/20 p-1">
+            {(["INBOUND", "OUTBOUND"] as const).map((item) => (
+              <button type="button" key={item} aria-pressed={direction === item} onClick={() => { setDirection(item); setError(null); }}
+                className={`rounded-md px-4 py-1.5 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50 ${direction === item ? "bg-violet-500/20 text-violet-200" : "text-gray-400 hover:bg-white/5 hover:text-white"}`}>
+                {item === "INBOUND" ? "Inbound" : "Outbound"}
+              </button>
+            ))}
+          </div>
+
           {editor}
 
           <textarea
             ref={areaRef}
-            name="systemPrompt"
+            aria-label={`${directionLabel} system prompt`}
             rows={rows}
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(e) => setValues((previous) => ({ ...previous, [direction]: e.target.value }))}
             placeholder="You are Priya, a friendly receptionist who…"
             // min-h-0 is what lets a flex child actually shrink/scroll inside
             // the column instead of forcing the panel taller than the viewport.

@@ -7,12 +7,13 @@ import os
 import re
 import time
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import pytz
 from livekit import agents, api
-from livekit.agents import llm
+from livekit.agents import llm, RunContext
+from call_tasks import CallTasks, Superseded
 
 import config
 import db
@@ -147,7 +148,7 @@ async def calcom_book(name: str, email: str, phone: str, date: str, time: str,
                         "email": email or (
                             f"{_phone_digits(phone)}@voiceagent.placeholder"
                             if os.getenv("CALCOM_FALLBACK_DOMAIN") == "voiceagent.placeholder"
-                            else f"caller.{_phone_digits(phone)}@{os.getenv('CALCOM_FALLBACK_DOMAIN', 'gmail.com')}"
+                            else f"caller.{_phone_digits(phone)}@voiceagent.invalid"
                         ),
                         "timeZone": c["tz"],
                         "language": "en",
@@ -165,16 +166,18 @@ async def calcom_book(name: str, email: str, phone: str, date: str, time: str,
         if resp.status_code not in (200, 201):
             msg = str(data.get("message") or resp.text[:150])
             logger.error("CALCOM_BOOKING_FAILED", status=resp.status_code, message=msg, call_id=call_id)
-            return {"success": False, "uid": None, "message": msg}
+            return {"success": False, "uid": None, "message": msg, 'ambiguous': resp.status_code >= 500}
         uid = (data.get("uid")
                or data.get("booking", {}).get("uid")
                or data.get("data", {}).get("uid")
                or "")
+        if not uid:
+            return {'success': False, 'uid': None, 'message': 'Provider accepted the request without a booking reference', 'ambiguous': True}
         logger.info("CALCOM_BOOKING_SUCCESS", uid=uid, call_id=call_id)
         return {"success": True, "uid": uid, "message": "ok", "start_iso": local_dt.isoformat()}
     except Exception as exc:
         logger.error("CALCOM_BOOKING_FAILED", error=str(exc), call_id=call_id)
-        return {"success": False, "uid": None, "message": str(exc)}
+        return {"success": False, "uid": None, "message": str(exc), 'ambiguous': True}
 
 
 async def calcom_cancel(uid: str, reason: str = "", call_id: str = "") -> dict:
@@ -237,6 +240,7 @@ class AppointmentTools(llm.ToolContext):
         self._last_booking_name: str | None = None
         self._last_booking_service: str | None = None
         self._last_booking_notes: str | None = None
+        self._last_booking_email: str = ""
         # Duplicate-booking guard: maps an idempotency key (call + slot + phone)
         # to the confirmation string, so a repeated tool call in the same call
         # returns the first result instead of booking twice.
@@ -248,6 +252,10 @@ class AppointmentTools(llm.ToolContext):
         # Set once a transfer is accepted, so a second tool call cannot start
         # another REFER on a call that is already being handed over.
         self._transfer_started = False
+        self.work = CallTasks(call_state, log=lambda event, **kw: logger.info(event, call_id=self._room_call_id(), source='TOOLS', **kw))
+        self._deliveries: dict[tuple[str, str], str] = {}
+        if call_state is not None:
+            call_state.work = self.work
 
     def _extract_caller_details(self, service_hint: str = "") -> tuple[str, str, str]:
         """Extract (email, age, phone) from remembered insights, CallState facts,
@@ -282,8 +290,13 @@ class AppointmentTools(llm.ToolContext):
             flags=re.I,
         )
         norm_email_blob = re.sub(r"\s*@\s*", "@", norm_email_blob)
-        email_match = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", norm_email_blob)
-        email = email_match.group(0).lower() if email_match else ""
+        from contact_corrections import latest_email
+        email = latest_email(norm_email_blob)
+        if self.call_state is not None:
+            if self.call_state.entities.get("email"):
+                email = self.call_state.entities["email"]
+            elif self.call_state.contact_repair:
+                email = ""  # The caller rejected the old address; do not resurrect it.
 
         age = ""
         for pat in (
@@ -307,6 +320,7 @@ class AppointmentTools(llm.ToolContext):
 
     # ── CallState writers (Step B): record CONFIRMED tool facts safely ────────
     def _cs_tool(self, label: str, state: str, unresolved: str | None = None) -> None:
+        self.work.check_current()
         if not self.call_state:
             return
         try:
@@ -332,6 +346,12 @@ class AppointmentTools(llm.ToolContext):
             pass
 
     def build_tool_list(self, enabled: list[str]) -> list:
+        if getattr(self, '_test_read_only', False) is True:
+            # Reuse the existing capability allowlist for a conversation test.
+            # Calendar, business writes and transfer integrations are absent.
+            allowed = {'end_call', 'update_call_details'}
+            selected = allowed if not enabled else allowed.intersection(enabled)
+            return ([self.end_call] if 'end_call' in selected else []) + [self.update_call_details]
         # Always-available core tools (all functional on this deployment).
         # lookup_contact is intentionally NOT in the default set: the caller's
         # prior history is already pre-loaded into the system prompt ([NOTES]) at
@@ -339,7 +359,7 @@ class AppointmentTools(llm.ToolContext):
         # tokens (ITPM). It can still be enabled explicitly per assistant.
         methods = [
             self.check_availability, self.book_appointment, self.end_call,
-            self.transfer_to_human, self.remember_details,
+            self.transfer_to_human, self.remember_details, self.update_call_details,
         ]
         if "lookup_contact" in (enabled or []):
             methods.append(self.lookup_contact)
@@ -368,7 +388,70 @@ class AppointmentTools(llm.ToolContext):
         if not enabled:
             return methods
         name_map = {m.__name__: m for m in methods}
-        return [name_map[n] for n in enabled if n in name_map]
+        # Call memory is internal conversation bookkeeping, not an integration.
+        return [name_map[n] for n in enabled if n in name_map and n != 'update_call_details'] + [self.update_call_details]
+
+    @llm.function_tool
+    async def update_call_details(self, turn_id: int,
+                                  field: Literal['none', 'name', 'email', 'date', 'time', 'service', 'cancel_pending', 'booking_permission'],
+                                  value: str = '', confirmed: bool | Literal['null'] | None = False, context: RunContext = None) -> str:
+        """Current turn_id. Approve read-back: confirmed=true, no value.
+        Correct: new value. Question/repeat: field=none. YYYY-MM-DD/HH:MM."""
+        if not self.call_state:
+            return 'No call state available; no details were changed.'
+        confirmed = confirmed is True
+        if value == 'null':
+            value = ''
+        fn = getattr(context, 'function_call', None) if context is not None else None
+        bound = self.call_state._model_tool_turns.get(getattr(fn, 'call_id', None))
+        if bound is not None:
+            turn_id, evidence = bound
+            if evidence != self.call_state._last_observed_user:
+                return 'Rejected stale turn. Read the latest call state; no details were changed.'
+        if field == 'time' and value:
+            try:
+                value = datetime.strptime(value.strip().upper(), '%I:%M %p').strftime('%H:%M')
+            except ValueError:
+                pass
+        if (field == 'date' and value and not _valid_date(value)) or (field == 'time' and value and not _valid_time(value)):
+            return 'Date/time format is unclear; no details changed. Ask only for the unclear part.'
+        previous_value = self.call_state.entities.get(field)
+        result = self.call_state.apply_understood_details(
+            turn_id=turn_id, evidence=self.call_state._last_observed_user,
+            values={field: value} if value and field not in ('none', 'cancel_pending') else {},
+            confirmed_field=field if confirmed and field in ('name', 'email') else '',
+            clear_field=field if not value and not confirmed and field in ('name', 'email') else '',
+            cancel=field == 'cancel_pending' and value.lower() in ('yes', 'true'))
+        if context is not None and result.startswith('Call details verified'):
+            ta = self.call_state.language == 'ta'
+            spoken = None
+            actual = self.call_state.entities.get(field)
+            if 'Requested changes to booked fields' in result:
+                spoken = ('மாற்றச் சொன்ன விவரத்தைப் பதிவுபண்ணிக்கிட்டேன். ஏற்கனவே உறுதியான booking-ல் மாற்றம் செய்யலை.' if ta
+                          else 'I noted the requested correction. The existing booking has not been changed.')
+            elif (field == 'email' and self.call_state.entities.get('email_confirmed') != 'yes'
+                  and actual and actual != previous_value):
+                spoken = f'{actual} சரியான email தானே?' if ta else f'Is {actual} the correct email?'
+            elif (field == 'email' and self.call_state.entities.get('email_confirmed') == 'yes'
+                  and getattr(self, '_test_read_only', False) is True):
+                spoken = ('சரி, email உறுதிப்படுத்திக்கிட்டேன். இந்த test call-ல் email அனுப்ப முடியாது.' if ta
+                          else 'The email address is confirmed. This test call cannot send email.')
+            elif field == 'name' and actual:
+                spoken = f'சரி, உங்க பேர் {actual}-னு பதிவுபண்ணிக்கிட்டேன்.' if ta else f'I have your name as {actual}.'
+            elif field == 'time' and actual:
+                hour = datetime.strptime(actual, '%H:%M').strftime('%I:%M %p').lstrip('0')
+                spoken = (f'சரி, கேட்ட நேரம் {hour}-னு பதிவுபண்ணிக்கிட்டேன். Booking இன்னும் உறுதி செய்யலை.' if ta
+                          else f'I noted {hour} as the requested time. A booking has not been confirmed.')
+            elif field == 'date' and actual and actual != previous_value:
+                day = datetime.strptime(actual, '%Y-%m-%d').strftime('%B %d').replace(' 0', ' ')
+                spoken = (f'சரி, கேட்ட தேதி {day}-னு பதிவுபண்ணிக்கிட்டேன்.' if ta
+                          else f'I noted {day} as the requested date.')
+                if self.call_state.pending_slug == 'name' and not self.call_state.entities.get('name'):
+                    spoken += ' உங்கள் பெயர் என்ன?' if ta else ' What is your name?'
+            if spoken:
+                context.session.say(spoken, allow_interruptions=True, add_to_chat_ctx=True)
+                return llm.ToolResult(result, reply_required=False)
+        return result
 
     def _room_call_id(self) -> str:
         # agent.py assigns the DB call id onto the instance as `_call_id` (a str)
@@ -380,9 +463,33 @@ class AppointmentTools(llm.ToolContext):
         rid = getattr(room, "name", "") if room is not None else ""
         return rid if isinstance(rid, str) else ""
 
-    @llm.function_tool
-    async def check_availability(self, date: str, time: str) -> str:
+    @llm.function_tool(on_duplicate='reject', duplicate_scope='name_and_args')
+    async def check_availability(self, date: str, time: str, context: RunContext = None) -> str:
         """Check if a slot is free. date=YYYY-MM-DD, time=HH:MM (24h)."""
+        result = await self.work.run('availability', {'date': date, 'time': time},
+                                     lambda: self._check_availability(date, time), context)
+        if context is not None:
+            ta = bool(self.call_state and self.call_state.language == 'ta')
+            spoken = None
+            if result == 'available':
+                day = datetime.strptime(date, '%Y-%m-%d').strftime('%B %d')
+                hour = datetime.strptime(time, '%H:%M').strftime('%I:%M %p').lstrip('0')
+                spoken = (f'{day}, {hour} slot கிடைக்குது. இந்த check மூலம் booking எதுவும் செய்யலை.' if ta
+                          else f'{day} at {hour} is available. This check has not made or changed a booking.')
+            elif result.startswith('unavailable:'):
+                spoken = ('அந்த நேரம் கிடைக்கலை. வேற எந்த நேரம் வேண்டும்?' if ta
+                          else 'That time is unavailable. What other time would suit you?')
+            elif result.startswith(('Unable to check', "I can't reach the calendar")):
+                spoken = ('இப்போ calendar-ஐ check செய்ய முடியலை; அந்த நேரம் கிடைக்குமா என்று உறுதி ஆகலை.' if ta
+                          else 'I could not check the calendar, so availability is still unknown.')
+            if spoken:
+                # A real-model replay turned the bare result "available" into
+                # "booked and email sent". State the verified read result here.
+                context.session.say(spoken, allow_interruptions=True, add_to_chat_ctx=True)
+                return llm.ToolResult(result, reply_required=False)
+        return result
+
+    async def _check_availability(self, date: str, time: str) -> str:
         call_id = self._room_call_id()
         logger.info("CALENDAR_AVAILABILITY_CHECK", date=date, time=time, call_id=call_id)
         if not _valid_date(date) or not _valid_time(time):
@@ -392,6 +499,7 @@ class AppointmentTools(llm.ToolContext):
             if calcom_enabled():
                 cal_free = await calcom_slot_free(date, time, call_id)
                 if cal_free is None:
+                    self.work.failed()
                     logger.error("CALENDAR_AVAILABILITY_PROVIDER_DOWN", date=date, time=time, call_id=call_id)
                     return ("I can't reach the calendar right now, so I can't confirm that slot. "
                             "Please hold a moment or suggest another time and I'll check again.")
@@ -407,6 +515,7 @@ class AppointmentTools(llm.ToolContext):
                 self._cs_tool("availability", f"unavailable:{date} {time}", unresolved=f"next_free:{nxt}")
                 return f"unavailable: next available slot is {nxt} ({date} at {time} is already scheduled; ask if another time works)"
             logger.info("CALENDAR_SLOT_AVAILABLE", date=date, time=time, call_id=call_id)
+            self.work.check_current()
             # Record the requested slot (overridable) + the confirmed check result.
             if self.call_state:
                 self.call_state.set_intent(self.call_state.intent or "appointment_booking")
@@ -415,21 +524,41 @@ class AppointmentTools(llm.ToolContext):
             self._cs_tool("availability", f"free:{date} {time}")
             return "available"
         except Exception as exc:
+            self.work.failed()
             logger.error("check_availability_failed", error=str(exc), call_id=call_id)
             return "Unable to check availability right now — please suggest a date and I will confirm."
 
-    @llm.function_tool
+    @llm.function_tool(on_duplicate='reject')
     async def book_appointment(self, name: str, date: str, time: str,
-                               service: str, email: str = "") -> str:
+                               service: str, email: str = "", context: RunContext = None) -> str:
         """Book the appointment after the caller confirms all details.
         date=YYYY-MM-DD, time=HH:MM (24h). email is the caller's email address for confirmation."""
+        return await self.work.run('booking', {'name': name, 'date': date, 'time': time, 'service': service, 'email': email},
+                                   lambda: self._book_appointment(name, date, time, service, email), context)
+
+    async def _book_appointment(self, name: str, date: str, time: str, service: str, email: str = '') -> str:
+        if getattr(self, '_test_read_only', False) is True:
+            return 'Read-only call test: no booking was submitted or confirmed.'
+        if self.call_state and self.call_state.booking_hold:
+            return 'Caller asked not to book yet. No booking submitted; get explicit permission first.'
         call_id = self._room_call_id()
         # 1. Validate.
         if not _valid_date(date) or not _valid_time(time):
             return "That date or time wasn't clear. Please confirm the date (YYYY-MM-DD) and time (HH:MM)."
         # Extract caller details (email, age, phone) from remembered insights & transcript
         extracted_email, age, extracted_phone = self._extract_caller_details(service)
-        final_email = (email or "").strip().lower() or extracted_email
+        final_email = extracted_email or (email or "").strip().lower()
+        from contact_corrections import EMAIL
+        if final_email and not EMAIL.fullmatch(final_email):
+            return 'The email is incomplete. Ask for the unclear characters; never guess an address.'
+        if self.call_state:
+            name = self.call_state.entities.get("name") or name
+            if self.call_state.contact_repair and not self.call_state.entities.get("email"):
+                return "The caller rejected the email. Ask for its complete spelling; do not book or send yet."
+            if self.call_state.entities.get("email") and self.call_state.entities.get("email_confirmed") != "yes":
+                return "Read back the latest email exactly and get the caller's confirmation before booking."
+            if final_email and not self.call_state.entities.get('email'):
+                return 'No caller-confirmed email is in this call state. Ask the caller for its spelling and confirmation before using it.'
         phone = extracted_phone or self.phone_number or ""
         notes_bits = [f"Service: {service}"]
         if age:
@@ -453,6 +582,7 @@ class AppointmentTools(llm.ToolContext):
         except Exception:
             existing_bid = None
         if existing_bid:
+            self.work.check_current()
             logger.info("BOOKING_DUPLICATE_DB_SUPPRESSED", booking_id=existing_bid,
                         call_id=call_id, date=date, time=time)
             msg = (f"You're already booked for {service} on {date} at {time}. "
@@ -478,6 +608,7 @@ class AppointmentTools(llm.ToolContext):
         except Exception:
             slot_row = None
         if slot_row:
+            self.work.check_current()
             existing_bid = slot_row.get("booking_id")
             other = slot_row.get("service")
             logger.info("BOOKING_SLOT_ALREADY_TAKEN_BY_CUSTOMER",
@@ -512,15 +643,20 @@ class AppointmentTools(llm.ToolContext):
                     nxt = await db.get_next_available(date, time)
                     return f"That slot was just taken. The next available is {nxt}."
                 # 3. Book Cal.com first — abort without a local write if it fails.
-                res = await calcom_book(name, email, phone, date, time, service, notes, call_id)
+                self.work.committing()
+                res = await calcom_book(name, final_email, phone, date, time, service, notes, call_id)
                 if not res["success"]:
+                    if res.get('ambiguous'):
+                        self.work.uncertain()
                     return ("I couldn't confirm that booking on our calendar. "
-                            "Our team will follow up shortly to finalise it.")
+                            "Do not automatically submit another booking; verify the result before retrying.")
                 calcom_uid = res["uid"]
 
             # 4. Persist to the local DB + schedule the customer reminder
             #    atomically (with the Cal.com uid when present).
             reminder_at = reminder_at_utc(date, time)
+            if not calcom_uid:
+                self.work.committing()
             try:
                 booking_id = await db.insert_appointment(
                     name, phone, date, time, service,
@@ -629,23 +765,68 @@ class AppointmentTools(llm.ToolContext):
                    f"See you on {date} at {time} for {service}.{reminder_note}")
             self._booked_keys[dedup_key] = msg
 
-            # Immediately trigger confirmation email in background if email is known
+            # Queue without blocking the audio loop; publish real delivery status.
             if final_email:
-                try:
-                    import notify
-                    asyncio.create_task(
-                        asyncio.to_thread(
-                            notify.send_booking_confirmation_email,
-                            final_email, name, f"{date}T{time}:00+05:30", str(booking_id), service
-                        )
-                    )
-                except Exception as mail_exc:
-                    logger.warning("booking_email_dispatch_failed", error=str(mail_exc))
+                if self._queue_confirmation_email(final_email):
+                    msg += " Confirmation email queued; delivery is not yet confirmed."
+                else:
+                    msg += " No new email was queued; confirm the latest recipient and cancellation status."
+
 
             return msg
         except Exception as exc:
+            self.work.uncertain()
             logger.error("book_appointment_failed", error=str(exc), call_id=call_id)
-            return "Technical issue saving the booking. Our team will confirm shortly."
+            return "Technical issue saving the booking. It is not confirmed; do not promise a follow-up that has not been scheduled."
+
+    async def _send_confirmation_email(self, recipient: str, snapshot: tuple | None = None) -> bool:
+        """Background delivery status must refer to the current recipient, not a rejected one."""
+        booking_id, name, booking_time, service = snapshot or (str(self._last_booking_id), self._last_booking_name, self._last_booking_time, self._last_booking_service or '')
+        key = (booking_id, recipient)
+        if self.call_state and (self.call_state.entities.get('email') != recipient
+                                or self.call_state.entities.get('email_confirmed') != 'yes'
+                                or self.call_state.cancel_requested):
+            self._deliveries[key] = 'invalidated'
+            return False
+        if self._deliveries.get(key) in ('sending', 'sent'):
+            return self._deliveries[key] == 'sent'
+        self._deliveries[key] = 'sending'
+        if self.call_state:
+            self.call_state.entities['email_delivery'] = 'sending'
+        try:
+            import notify
+            sent = await asyncio.to_thread(
+                notify.send_booking_confirmation_email,
+                recipient, name, booking_time, booking_id, service,
+            )
+        except Exception:
+            sent = False
+        self._deliveries[key] = 'sent' if sent else 'failed'
+        logger.info('confirmation_delivery_finished', sent=bool(sent), call_id=self._room_call_id(), source='EMAIL')
+        if self.call_state and self.call_state.entities.get("email") == recipient:
+            self.call_state.update_entity("email_delivery", "sent" if sent else "failed")
+            if sent:
+                self.call_state.contact_repair = False
+        elif self.call_state:
+            self.call_state.entities['email_previous_delivery'] = 'sent' if sent else 'failed'
+        return bool(sent)
+
+    def _queue_confirmation_email(self, recipient: str) -> bool:
+        key = (str(self._last_booking_id), recipient)
+        if self._deliveries.get(key) in ('queued', 'sending', 'sent'):
+            return False
+        if self.call_state and (self.call_state.entities.get('email') != recipient
+                                or self.call_state.entities.get('email_confirmed') != 'yes'
+                                or self.call_state.cancel_requested):
+            return False
+        self._deliveries[key] = 'queued'
+        if self.call_state:
+            self.call_state.update_entity("email_delivery", "queued")
+        snapshot = (str(self._last_booking_id), self._last_booking_name, self._last_booking_time, self._last_booking_service or '')
+        task = asyncio.create_task(self._send_confirmation_email(recipient, snapshot))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return True
 
     @llm.function_tool
     async def end_call(self, outcome: str, reason: str = "") -> str:
@@ -820,8 +1001,69 @@ class AppointmentTools(llm.ToolContext):
             return "Unable to retrieve contact history."
 
     @llm.function_tool
-    async def remember_details(self, insight: str) -> str:
-        """Store an insight about the lead. Triggers Gemini Flash compression at ≥5 entries."""
+    async def remember_details(self, insight: str, context: RunContext = None) -> str:
+        """Save NEW caller-provided details, never business facts or your answer.
+        A confirmed corrected email updates the existing booking recipient without rebooking."""
+        # The revision-aware ledger coalesces duplicates. A blanket SDK reject
+        # also blocked a legitimate retry after recording caller confirmation.
+        result = await self.work.run('recipient' if self._last_booking_id else 'memory', {'insight': insight},
+                                     lambda: self._remember_details(insight), context)
+        # Speak verified action outcomes directly. A model previously turned a
+        # rejected write into "email sent" when paraphrasing the tool result.
+        if context is not None and self._last_booking_id:
+            ta = bool(self.call_state and self.call_state.language == 'ta')
+            spoken = None
+            if result.startswith('Confirmation recipient corrected;'):
+                spoken = ('Email address save ஆயிடுச்சு. Confirmation email queue-ல இருக்கு; இன்னும் delivery உறுதி ஆகலை.' if ta
+                          else 'The recipient is saved. The confirmation email is queued; delivery is not yet confirmed.')
+            elif result.startswith('Could not update or verify'):
+                spoken = ('Email address update-ஐ உறுதி செய்ய முடியலை. புதிய confirmation email அனுப்பலை.' if ta
+                          else 'I could not verify the recipient update. No new confirmation email was sent.')
+            if spoken:
+                context.session.say(spoken, allow_interruptions=True, add_to_chat_ctx=True)
+                return llm.ToolResult(result, reply_required=False)
+        return result
+
+    async def _remember_details(self, insight: str) -> str:
+        if getattr(self, '_test_read_only', False) is True:
+            return 'Read-only call test: no contact write or email was submitted.'
+        from contact_corrections import latest_email
+        freshly_confirmed = bool(self.call_state and self.call_state.confirmed_at_turn.get('email') == self.call_state.user_turn_id)
+        if self.call_state and self._last_booking_id and (self.call_state.contact_repair or latest_email(insight) or freshly_confirmed):
+            from contact_corrections import latest_email
+            current = self.call_state.entities.get("email")
+            # The model need not copy a trusted address into a free-text insight.
+            # A freshly confirmed current-call value is the source of truth.
+            recipient = latest_email(insight) or (current if freshly_confirmed else '')
+            if not recipient or recipient != current or self.call_state.entities.get("email_confirmed") != "yes":
+                return ("Confirm the complete corrected email with the caller first. No new email has been sent to this unconfirmed address. "
+                        "If the latest caller turn already confirms the read-back, record that using update_call_details "
+                        "with field=email, confirmed=true and current turn_id; then retry this update. "
+                        "Do not ask for confirmation again when already supplied. No recipient update or sending succeeded here.")
+            delivery = self._deliveries.get((str(self._last_booking_id), recipient)) or (self.call_state.entities.get('email_delivery') if self._last_booking_email == recipient else None)
+            if delivery in ('queued', 'sending', 'sent'):
+                if delivery != 'sent' or not self.call_state.email_retry_requested:
+                    return f'The corrected confirmation email is already {delivery}. Do not resend; queued/sending is not delivered.'
+            if delivery == 'failed' and not self.call_state.email_retry_requested:
+                return 'The previous email attempt failed. No automatic resend was made. Ask the caller whether to retry; do not claim delivery.'
+            try:
+                self.work.committing()
+                saved = await db.update_confirmation_email(str(self._last_booking_id), self.phone_number, recipient)
+            except Exception:
+                saved = False
+            if not saved:
+                return "Could not update or verify the confirmation recipient. Do not claim a successful update or email delivery. The appointment date/time were not changed by this operation."
+            if self.call_state.entities.get('email') != recipient or self.call_state.entities.get('email_confirmed') != 'yes':
+                return 'An earlier recipient update finished, but the caller has since corrected it. The latest recipient is not yet saved. Confirm it and update again; nothing was queued to the rejected address.'
+            self._last_booking_email = recipient
+            if self.call_state.email_retry_requested:
+                self._deliveries.pop((str(self._last_booking_id), recipient), None)
+                self.call_state.email_retry_requested = False
+            queued = self._queue_confirmation_email(recipient)
+            if not queued:
+                return 'Recipient saved and verified locally. No email was queued because sending is cancelled or already in progress.'
+            suffix = ' The external calendar attendee has not been changed; do not claim it was.' if calcom_enabled() else ''
+            return "Confirmation recipient corrected; email queued, not yet sent. Existing appointment date and time are unchanged." + suffix
         if insight:
             self._remembered_insights.append(str(insight))
         if not self.phone_number or self.phone_number == "unknown":
@@ -853,7 +1095,7 @@ class AppointmentTools(llm.ToolContext):
                 return
             import google.generativeai as genai
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-2.0-flash")
+            model = genai.GenerativeModel(os.getenv('MEMORY_SUMMARY_MODEL', '').strip() or config.GEMINI_LLM_MODEL)
             bullets = "\n".join(f"- {m['insight']}" for m in mems)
             prompt = f"Compress these notes about a sales contact into 3-5 concise bullets. Keep all key facts.\n\n{bullets}"
             resp = await asyncio.to_thread(model.generate_content, prompt)

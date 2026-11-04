@@ -164,7 +164,19 @@ def start_log_drain() -> None:
             _drain_tasks[loop] = loop.create_task(_drain_logs())
 
 
+def _logger_name(logger, method_name, event_dict):
+    if "logger_name" in event_dict:
+        event_dict["logger"] = event_dict.pop("logger_name")
+    return event_dict
+
+
 def init_observability() -> None:
+    # Windows redirected streams default to cp1252, which cannot log Indic text.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            pass  # pytest/notebooks may supply streams without reconfigure().
     dsn = os.getenv("SENTRY_DSN", "")
     if dsn:
         sentry_sdk.init(
@@ -180,12 +192,13 @@ def init_observability() -> None:
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
+            _logger_name,
             structlog.stdlib.add_log_level,
             timestamper,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             _bridge_processor,  # mirror every event into the Live Logs buffer
-            structlog.processors.JSONRenderer(),
+            structlog.processors.JSONRenderer(ensure_ascii=True),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
@@ -260,4 +273,6 @@ def get_logger(name: str) -> structlog.BoundLogger:
     # Bind the module name so the bridge can derive a stable source label. (The
     # previous positional-name form was discarded by PrintLoggerFactory, so the
     # name never reached the event dict.)
-    return structlog.get_logger().bind(logger=name)
+    # Keep the proxy lazy: knowledge/db are imported BEFORE init_observability.
+    # Eager .bind() freezes structlog's default console renderer at import time.
+    return structlog.get_logger(logger_name=name)

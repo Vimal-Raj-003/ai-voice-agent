@@ -63,6 +63,10 @@ import config  # noqa: E402
 import db  # noqa: E402
 import lang  # noqa: E402
 import knowledge  # noqa: E402
+from conversation_style import conversation_tone, tone_directive, guard_spoken_opening, neutral_address, guard_verified_actions  # noqa: E402
+from contact_corrections import guard_repeated_repair, latest_email, correction_requested, EMAIL_TOPIC  # noqa: E402
+from contact_corrections import PRESENCE as _RE_PRESENCE  # noqa: E402
+from response_timing import with_first_voice_target  # noqa: E402
 import provider_registry  # noqa: E402
 import provider_credentials  # noqa: E402
 import llm_routing  # noqa: E402
@@ -89,7 +93,7 @@ PROVIDER_HEALTH = _ph.ProviderHealth(log=lambda ev, **kw: logger.warning(ev, **k
 # Build marker logged at worker boot (_prewarm) and per job (entrypoint). Bump
 # this string whenever agent.py changes so the live logs prove which code the
 # running worker actually loaded. Absent from logs ⇒ worker not restarted.
-AGENT_BUILD = "2026-10-25-zerolag"
+AGENT_BUILD = "2026-11-04-understanding-v14"
 
 
 def _warm_linecache() -> None:
@@ -140,13 +144,6 @@ _RE_FRUSTRATION = re.compile(
 # the quick "yes, I'm here" reply + "never re-greet" is handled by the prompt +
 # the normal turn. The code value here is observability + COALESCING: a presence
 # utterance arriving while a reply is already pending must NOT spawn another.
-_RE_PRESENCE = re.compile(
-    r"^\s*(hello+|hallo+|hi+|you\s+there|are\s+you\s+(there|still\s+there)"
-    r"|can\s+you\s+hear\s+me|still\s+there|helo+)\s*[?.!]*\s*$"
-    r"|கேக்குதா|கேட்குதா|இருக்கீ\w*|கேட்குதா|ஹலோ",
-    re.I,
-)
-
 # Android / carrier call-recording consent announcements played by the caller's
 # handset when they toggle call recording. Never spoken by the human caller:
 # must not lock language to English, arm dead-air, or trigger an LLM reply.
@@ -294,7 +291,7 @@ def is_rate_limited(phone: str) -> bool:
 
 # ── Session factory ──────────────────────────────────────────────────────────
 
-def _build_pipeline_llm(route: "llm_routing.LlmRoute"):
+def _build_pipeline_llm(route: "llm_routing.LlmRoute", profile: dict | None = None):
     """Build the PRIMARY pipeline LLM for an already-resolved route.
 
     The route decides the provider; this only instantiates it. There is no
@@ -306,7 +303,7 @@ def _build_pipeline_llm(route: "llm_routing.LlmRoute"):
                      root_cause=route.reason, source="LLM",
                      impact="no LLM for this call — the agent cannot answer turns")
         return None
-    llm_obj = llm_routing.build_llm(route.primary_provider, route.primary_model)
+    llm_obj = llm_routing.build_llm(route.primary_provider, route.primary_model, profile=profile)
     if llm_obj is None:
         logger.error("primary_llm_build_failed", **route.log_fields(), source="LLM")
         return None
@@ -350,7 +347,7 @@ _GROQ_COOLDOWN_S = max(30.0, min(60.0, float(os.getenv("GROQ_COOLDOWN_SECONDS", 
 _LLM_ITPM_BUDGET = int(os.getenv("LLM_INPUT_TOKENS_PER_MINUTE", "8000"))
 
 
-def _build_fallback_llm(route: "llm_routing.LlmRoute") -> tuple[Any, str | None]:
+def _build_fallback_llm(route: "llm_routing.LlmRoute", profile: dict | None = None) -> tuple[Any, str | None]:
     """Build the per-turn fallback LLM for an already-resolved route.
 
     By default this is a DIFFERENT MODEL ON THE SAME PROVIDER (a separate
@@ -362,7 +359,7 @@ def _build_fallback_llm(route: "llm_routing.LlmRoute") -> tuple[Any, str | None]
         logger.warning("fallback_llm_none", **route.log_fields(), root_cause=route.reason,
                        source="LLM", impact="a primary failure ends the turn with a repair line")
         return None, None
-    llm_obj = llm_routing.build_llm(route.fallback_provider, route.fallback_model)
+    llm_obj = llm_routing.build_llm(route.fallback_provider, route.fallback_model, profile=profile)
     if llm_obj is None:
         return None, None
     return llm_obj, f"{route.fallback_provider}/{route.fallback_model}"
@@ -496,6 +493,16 @@ def _limit_is_account_wide(err: BaseException | None) -> bool:
     return bool(re.search(r"(account|organization|organisation)[- ]?(wide|level|limit)", msg))
 
 
+def _tool_continuation(chat_ctx: Any) -> bool:
+    """A tool result after the latest user belongs to an authorized caller turn."""
+    output = False
+    for item in reversed(chat_ctx.items):
+        if getattr(item, 'role', '') == 'user':
+            return output
+        output |= getattr(item, 'type', '') == 'function_call_output'
+    return False
+
+
 def _safe_to_release(text: str) -> bool:
     """A reply is safe to START speaking once it has a real sentence (a terminator
     or enough content). This lets a genuine short ack through ("Yes.", "I'm here.",
@@ -504,7 +511,7 @@ def _safe_to_release(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
-    return len(t) >= 25 or any(p in t for p in (".", "!", "?", "\n", "।"))
+    return (len(t) >= 12 and len(t.split()) >= 2) or any(p in t for p in (".", "!", "?", "\n", "।"))
 
 
 async def _stream_gated(llm_obj: Any, chat_ctx: Any, tools: list, tool_choice: Any,
@@ -521,10 +528,32 @@ async def _stream_gated(llm_obj: Any, chat_ctx: Any, tools: list, tool_choice: A
     released = False
     acc = ""
     result["status"], result["err"], result["text"] = "error", None, ""
+    useful_deadline = time.monotonic() + max(.01, float(os.getenv('VOICE_USEFUL_TEXT_TIMEOUT_S', '4.5')))
+    idle_timeout = max(.01, float(os.getenv('VOICE_STREAM_IDLE_TIMEOUT_S', '4.0')))
     try:
+        trace = result.get('trace')
+        if trace:
+            trace('llm_request_start')
+        first_text = False
         async with llm_obj.chat(chat_ctx=chat_ctx, tools=tools,
                                 tool_choice=tool_choice, conn_options=conn) as stream:
-            async for chunk in stream:
+            iterator = stream.__aiter__()
+            while True:
+                try:
+                    # Per-I/O HTTP timeouts can be kept alive by whitespace or
+                    # SSE traffic. Bound useful output independently of that.
+                    timeout = idle_timeout if released else max(0., useful_deadline-time.monotonic())
+                    async with asyncio.timeout(timeout):
+                        chunk = await anext(iterator)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    result['timeout_phase'] = 'stream_idle' if released else 'useful_prefix'
+                    raise
+                if not first_text and getattr(getattr(chunk, 'delta', None), 'content', None):
+                    first_text = True
+                    if trace:
+                        trace('first_model_text')
                 if released:
                     yield chunk
                     continue
@@ -622,6 +651,8 @@ def _build_sarvam_tts(profile: dict | None):
                 pace=config.SARVAM_PACE,
                 speech_sample_rate=config.SARVAM_SAMPLE_RATE,
                 output_audio_codec="linear16",
+                min_buffer_size=config.SARVAM_MIN_BUFFER_SIZE,
+                max_chunk_length=config.SARVAM_MAX_CHUNK_LENGTH,
             )
             # Log the speaker ACTUALLY in use, so a stale value on the assistant
             # can never be mistaken for what the caller hears.
@@ -629,7 +660,8 @@ def _build_sarvam_tts(profile: dict | None):
                         model=config.SARVAM_MODEL, speaker=cand,
                         requested_voice=((profile or {}).get("voice") or "") or cand,
                         seed_language_code=config.SARVAM_LANGUAGE,
-                        pace=config.SARVAM_PACE, source="TTS")
+                        pace=config.SARVAM_PACE, min_buffer_size=config.SARVAM_MIN_BUFFER_SIZE,
+                        max_chunk_length=config.SARVAM_MAX_CHUNK_LENGTH, source="TTS")
             return tts_obj
         except Exception as exc:
             logger.warning("sarvam_tts_build_failed", speaker=cand, error=str(exc))
@@ -923,7 +955,8 @@ def _build_session(tools: list, system_prompt: str, profile: dict | None = None,
             kwargs["session_resumption"]         = session_resumption_cfg
             kwargs["context_window_compression"] = ctx_compression_cfg
 
-        rt_session = AgentSession(llm=RealtimeClass(**kwargs), tools=tools)
+        rt_session = AgentSession(llm=RealtimeClass(**kwargs), tools=tools,
+                                  user_away_timeout=float(profile.get('silence_timeout_seconds') or 30))
         # Realtime (Gemini Live) handles language internally — no per-turn TTS routing.
         rt_session._jj_pipeline = False      # type: ignore[attr-defined]
         rt_session._jj_tts = None            # type: ignore[attr-defined]
@@ -1057,7 +1090,7 @@ def _build_session(tools: list, system_prompt: str, profile: dict | None = None,
                      source="STT")
 
     # Provider selection is the source of truth — resolve once, reuse here.
-    llm_obj = _build_pipeline_llm(route or llm_routing.resolve_route(profile))
+    llm_obj = _build_pipeline_llm(route or llm_routing.resolve_route(profile), profile)
 
     # ── TTS: PRIMARY = Gemini TTS (GOOGLE_API_KEY); Sarvam only an OPTIONAL
     # fallback (never required). A FallbackAdapter wraps primary+backup so a
@@ -1220,8 +1253,8 @@ def _build_session(tools: list, system_prompt: str, profile: dict | None = None,
     # Attaching a VAD gives the session a speech signal independent of
     # transcripts, restoring mid-utterance interruption. Only attached when the
     # selected STT genuinely emits no interims, so Deepgram's existing timing is
-    # untouched. turn_detection stays "stt" either way — this does not change
-    # who decides a turn has ENDED.
+    # untouched. The shared turn policy below decides who ends the turn;
+    # preemptive preparation uses this same VAD and keeps the pause floor.
     _session_kwargs: dict[str, Any] = {}
     _stt_def_used = provider_registry.get(stt_provider_actual, "STT")
     if stt_provider_actual and _stt_def_used and not _stt_def_used.emits_interim:
@@ -1232,30 +1265,24 @@ def _build_session(tools: list, system_prompt: str, profile: dict | None = None,
                         reason="selected STT emits no interim transcripts",
                         effect="interruption detected from speech onset rather than "
                                "waiting for the final transcript",
-                        turn_detection="stt", source="STT")
+                        source="STT")
         else:
             logger.warning("bargein_degraded", stt_provider=stt_provider_actual,
                            reason="no interim transcripts and VAD unavailable",
                            impact="interruption only after the caller stops speaking",
                            source="STT")
 
+    from turn_policy import voice_turn_options
+    _turn_options = voice_turn_options(profile, has_vad='vad' in _session_kwargs)
+    logger.info('voice_turn_policy', endpointing=_turn_options['endpointing'],
+                turn_detection=_turn_options['turn_detection'],
+                preemptive_generation=_turn_options['preemptive_generation']['enabled'],
+                interruption=_turn_options['interruption'], source='SESSION')
     session = AgentSession(
         stt=stt, llm=llm_obj, tts=tts, tools=tools, **_session_kwargs,
         conn_options=SessionConnectOptions(llm_conn_options=_llm_conn),
-        turn_detection="stt",
-        # Start generating the reply the instant a transcript is available, in
-        # parallel with the end-of-turn endpointing wait, instead of after it.
-        # This removes a large chunk of the "user stops → AI starts" gap; a newer
-        # user turn discards the speculative generation (latest turn wins).
-        preemptive_generation=True,
-        min_endpointing_delay=config.MIN_ENDPOINTING_DELAY,
-        # Barge-in tuning: 0.70s and 2 recognised words ensures callers can
-        # interrupt when speaking a full thought ("Wait a minute", "இல்ல வேணாம்"),
-        # while preventing single words ("Hello", "ஹலோ", "ஆம்") or background/line
-        # transients from killing an in-flight reply before the caller hears it.
-        min_interruption_duration=0.70,
-        min_interruption_words=2,
-        resume_false_interruption=True,
+        turn_handling=_turn_options,
+        user_away_timeout=float(profile.get('silence_timeout_seconds') or 30),
     )
     # Expose the pipeline TTS so the entrypoint can switch its language per turn
     # (multilingual routing). Realtime mode handles language internally.
@@ -1274,13 +1301,10 @@ def _build_session(tools: list, system_prompt: str, profile: dict | None = None,
 
 # Max chat-context items (user/assistant/tool messages) re-sent to the LLM each
 # turn. The system prompt is preserved separately by ChatContext.truncate(), so
-# this bounds ONLY the rolling conversation history. Groq free tier is ~7000
-# input-tokens/min (ITPM); history grows ~1 user+1 assistant item per turn, so an
-# unbounded context makes every later request re-send the whole transcript and
-# blows ITPM mid-call → 429. 6 items ≈ the last ~3 exchanges, which (with a
-# compact system prompt + minimal tools) keeps TOTAL per-request input near
-# 700–900 tokens — low enough that a normal multi-turn call stays under ITPM.
-MAX_HISTORY_ITEMS = 6
+# this bounds only the rolling conversation history to about six exchanges.
+# Structured CallState retains intake details beyond this window. Provider
+# budget guards still account for the actual prompt and tool token estimates.
+MAX_HISTORY_ITEMS = 12
 
 
 def _count_tool_tokens(tool_list: list) -> int:
@@ -1314,6 +1338,7 @@ def sanitize_spoken_text(text: str) -> str:
     never pronounces digits as Tamil words ('இரண்டு பூஜ்ஜியம் இரண்டு ஆறு...')."""
     if not text:
         return text
+    text = neutral_address(text)
 
     def _rep_date(m: re.Match) -> str:
         try:
@@ -1373,6 +1398,95 @@ class BoundedAgent(Agent):
     REAL total input-token breakdown per turn (not just the system prompt) so we
     can see exactly what Groq receives and why ITPM (429) is or isn't hit."""
 
+    def _voice_stage(self, stage, *, turn_id=None, **fields):
+        event = dict(stage=stage, turn_id=(turn_id if turn_id is not None else
+                     getattr(self._call_state, 'user_turn_id', None)),
+                     at_mono=time.monotonic(), at_wall=time.time(), **fields)
+        if not hasattr(self, '_stage_events'):
+            self._stage_events = []
+        self._stage_events.append(event)
+        del self._stage_events[:-256]
+        logger.info('voice_stage', call_id=self._room_id, source='SESSION', **event)
+
+    def _is_carrier_context(self, chat_ctx):
+        latest = next((i for i in reversed(chat_ctx.items) if getattr(i, 'role', '') == 'user'), None)
+        return bool(_RE_CARRIER_ANNOUNCEMENT.search(str(getattr(latest, 'text_content', '') or '')))
+
+    def _handle_routed_model_error(self, event):
+        error = getattr(event, 'error', None)
+        if (isinstance(error, llm.LLMError)
+                and getattr(self, '_reply_phase', None) == 'model'):
+            # The custom node owns bounded fallback and a truthful failure reply.
+            # An inner provider stream must not independently close the session.
+            error.recoverable = True
+            category, status = _classify_llm_error(error.error)
+            logger.warning('llm_error_owned_by_router', error_type=category,
+                status_code=status, call_id=self._room_id, source='LLM')
+
+    def _skip_model_context(self, chat_ctx):
+        latest = next((i for i in reversed(chat_ctx.items) if getattr(i, 'role', '') == 'user'), None)
+        text = str(getattr(latest, 'text_content', '') or '')
+        return self._is_carrier_context(chat_ctx) or bool(_RE_PRESENCE.fullmatch(text))
+
+    def _answer_presence(self):
+        language = getattr(self._lang_state, 'active', None) or getattr(self._call_state, 'language', 'en')
+        replies = {
+            'ta': 'ஆமா, கேக்குது. சொல்லுங்க.',
+            'hi': 'हाँ, आपकी आवाज़ आ रही है। बोलिए।',
+            'te': 'అవును, వినిపిస్తోంది. చెప్పండి.',
+            'ml': 'അതെ, കേൾക്കുന്നുണ്ട്. പറയൂ.',
+        }
+        handle = self.session.say(replies.get(language, 'Yes, I can hear you. Go ahead.'),
+                                  allow_interruptions=True, add_to_chat_ctx=True)
+        self._voice_stage('presence_answer_scheduled', speech_id=getattr(handle, 'id', None))
+        return True
+
+    def _track_preparation(self, handle):
+        if not hasattr(self, '_preparation_handles'):
+            self._preparation_handles = {}
+        self._preparation_handles[handle.id] = handle
+        handle.add_done_callback(lambda h: self._preparation_handles.pop(h.id, None))
+
+    def _discard_preparation_on_speech(self):
+        pending = [h for h in getattr(self, '_preparation_handles', {}).values()
+                   if not h.scheduled and not h.done()]
+        if pending:
+            # The public SDK interrupt clears its parked preparation reference,
+            # unlike interrupting an individual unscheduled handle. Existing
+            # CallTasks ownership continues to protect independently committed work.
+            self.session.interrupt()
+            self._voice_stage('preparation_discarded', reason='caller_resumed', count=len(pending))
+
+    def _is_uncommitted_generation(self, chat_ctx):
+        if _tool_continuation(chat_ctx):
+            return False
+        latest = next((i for i in reversed(chat_ctx.items) if getattr(i, 'role', '') == 'user'), None)
+        metrics = getattr(latest, 'metrics', None) or {}
+        committed = getattr(latest, 'id', None) in getattr(self, '_committed_user_ids', set())
+        try:
+            return bool(self.session.options.preemptive_generation['enabled'] and latest
+                        and not committed and not metrics.get('stopped_speaking_at'))
+        except (RuntimeError, AttributeError):
+            return False
+
+    def _resume_announced_greeting(self, turn_ctx):
+        """Recover only an unspoken tail after non-caller recording audio."""
+        handle = getattr(self, '_greeting_handle', None)
+        if (not getattr(handle, 'interrupted', False)
+                or getattr(self, '_greeting_recovered', False)
+                or (self._call_state and self._call_state.user_turn_id)):
+            return
+        original = ' '.join(getattr(self, '_greeting_text', '').split())
+        previous = next((i for i in reversed(turn_ctx.items) if getattr(i, 'role', '') == 'assistant'), None)
+        spoken = ' '.join(str(getattr(previous, 'text_content', '') or '').split())
+        if not original or not spoken or not original.startswith(spoken):
+            return  # Never guess at/replay words the caller may already have heard.
+        remaining = original[len(spoken):].lstrip(' ,;:')
+        if remaining:
+            self._greeting_recovered = True
+            self.session.say(remaining, allow_interruptions=True, add_to_chat_ctx=True)
+            self._voice_stage('greeting_tail_resumed', chars=len(remaining))
+
     def __init__(self, *args: Any, tool_tokens: int = 0,
                  business_context_tokens: int = 0,
                  fallback_llm: Any = None, fallback_label: str | None = None,
@@ -1397,6 +1511,8 @@ class BoundedAgent(Agent):
         self._route = llm_route or llm_routing.resolve_route(None)
         # Website knowledge is per assistant; without this id nothing is retrieved.
         self._assistant_id = assistant_id
+        from prompts import prompt_fingerprint
+        self._instructions_sha = prompt_fingerprint(self.instructions)
         # Primary-provider 429 cooldown (call-level). While active the PRIMARY is
         # skipped and turns go straight to the fallback — which, by default, is a
         # different model on the SAME provider.
@@ -1422,6 +1538,10 @@ class BoundedAgent(Agent):
         # breakdown: when the LLM node started and when the FIRST spoken token
         # (first released chunk) was produced — the real first-token signal.
         self._turn_timing: dict = {"llm_start": 0.0, "first_token": 0.0}
+        from response_timing import ResponseTiming
+        self._response_timing = ResponseTiming(log=lambda event, **fields: logger.info(
+            event, call_id=self._room_id, runtime_build=AGENT_BUILD, source='SESSION', **fields))
+        self._reply_phase = None
         # Consecutive all-providers-failed turns, to avoid repeating the same
         # repair line when every provider is genuinely down.
         self._consec_recovery = 0
@@ -1434,17 +1554,13 @@ class BoundedAgent(Agent):
         c = max(1, self._consec_recovery)
         if active == "ta":
             variants = [
-                "மன்னிச்சிருங்க, உங்க குரல் சரியா கேக்கல. கொஞ்சம் திரும்ப சொல்ல முடியுமா?",
-                "சொல்லுங்க, நான் கேட்டுக்கிட்டு இருக்கேன்.",
-                "லைன்லதான் இருக்கேன், ஒரு நிமிஷம் திரும்ப சொல்லுங்க.",
-                "கேக்குதுங்க, கொஞ்சம் மெதுவா சொல்ல முடியுமா?",
+                "இப்போ பதிலை முடிக்க முடியல. மீண்டும் முயற்சி செய்யலாமா?",
+                "சேவை இன்னும் கிடைக்கல. இப்போ என்னால உறுதி செய்ய முடியாது.",
             ]
             return variants[(c - 1) % len(variants)]
         variants_en = [
-            "Sorry, I didn't catch that clearly. Could you say it once more?",
-            "Please go ahead, I'm listening.",
-            "I'm right here on the line, please go ahead.",
-            "I hear you, could you please repeat that a little more slowly?",
+            "I could not complete the response right now. Would you like me to try again?",
+            "The service is still unavailable. I cannot confirm that right now.",
         ]
         return variants_en[(c - 1) % len(variants_en)]
 
@@ -1466,13 +1582,17 @@ class BoundedAgent(Agent):
                     break
             if not latest.strip():
                 return ""
+            from contact_corrections import turn_intent
+            state = getattr(self, '_call_state', None)
+            if (turn_intent(latest) in ('presence', 'status', 'cancel')
+                    or latest_email(latest)
+                    or (correction_requested(latest) and (EMAIL_TOPIC.search(latest) or getattr(state, 'contact_repair', False)))):
+                return ""  # Contact spelling is caller data, not a business-knowledge query.
             if (
                 _RE_CARRIER_ANNOUNCEMENT.search(latest)
                 or _RE_SKIP_KB.search(latest.strip())
                 or lang.is_short_ack(latest)
             ):
-                return ""
-            if not await knowledge.has_knowledge(self._assistant_id):
                 return ""
             # TIME-BOUNDED. This runs inside llm_node BEFORE the LLM is called,
             # so an unbounded wait here means the caller hears nothing at all.
@@ -1485,12 +1605,11 @@ class BoundedAgent(Agent):
             # allow_cold_load=False falls back to fast SQL keyword search (~15 ms)
             # whenever the ONNX embedder is still cold or busy warming.
             _kb_t0 = time.monotonic()
-            hits = await asyncio.wait_for(
-                knowledge.search(
-                    self._assistant_id, latest.strip(), top_k=4, allow_cold_load=False
-                ),
-                timeout=float(os.getenv("KNOWLEDGE_LOOKUP_TIMEOUT_S", "1.0")),
-            )
+            async with asyncio.timeout(float(os.getenv("KNOWLEDGE_LOOKUP_TIMEOUT_S", "1.0"))):
+                # Include the cache-miss DB check in the existing deadline too.
+                if not await knowledge.has_knowledge(self._assistant_id):
+                    return ''
+                hits = await knowledge.search(self._assistant_id, latest.strip(), top_k=4, allow_cold_load=False)
             # Timed explicitly. Without this the knowledge stage is invisible: it
             # runs before llm_start is stamped, so its cost hides inside
             # turn_latency_breakdown's stt_final_to_llm_start_ms and a slow
@@ -1503,15 +1622,10 @@ class BoundedAgent(Agent):
                 # Nothing relevant: guide the model without sabotaging normal
                 # conversational or appointment-booking turns.
                 return (
-                    "[BUSINESS INFORMATION] No specific document excerpt matched this turn. "
-                    "If the caller shares personal feelings, sadness, illness, pain or depression, "
-                    "respond with warm human empathy ('அச்சச்சோ, அப்படியா... கேட்கவே ரொம்ப கஷ்டமா இருக்கு...'). "
-                    "Do NOT recite a cold corporate disclaimer about services when someone shares personal distress. "
-                    "If they ask for other commercial services outside our business (e.g. dental, loans, etc.), "
-                    "answer clearly: state what VIMS Enterprise provides (Software, AI Automation, Web, Content) "
-                    "and that we do not provide those other services. NEVER transfer to human unless "
-                    "the caller explicitly asks for a human. If they ask for an unknown specific company "
-                    "fact/price not in your prompt, say: 'மன்னிக்கவும், அதைப் பற்றிய உறுதியான தகவல் என்னிடம் இல்லை.'"
+                    "[BUSINESS INFORMATION] No verified document excerpt matched this question. "
+                    "Use only established business facts or tools. If the requested service or "
+                    "appointment is not supported, explain that briefly; do not invent capabilities. "
+                    "Keep the caller's ongoing situation and latest question in context."
                 )
             return knowledge.build_context(hits)
         except (TimeoutError, asyncio.TimeoutError):
@@ -1528,18 +1642,32 @@ class BoundedAgent(Agent):
                            call_id=self._room_id, source="KNOWLEDGE")
             return ""
 
-    def _apply_language_directive(self, chat_ctx: Any) -> Any:
+    def _apply_language_directive(self, chat_ctx: Any, *, preview=False, state_override=None) -> Any:
         """Append a system directive pinning the reply to the persistent
         conversation language. Runs for EVERY generation in this node (primary,
         retry, fallback), so the language survives fallback/retry/tool turns
         (rule 10). Returns a COPY of chat_ctx so the shared history is untouched."""
-        st = self._lang_state
+        instructions = getattr(self, 'instructions', None)
+        if instructions and chat_ctx is not None and not any(
+                getattr(item, 'role', None) == 'system' and instructions in (getattr(item, 'text_content', '') or '')
+                for item in chat_ctx.items):
+            chat_ctx = chat_ctx.copy()
+            chat_ctx.add_message(role='system', content=instructions)
+        from copy import copy
+        st = copy(self._lang_state) if preview else self._lang_state
+        state = state_override if state_override is not None else self._call_state
+        if preview and state_override is None and state is not None:
+            state = state.preparation_copy()
         # Synchronously observe the latest user message in chat_ctx before building
         # the directive: with preemptive_generation=True, AgentSession's internal
         # listener can invoke llm_node BEFORE the entrypoint's _lang_route handler
         # runs, which previously left _lang_state un-established on turn 1!
         latest_user = ""
+        latest_user_id = None
+        latest_assistant = ""
+        latest_assistant_id = None
         user_turn_count = 0
+        user_messages = []
         assistant_turn_count = 0
         if chat_ctx is not None:
             try:
@@ -1549,8 +1677,12 @@ class BoundedAgent(Agent):
                         user_turn_count += 1
                         c = getattr(item, "content", "")
                         latest_user = " ".join(str(x) for x in c) if isinstance(c, list) else str(c)
+                        latest_user_id = getattr(item, 'id', None)
+                        user_messages.append(latest_user)
                     elif r == "assistant":
                         assistant_turn_count += 1
+                        latest_assistant = str(getattr(item, "text_content", "") or "")
+                        latest_assistant_id = getattr(item, 'id', None)
             except Exception:
                 pass
 
@@ -1559,9 +1691,9 @@ class BoundedAgent(Agent):
                 explicit = lang.detect_explicit_language_switch(latest_user)
                 changed = st.observe(None, latest_user, explicit)
                 if getattr(st, "established", False):
-                    if self._call_state is not None:
-                        self._call_state.set_language(st.active)
-                    if changed:
+                    if state is not None:
+                        state.set_language(st.active)
+                    if changed and not preview:
                         _sess = getattr(self, "session", None)
                         _ml_tts = getattr(_sess, "_jj_tts", None)
                         _ml_prov = getattr(_sess, "_jj_tts_provider", "")
@@ -1575,16 +1707,28 @@ class BoundedAgent(Agent):
                                 _ml_tts.update_options(**{_rt["kwarg"]: _rt["lang"]})
             except Exception:
                 pass
+        self._response_tone = conversation_tone(user_messages, initial=getattr(state, 'response_tone', 'neutral'))
+        emotional_context = tone_directive(self._response_tone)
         directive = lang.llm_language_directive(getattr(st, "active", "en")) if (st and getattr(st, "established", False)) else None
         # Deterministic structured memory (Step B): survives history truncation,
         # carries confirmed tool facts + known slots + pending question so the
         # model never re-asks and never contradicts a confirmed fact.
         state_line = None
-        if self._call_state is not None:
+        if state is not None:
             try:
-                state_line = self._call_state.to_directive()
+                state.observe_assistant(latest_assistant, message_id=latest_assistant_id)
+                # Reused SDK preparation retains its original message id, but
+                # acquires finalized metrics. It is the already committed turn.
+                metrics = getattr(next((i for i in reversed(chat_ctx.items) if getattr(i, 'role', '') == 'user'), None), 'metrics', None) or {}
+                if not (_tool_continuation(chat_ctx) or
+                        (metrics.get('stopped_speaking_at') and state._last_observed_user == latest_user)):
+                    state.observe_user(latest_user, message_id=latest_user_id)
+                state_line = state.to_directive()
             except Exception:
                 state_line = None
+
+        self._previous_spoken_reply = latest_assistant
+        self._contact_repair_active = bool(state and state.contact_repair and state.entities.get('email_confirmed') != 'yes')
 
         # Mid-call presence locking:
         # If caller says "hello?" / "கேக்குதா?" / "are you there?" MID-CALL (call already started),
@@ -1623,31 +1767,78 @@ class BoundedAgent(Agent):
 
         spoken_rules = (
             "[SPOKEN PHONE RULES]\n"
-            "• Speak EXACTLY ONE clear, concise thought or question per turn.\n"
+            "• Answer ONLY the latest caller request in one or two short sentences. For an information question, give the answer and STOP. Do not add intake, a booking recap, or a question about a different topic. Ask one clarification only if that request is unclear.\n"
+            "• Address callers only as நீங்க/நீங்கள்; no sir, madam, ma'am, ஐயா, சார் or மேடம். Never guess gender.\n"
+            "• Keep the original caller problem and explicit constraints from CALLER EVIDENCE. Date/time replies are not names. A corrected field does not change other confirmed fields.\n"
             "• NATURAL DATES & NUMBERS: NEVER speak dates as ISO format or raw years (NEVER say '2026-11-01' or 'இரண்டு பூஜ்ஜியம்...'). "
-            "Always speak dates naturally: 'நாளைக்கு காலை 11:00 AM' (tomorrow 11 AM) or 'November 2nd 5:00 PM'.\n"
-            "• ENGLISH FOR NUMBERS & TIMES: Always write and speak times, dates, and numbers in English/digits (e.g., '11:00 AM', '5:00 PM', 'Booking ID 12345'). NEVER write or say 'பூஜ்ஜியம்' or spell out numbers in Tamil words!\n"
-            "• If caller's name or input was faint or missed: politely ask once: "
-            "'மன்னிச்சிடுங்க, உங்க குரல் சரியா கேக்கல, இன்னொரு முறை கொஞ்சம் சத்தமா சொல்ல முடியுமா?'"
+            "Speak the actual confirmed calendar date and time naturally. Do not prepend today/tomorrow to an absolute date unless it matches the current IST system context.\n"
+            "• Follow the saved assistant's spoken date/number style; preserve the actual value and clarify AM/PM when genuinely ambiguous.\n"
+            "• Do not infer poor audio from an unusual name or spelling. If only one part is unclear, ask only about that part."
         )
+        if state is not None and state.direction == 'INBOUND':
+            spoken_rules += ('\n• Transport confirms INBOUND: the caller called this business. '
+                             'This is background context, not an opening to repeat. Mention who called '
+                             'ONLY if the latest question actually asks why you called them or who initiated the call. '
+                             'For that question, politely clarify நீங்க எங்களுக்கு call பண்ணியிருக்கீங்க. '
+                             'For services, hospital/software, pricing or other questions, answer that topic directly; '
+                             'do not prepend the call direction or restart an introduction.')
+        elif state is not None and state.direction == 'OUTBOUND':
+            spoken_rules += ('\n• Transport confirms OUTBOUND: identify the configured business and explain '
+                             'its saved outbound purpose when asked why you called. Do not say the caller '
+                             'called you, invent a prior enquiry or ask an unrelated intake question.')
 
         if not directive and not state_line and not presence_line and not spoken_rules and not tanglish_line:
             return chat_ctx
         try:
             ctx2 = chat_ctx.copy()
-            if state_line:
-                ctx2.add_message(role="system", content=state_line)
             if directive:
                 ctx2.add_message(role="system", content=directive)
             if presence_line:
                 ctx2.add_message(role="system", content=presence_line)
             if tanglish_line:
                 ctx2.add_message(role="system", content=tanglish_line)
+            if emotional_context:
+                ctx2.add_message(role="system", content=emotional_context)
+            if state_line:
+                # Current caller/state outrank static workflow hints. One copy,
+                # at the end, rather than competing repeated system directives.
+                ctx2.add_message(role='system', content=state_line)
             if spoken_rules:
-                ctx2.add_message(role="system", content=spoken_rules)
+                ctx2.add_message(role='system', content=spoken_rules)
+            if getattr(self, '_test_read_only', False) is True:
+                ctx2.add_message(role='system', content=(
+                    '[READ-ONLY CALL TEST] Answer questions and update local conversation details only. '
+                    'You cannot book, check a live calendar, send email/SMS, transfer calls or store contact memory in this test. '
+                    'If asked, briefly explain this test limitation; never claim the action happened.'))
             return ctx2
         except Exception:
             return chat_ctx
+
+    async def stt_node(self, audio, model_settings):  # type: ignore[override]
+        from livekit.agents import stt
+        async for event in Agent.default.stt_node(self, audio, model_settings):
+            if getattr(event, 'type', None) == stt.SpeechEventType.FINAL_TRANSCRIPT:
+                alternatives = getattr(event, 'alternatives', [])
+                if alternatives:
+                    alternative = alternatives[0]
+                    text = alternative.text.strip()
+                    score = getattr(alternative, 'confidence', None)
+                    if not hasattr(self, '_transcript_confidence'):
+                        self._transcript_confidence = {}
+                    # Sarvam maps language_probability to SpeechData.confidence;
+                    # it measures language detection, not transcript accuracy.
+                    provider = getattr(self.session, '_jj_stt_provider', '')
+                    self._transcript_confidence[text] = (
+                        score if provider != 'sarvam' and isinstance(score, (int, float))
+                        and not isinstance(score, bool) and 0 < score <= 1 else None)
+                    while len(self._transcript_confidence) > 32:
+                        self._transcript_confidence.pop(next(iter(self._transcript_confidence)))
+            yield event
+
+    def _needs_confidence_clarification(self, text):
+        threshold = getattr(self, '_confidence_threshold_pct', 0)
+        score = getattr(self, '_transcript_confidence', {}).get(text.strip())
+        return bool(threshold and score is not None and score * 100 < threshold)
 
     async def tts_node(self, text, model_settings):  # type: ignore[override]
         """Per-turn TTS observability (req 10).
@@ -1658,13 +1849,24 @@ class BoundedAgent(Agent):
         provider error is re-raised so the existing failover still runs.
         """
         t0 = time.monotonic()
+        tts_turn = getattr(self._call_state, 'user_turn_id', None)
         parts: list[str] = []
         first_audio_ms: int | None = None
         frames = 0
 
         async def _tee():
             buf = ""
-            async for chunk in text:
+            spoken = text
+            if getattr(self, "_contact_repair_active", False):
+                repair_line = ("Please spell the complete correct email address so I can update it accurately.")
+                if self._lang() == "ta":
+                    repair_line = "சரியான email spelling-ஐ எழுத்து எழுத்தாகச் சொல்லுங்கள்."
+                spoken = guard_repeated_repair(text, getattr(self, "_previous_spoken_reply", ""), repair_line)
+            spoken = guard_spoken_opening(spoken, getattr(self, "_response_tone", "neutral"))
+            spoken = guard_verified_actions(spoken, self._call_state,
+                read_only=getattr(self, '_test_read_only', False), language=self._lang(),
+                log=lambda event, **kw: logger.warning(event, call_id=self._room_id, source='TTS', **kw))
+            async for chunk in spoken:
                 buf += chunk
                 if any(p in chunk for p in (" ", "\n", ".", "!", "?", "।")):
                     sanitized = sanitize_spoken_text(buf)
@@ -1676,10 +1878,14 @@ class BoundedAgent(Agent):
                         to_yield = sanitized
                         buf = ""
                     if to_yield:
+                        if not parts:
+                            self._voice_stage('first_tts_input', turn_id=tts_turn)
                         parts.append(to_yield)
                         yield to_yield
             if buf:
                 to_yield = sanitize_spoken_text(buf)
+                if not parts:
+                    self._voice_stage('first_tts_input', turn_id=tts_turn)
                 parts.append(to_yield)
                 yield to_yield
 
@@ -1693,13 +1899,25 @@ class BoundedAgent(Agent):
             language_code=(route or {}).get("lang") or config.SARVAM_LANGUAGE,
             provider=prov,
             model=config.SARVAM_MODEL if prov == "sarvam" else config.GEMINI_TTS_MODEL,
-            speaker=config.SARVAM_SPEAKER if prov == "sarvam" else config.GEMINI_TTS_VOICE,
+            speaker=(getattr(getattr(getattr(_sess, '_jj_tts', None), '_opts', None), 'speaker', None)
+                     or config.SARVAM_SPEAKER) if prov == 'sarvam' else config.GEMINI_TTS_VOICE,
             source="TTS",
         )
         try:
             async for frame in Agent.default.tts_node(self, _tee(), model_settings):
                 if first_audio_ms is None:
+                    self._voice_stage('first_generated_audio', turn_id=tts_turn)
                     first_audio_ms = int((time.monotonic() - t0) * 1000)
+                    clock = getattr(self, '_response_timing', None)
+                    speech = getattr(_sess, 'current_speech', None)
+                    state_work = getattr(self._call_state, 'work', None)
+                    if clock and speech:
+                        ack = getattr(state_work, 'last_ack', None)
+                        explicit_progress = bool(ack and ack.get('speech_id') == speech.id)
+                        kind = 'progress' if explicit_progress else clock.classify(
+                            ''.join(parts), failure=self._consec_recovery > 0)
+                        if kind:
+                            clock.bind_segment(speech.id, kind)
                 frames += 1
                 # Tee the agent's own speech into the local recorder so the
                 # recording contains BOTH sides. Never blocks or raises.
@@ -1734,6 +1952,14 @@ class BoundedAgent(Agent):
             first_audio_ms=first_audio_ms, frames=frames, **info,
         )
 
+    def _first_voice_status(self) -> str | None:
+        work = getattr(self._call_state, 'work', None)
+        active = work.active() if work else None
+        if active:
+            return work.acknowledgement('any update', self._lang())
+        return None
+
+    @with_first_voice_target
     async def llm_node(  # type: ignore[override]
         self, chat_ctx: Any, tools: list, model_settings: Any
     ):
@@ -1746,27 +1972,100 @@ class BoundedAgent(Agent):
         said and the next turn recovers; if everything fails, one short local line
         is spoken. A newer user turn cancels this node (CancelledError) so a stale
         reply is never finished — the latest question always wins."""
+        if self._skip_model_context(chat_ctx):
+            return
+        latest = next((item for item in reversed(chat_ctx.items) if getattr(item, 'role', '') == 'user'), None)
+        if self._needs_confidence_clarification(str(getattr(latest, 'text_content', '') or '')):
+            return  # The committed hook owns one clarification; no speculative state/tool work.
         self._llm_turn += 1
         turn_id = self._llm_turn
         rid = self._room_id
+        preparation_started = time.monotonic()
         # Pin the reply to the persistent conversation language for EVERY path
         # below (primary, retry, fallback) so language never drifts on a
         # fallback/retry/tool turn (rule 10).
-        chat_ctx = self._apply_language_directive(chat_ctx)
+        preview = self._is_uncommitted_generation(chat_ctx)
+        chat_ctx = self._bounded_model_context(chat_ctx)
+        prompt_state = self._call_state.preparation_copy() if preview and self._call_state else self._call_state
+        chat_ctx = self._apply_language_directive(chat_ctx, preview=preview, state_override=prompt_state)
+        caller_binding = ((prompt_state.user_turn_id, prompt_state._last_observed_user)
+                          if prompt_state is not None else None)
+        caller_turn = caller_binding[0] if caller_binding else None
+        self._voice_stage('pre_model_start', turn_id=caller_turn, attempt_id=turn_id, preview=preview)
+        def trace_request(stage):
+            self._voice_stage(stage, turn_id=caller_turn, attempt_id=turn_id, preview=preview,
+                              **({'pre_model_ms': round((time.monotonic()-preparation_started)*1000)}
+                                 if stage == 'llm_request_start' else {}))
+        logger.info('response_preparation_started', attempt_id=turn_id, preview=preview,
+                    caller_turn=getattr(prompt_state, 'user_turn_id', None), call_id=rid,
+                    at_mono=time.monotonic(), source='LLM')
+        from prompts import prompt_fingerprint
+        system_texts = [str(getattr(item, 'text_content', '') or '') for item in chat_ctx.items if getattr(item, 'role', None) == 'system']
+        logger.info('llm_prompt_version', assistant_id=self._assistant_id,
+                    instructions_sha=self._instructions_sha,
+                    request_system_sha=prompt_fingerprint('\n'.join(system_texts)),
+                    instructions_present=any(self.instructions in value for value in system_texts),
+                    turn_id=turn_id, call_id=rid, source='LLM')
         # Website knowledge for this specific question (empty when nothing fits).
+        self._reply_phase = 'knowledge'
         _kb = await self._knowledge_context(chat_ctx)
         if _kb:
             try:
                 chat_ctx = chat_ctx.copy()
                 chat_ctx.add_message(role="system", content=_kb)
+                phone_rules = next((i for i in chat_ctx.items if (getattr(i, 'text_content', '') or '').startswith('[SPOKEN PHONE RULES]')), None)
+                if phone_rules is not None:
+                    chat_ctx.items.remove(phone_rules)
+                    chat_ctx.items.append(phone_rules)
             except Exception:
                 pass
         # Reset per-turn LLM timing (first_token stamped on the first released chunk).
         self._turn_timing = {"llm_start": time.monotonic(), "first_token": 0.0}
+        self._reply_phase = 'model'
         tool_choice = getattr(model_settings, "tool_choice", NOT_GIVEN) if model_settings else NOT_GIVEN
+        state = prompt_state
+        presence_only = bool(state and _RE_PRESENCE.fullmatch(state._last_observed_user.strip()))
+        unresolved_readback = bool(state and state.pending_slug in ('email_confirmation', 'name_confirmation'))
+        unparsed_correction = bool(state and correction_requested(state._last_observed_user)
+                                   and state._correction_turn != state.user_turn_id)
+        question_only = bool(state and re.search(r'\?|\b(?:what|which|why|how|can you)\b|என்ன|எந்த|எப்படி|ஏன்', state._last_observed_user, re.I))
+        needs_semantic_state = bool(state and not question_only and (
+            (unresolved_readback and state.pending_set_turn < state.user_turn_id)
+            or (unparsed_correction and state.details_parsed_turn != state.user_turn_id)))
+        if presence_only:
+            # Presence is not a field correction. Existing pending-work handling
+            # already runs at commitment; a model reply needs no business tool.
+            tool_choice = 'none'
+        elif (question_only and not unparsed_correction
+              and not latest_email(state._last_observed_user)
+              and getattr(self, '_test_read_only', False) is True):
+            # This session has no action integrations. An ordinary information
+            # question needs neither a no-op memory tool nor a second LLM trip.
+            tool_choice = 'none'
+        elif (state and needs_semantic_state
+                and getattr(self, '_semantic_turn_requested', None) != state.user_turn_id
+                and any(getattr(getattr(t, 'info', None), 'name', '') == 'update_call_details' for t in tools)):
+            # Resolve a natural reply to a previous read-back with the model
+            # before action tools can use it. This selects the state operation,
+            # never the caller's meaning: the model may record a correction,
+            # confirmation, cancellation, or no change for a question.
+            tool_choice = {'type': 'function', 'function': {'name': 'update_call_details'}}
+            if not preview:
+                self._semantic_turn_requested = state.user_turn_id
+        elif (state and state.confirmed_at_turn.get('email') == state.user_turn_id
+              and state.entities.get('email_confirmed') == 'yes' and not state.cancel_requested
+              and str(state.tool_state.get('booking', '')).startswith('confirmed:')
+              and state.entities.get('email_delivery', 'not_sent') in ('not_sent', 'not_sent_to_corrected_address')
+              and getattr(self, '_recipient_turn_requested', None) != state.user_turn_id
+              and any(getattr(getattr(t, 'info', None), 'name', '') == 'remember_details' for t in tools)):
+            # Complete the existing confirmation workflow after recording yes;
+            # the action tool still verifies the recipient/write before queuing.
+            tool_choice = {'type': 'function', 'function': {'name': 'remember_details'}}
+            if not preview:
+                self._recipient_turn_requested = state.user_turn_id
         # Fast-fail per attempt: WE own the fallback, so no framework retry here.
-        # timeout is the CONNECT timeout — capped so a hung Groq connection fails
-        # over to Gemini fast instead of stalling the turn up to 8s (Phase 8).
+        # SDK HTTP timeouts bound individual I/O waits. The gated stream also
+        # bounds time to useful output, independently of SSE/whitespace traffic.
         conn = APIConnectOptions(max_retry=0, timeout=float(os.getenv("LLM_CONNECT_TIMEOUT", "4.0")))
 
         try:
@@ -1839,7 +2138,17 @@ class BoundedAgent(Agent):
         # Stamp the FIRST released chunk (the real caller-perceived first token)
         # whichever provider produces it — used by the latency breakdown.
         async def _stamp(gen: Any):  # noqa: ANN401
+            released_text = False
             async for c in gen:
+                content = c if isinstance(c, str) else getattr(getattr(c, 'delta', None), 'content', None)
+                if content and not released_text:
+                    released_text = True
+                    self._voice_stage('first_released_text', turn_id=caller_turn, attempt_id=turn_id, preview=preview)
+                for call in getattr(getattr(c, 'delta', None), 'tool_calls', None) or []:
+                    if self._call_state is not None and state is not None and getattr(call, 'call_id', None):
+                        self._call_state._model_tool_turns[call.call_id] = caller_binding
+                        while len(self._call_state._model_tool_turns) > 64:
+                            self._call_state._model_tool_turns.pop(next(iter(self._call_state._model_tool_turns)))
                 if not self._turn_timing["first_token"]:
                     self._turn_timing["first_token"] = time.monotonic()
                 yield c
@@ -1850,7 +2159,7 @@ class BoundedAgent(Agent):
             logger.info("primary_llm_started", turn_id=turn_id, call_id=rid, room=rid,
                         provider=self._route.primary_provider, model=self._route.primary_model,
                         **self._route.log_fields(), language=self._lang(), source="LLM")
-            r1: dict = {}
+            r1: dict = {'trace': trace_request}
             async for c in _stamp(_stream_gated(primary, chat_ctx, tools, tool_choice, conn, r1)):
                 yield c
             if r1["status"] == "ok":
@@ -1885,11 +2194,12 @@ class BoundedAgent(Agent):
                 # straight to the fallback. Never retry it here (no 429 loop).
                 self._enter_model_cooldown(primary_label, now_mono, turn_id, rid,
                                            sc, r1.get("err"))
-            elif et in ("timeout", "server_error", "connection_error", "incomplete_generation"):
+            elif (et in ("server_error", "connection_error", "incomplete_generation")
+                  and r1.get('timeout_phase') != 'useful_prefix'):
                 # One quick retry on the primary for TRANSIENT (non-429) problems.
                 logger.info("primary_llm_retry", error_type=et, turn_id=turn_id,
                             call_id=rid, room=rid, source="LLM")
-                rr: dict = {}
+                rr: dict = {'trace': trace_request}
                 async for c in _stamp(_stream_gated(primary, chat_ctx, tools, tool_choice, conn, rr)):
                     yield c
                 if rr["status"] == "ok":
@@ -1928,7 +2238,7 @@ class BoundedAgent(Agent):
             logger.info("fallback_llm_started", provider=self._fallback_label,
                         turn_id=turn_id, call_id=rid, room=rid, language=self._lang(), source="LLM")
             self._record_spend(self._fallback_label, _pred)
-            r2: dict = {}
+            r2: dict = {'trace': trace_request}
             async for c in _stamp(_stream_gated(self._fallback_llm, chat_ctx, tools, tool_choice, conn, r2)):
                 yield c
             if r2["status"] == "ok":
@@ -1965,7 +2275,7 @@ class BoundedAgent(Agent):
             _record_tokens = getattr(self, "_record_spend", None)
             if _record_tokens is not None:
                 _record_tokens(self._tertiary_label, _pred)
-            r3: dict = {}
+            r3: dict = {'trace': trace_request}
             async for c in _stamp(_stream_gated(self._tertiary_llm, chat_ctx, tools, tool_choice, conn, r3)):
                 yield c
             if r3["status"] == "ok":
@@ -2040,7 +2350,7 @@ class BoundedAgent(Agent):
         context and the next one is usually slightly larger (history grows),
         and because the provider's window is rolling, not aligned to ours.
         """
-        if not label or _LLM_ITPM_BUDGET <= 0:
+        if not label or _LLM_ITPM_BUDGET <= 0 or not label.startswith("groq/"):
             return 1 << 30
         margin = int(_LLM_ITPM_BUDGET * 0.10)
         return _LLM_ITPM_BUDGET - margin - self._spend60(label) - predicted
@@ -2109,11 +2419,92 @@ class BoundedAgent(Agent):
                            limit_kind=limit_kind or "unknown",
                            turn_id=turn_id, call_id=rid, room=rid, source="LLM")
 
+    async def _handle_work_turn(self, text: str) -> bool:
+        """Brief direct status replies bypass another model/tool round, not the task."""
+        from contact_corrections import turn_intent
+        state = self._call_state
+        work = getattr(state, 'work', None)
+        if not work:
+            return self._answer_presence() if turn_intent(text) == 'presence' else False
+        work.invalidate()
+        language = getattr(self._lang_state, 'active', None) or state.language
+        if language in ('auto', None):
+            language = 'ta'
+        active = work.active()
+        if turn_intent(text) == 'cancel' and active:
+            if active.committed:
+                reply = ('Request ஏற்கனவே submit ஆயிடுச்சு; அதன் result வரட்டும். Cancel ஆனதா இப்போ சொல்ல முடியாது.' if language == 'ta'
+                         else 'The request was already submitted. I will check its result; it is not confirmed cancelled.')
+            else:
+                reply = ('இன்னும் submit பண்ணாத request-ஐ நிறுத்தறேன்.' if language == 'ta'
+                         else 'I am stopping the request before submission.')
+        else:
+            reply = work.acknowledgement(text, language)
+        if not reply:
+            return self._answer_presence() if turn_intent(text) == 'presence' else False
+        work.last_ack = {'requested': time.monotonic(), 'kind': turn_intent(text), 'first_audio': None}
+        handle = self.session.say(reply, allow_interruptions=True, add_to_chat_ctx=True)
+        work.last_ack['speech_id'] = handle.id
+        logger.info('task_status_ack_scheduled', kind=turn_intent(text), task_kind=active.kind if active else 'recent',
+                    call_id=self._room_id, source='TOOLS')
+        return True
+
+    def _bounded_model_context(self, chat_ctx):
+        # Keep the SDK's shared history stable across preview and commitment.
+        # Trimming it in the commit hook invalidates valid speculative output.
+        context = chat_ctx.copy()
+        context.items[:] = [item for item in context.items if not (
+            getattr(item, 'role', '') == 'assistant'
+            and _RE_RECOVERY_LINE.search(str(getattr(item, 'text_content', '') or '')))]
+        if len(context.items) > MAX_HISTORY_ITEMS:
+            context.truncate(max_items=MAX_HISTORY_ITEMS)
+        return context
+
     async def on_user_turn_completed(
         self, turn_ctx: "llm.ChatContext", new_message: "llm.ChatMessage"
     ) -> None:
+        text = str(getattr(new_message, 'text_content', '') or '').strip()
+        if self._needs_confidence_clarification(text):
+            logger.info('assistant_confidence_clarification', threshold_pct=self._confidence_threshold_pct,
+                        call_id=self._room_id, source='STT')
+            metrics = getattr(new_message, 'metrics', None) or {}
+            self._response_timing.commit(metrics.get('stopped_speaking_at'))
+            # Do not feed an uncertain name/address into the state parser or
+            # leave it in history as an asserted caller fact.
+            for context in (turn_ctx, getattr(self, '_chat_ctx', None)):
+                if context is not None:
+                    context.items[:] = [item for item in context.items if getattr(item, 'id', None) != new_message.id]
+            line = ('கடைசியா சொன்ன விவரம் தெளிவா வரலை. அந்த விவரத்தை மட்டும் மறுபடியும் சொல்ல முடியுமா?'
+                    if self._lang() == 'ta' else 'Could you repeat just the last detail? It was not clear.')
+            self.session.say(line, allow_interruptions=True, add_to_chat_ctx=True)
+            raise StopResponse()
+        if text and _RE_CARRIER_ANNOUNCEMENT.search(text):
+            self._resume_announced_greeting(turn_ctx)
+            logger.info('carrier_announcement_ignored', call_id=self._room_id, source='STT')
+            raise StopResponse()
+        if not hasattr(self, '_committed_user_ids'):
+            self._committed_user_ids = set()
+        if len(self._committed_user_ids) >= 48:
+            self._committed_user_ids.clear()
+        self._committed_user_ids.add(getattr(new_message, 'id', None))
+        logger.info('caller_turn_committed', message_id=getattr(new_message, 'id', None),
+                    at_mono=time.monotonic(), call_id=self._room_id, source='SESSION')
         try:
             _new_txt = str(getattr(new_message, "text_content", "") or "").strip()
+            if self._call_state is not None:
+                for item in reversed(turn_ctx.items):
+                    if getattr(item, "role", None) == "assistant":
+                        self._call_state.observe_assistant(str(getattr(item, "text_content", "") or ""),
+                                                           message_id=getattr(item, 'id', None))
+                        break
+                self._call_state.observe_user(_new_txt, message_id=getattr(new_message, 'id', None))
+                user_metrics = getattr(new_message, 'metrics', None) or {}
+                self._voice_stage('turn_committed',
+                                  caller_start_wall=user_metrics.get('started_speaking_at'),
+                                  caller_end_wall=user_metrics.get('stopped_speaking_at'))
+                self._response_timing.commit(user_metrics.get('stopped_speaking_at'))
+                if await self._handle_work_turn(_new_txt):
+                    raise StopResponse()
             if _new_txt and _RE_CARRIER_ANNOUNCEMENT.search(_new_txt):
                 logger.info(
                     "carrier_announcement_ignored",
@@ -2126,39 +2517,13 @@ class BoundedAgent(Agent):
             raise
         except Exception:
             pass
-        try:
-            # Purge any recovery lines from history so the LLM never imitates them
-            items = getattr(turn_ctx, "items", None)
-            if isinstance(items, list):
-                turn_ctx.items = [
-                    it for it in items
-                    if not (str(getattr(it, "role", "")).lower() == "assistant"
-                            and _RE_RECOVERY_LINE.search(str(getattr(it, "text_content", "") or "")))
-                ]
-            if hasattr(self, "_chat_ctx") and isinstance(getattr(self._chat_ctx, "items", None), list):
-                self._chat_ctx.items = [
-                    it for it in self._chat_ctx.items
-                    if not (str(getattr(it, "role", "")).lower() == "assistant"
-                            and _RE_RECOVERY_LINE.search(str(getattr(it, "text_content", "") or "")))
-                ]
-            before = len(turn_ctx.items)
-            if before > MAX_HISTORY_ITEMS:
-                turn_ctx.truncate(max_items=MAX_HISTORY_ITEMS)
-                logger.info(
-                    "history_truncated",
-                    before_items=before, after_items=len(turn_ctx.items),
-                    max_items=MAX_HISTORY_ITEMS, source="WORKER",
-                )
-        except Exception as exc:  # never let trimming break a turn
-            logger.warning("history_truncate_failed", error=str(exc))
-
         # ── Real total-input-token measurement (task 1). Count the ACTUAL context
         # Groq will receive this turn: system prompt, rolling history, the latest
         # user message, and the tool schemas re-sent every request. This is the
         # number that must stay under ITPM — system_prompt_tokens alone is not.
         try:
             sys_toks = hist_toks = cur_toks = 0
-            items = list(getattr(turn_ctx, "items", []) or [])
+            items = list(self._bounded_model_context(turn_ctx).items)
             new_id = getattr(new_message, "id", None)
             for it in items:
                 if getattr(it, "type", None) != "message":
@@ -2208,7 +2573,7 @@ class BoundedAgent(Agent):
             while self._itpm_window and now - self._itpm_window[0][0] > 60.0:
                 self._itpm_window.pop(0)
             spent = sum(t for _, t in self._itpm_window)
-            if _LLM_ITPM_BUDGET > 0 and spent > _LLM_ITPM_BUDGET:
+            if _LLM_ITPM_BUDGET > 0 and spent > _LLM_ITPM_BUDGET and self._route.primary_provider == "groq":
                 logger.warning(
                     "llm_input_budget_exceeded",
                     tokens_last_60s=spent, budget=_LLM_ITPM_BUDGET,
@@ -2803,6 +3168,8 @@ async def entrypoint(ctx: JobContext) -> None:
 
     profile_lookup_id = inbound_assistant_id or meta.get("agent_profile_id")
     profile = await _resolve_profile(profile_lookup_id)
+    from assistant_prompts import profile_for_direction
+    profile = profile_for_direction(profile, 'INBOUND' if inbound_user_in_room else 'OUTBOUND')
     # Confirm which assistant profile this call actually loaded (not a stale /
     # default one). source=assistant means it came from the assistants table.
     logger.info(
@@ -2811,6 +3178,7 @@ async def entrypoint(ctx: JobContext) -> None:
         assistant_id=profile.get("id"),
         assistant_name=profile.get("name"),
         source=profile.get("_profile_source") or "default_or_agent_profile",
+        prompt_direction=profile.get('prompt_direction'),
         llm_provider=profile.get("llm_provider"),
         llm_model=profile.get("model"),
         realtime_model=profile.get("realtime_model"),
@@ -2860,6 +3228,8 @@ async def entrypoint(ctx: JobContext) -> None:
         language_preset=meta.get("language_preset") or "multilingual",
         caller_history=history,
         diagnostics=_prompt_diag,
+        call_direction=profile.get('prompt_direction'),
+        hallucination_guard=profile.get('hallucination_guard', True),
     )
     logger.info("prompt_loaded", assistant_id=profile.get("id"),
                 assistant_name=profile.get("name"),
@@ -2912,11 +3282,13 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.info(event, call_id=ctx.room.name, room=ctx.room.name, source="SESSION", **kw)
         except Exception:
             pass
-    _call_state = _cs.CallState(role=_role, log=_cs_log)
+    _call_state = _cs.CallState(role=_role, direction=profile.get('prompt_direction'), log=_cs_log)
 
     # Build tools placeholder — Phase 3 will wire AppointmentTools.
     from tools import AppointmentTools  # local import to avoid cycle at module load
     agent_tools = AppointmentTools(ctx, phone, name, call_state=_call_state)
+    _test_read_only = os.getenv('VOICE_TEST_READ_ONLY', 'false').lower() == 'true'
+    agent_tools._test_read_only = _test_read_only
 
     # Human call forwarding destinations for THIS assistant. Loaded once here so
     # resolving a transfer mid-call is a dict lookup and never a database round
@@ -2948,7 +3320,7 @@ async def entrypoint(ctx: JobContext) -> None:
         inbound_assistant_id
         or (profile.get("id") if isinstance(profile, dict) else None)
     )
-    if assistant_id_for_tools:
+    if assistant_id_for_tools and not _test_read_only:
         try:
             custom_defs = await db.get_assistant_tools(assistant_id_for_tools)
         except Exception as exc:
@@ -2975,7 +3347,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # turn) and the injected business/identity block, so the per-turn
     # groq_input_tokens log can report the REAL total, not just the system prompt.
     _tool_tokens = _count_tool_tokens(tool_list)
-    _biz_tokens = count_tokens(get_business_context(business_name))
+    _biz_tokens = count_tokens(get_business_context(business_name, custom_role=bool(profile.get('system_prompt'))))
     logger.info("tool_schema_budget", tool_count=len(tool_list),
                 tool_schema_tokens=_tool_tokens, business_context_tokens=_biz_tokens,
                 call_id=ctx.room.name, room=ctx.room.name, source="WORKER")
@@ -2987,7 +3359,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # name. `_llm_route` also accumulates the ACTUAL provider/model used, which
     # is what the call is billed on.
     _llm_route = llm_routing.resolve_route(profile)
-    _fallback_llm, _fallback_label = _build_fallback_llm(_llm_route)
+    _fallback_llm, _fallback_label = _build_fallback_llm(_llm_route, profile)
     _tertiary_llm, _tertiary_label = _build_tertiary_llm(_llm_route)
     if _fallback_llm is None:          # keep the route honest for logs/billing
         _llm_route.fallback_provider = ""
@@ -3020,7 +3392,9 @@ async def entrypoint(ctx: JobContext) -> None:
     # ONE persistent conversation-language state for the whole call, shared by
     # the STT→language router (which updates it) and the LLM node (which reads it
     # to force the reply language every turn — incl. fallback/retry/tool turns).
-    _lang_state = lang.LanguageState()
+    _initial_call_lang = lang.normalize_lang(profile.get("stt_language") or config.STT_LANGUAGE or "ta") or "ta"
+    _lang_state = lang.LanguageState(initial=_initial_call_lang)
+    _lang_state.strict_lock = os.getenv('VOICE_STRICT_LANGUAGE_LOCK', 'true').lower() == 'true'
     _call_state.set_language(_lang_state.active)
     agent = BoundedAgent(instructions=system_prompt, tools=tool_list,
                          tool_tokens=_tool_tokens, business_context_tokens=_biz_tokens,
@@ -3028,6 +3402,16 @@ async def entrypoint(ctx: JobContext) -> None:
                          tertiary_llm=_tertiary_llm, tertiary_label=_tertiary_label,
                          room_id=ctx.room.name, lang_state=_lang_state, call_state=_call_state,
                          llm_route=_llm_route, assistant_id=profile.get("id"))
+    agent._test_read_only = _test_read_only
+    agent._confidence_threshold_pct = float(profile.get('confidence_threshold_pct') or 0)
+    from assistant_controls import CallLimits
+    _call_limits = CallLimits(ctx, agent_tools, profile,
+        lambda event, **fields: logger.info(event, call_id=ctx.room.name, source='SESSION', **fields))
+    logger.info('call_test_mode', read_only=_test_read_only,
+                exposed_tools=[t.info.name for t in tool_list],
+                custom_http_tools_enabled=not _test_read_only,
+                business_callbacks_enabled=not _test_read_only,
+                call_id=ctx.room.name, source='WORKER')
     # This organisation's own provider credentials (BYOK), loaded once per call
     # before the session is built. Cached for 60s per org, so this is a DB read
     # at most once a minute rather than per call — provider resolution never
@@ -3043,6 +3427,20 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = _build_session(tools=tool_list, system_prompt=system_prompt, profile=profile,
                              route=_llm_route, tenant_keys=_tenant_provider_keys)
+    logger.info('assistant_effective_settings', assistant_id=profile.get('id'),
+                saved_at=profile.get('settings_updated_at'),
+                direction=profile.get('prompt_direction'),
+                saved_min_pause_ms=profile.get('min_pause_ms'),
+                sensitivity=profile.get('end_of_speech_sensitivity'),
+                endpointing=session.options.endpointing,
+                interruption=session.options.interruption,
+                silence_timeout_seconds=profile.get('silence_timeout_seconds'),
+                max_duration_seconds=profile.get('max_duration_seconds'),
+                confidence_threshold_pct=agent._confidence_threshold_pct,
+                hallucination_guard=profile.get('hallucination_guard'),
+                call_id=ctx.room.name, source='SESSION')
+    session.on('speech_created', lambda ev: agent._track_preparation(ev.speech_handle))
+    session.on('error', agent._handle_routed_model_error)
     agent_tools._session = session
 
     is_demo = phone == "demo"
@@ -3140,10 +3538,8 @@ async def entrypoint(ctx: JobContext) -> None:
     # Set True once the opening greeting has been delivered — a "hello?" BEFORE
     # this is the caller's own greeting; AFTER this it is a presence check (req 8).
     _greeted = {"done": False}
-    # Optional guarded last-resort spoken ack when a turn is genuinely stuck.
-    # OFF by default (rule 9: no repeated filler) — the real recovery is the fast
-    # provider failover below. Enable with DEAD_AIR_ACK=true if desired.
-    _ACK_ENABLED = os.getenv("DEAD_AIR_ACK", "false").strip().lower() in ("1", "true", "yes", "on")
+    # The watchdog observes delays. Actual CallTasks own truthful work updates;
+    # ordinary model delay never creates a generic spoken acknowledgement.
 
     def _ms(a: float, b: float) -> int | None:
         return int((b - a) * 1000) if (a and b and b >= a) else None
@@ -3186,27 +3582,6 @@ async def entrypoint(ctx: JobContext) -> None:
                            cooling=cooling,
                            call_attempt_id=_dbg_rid, call_id=_dbg_rid, room=_dbg_rid,
                            source="SESSION")
-            now = time.monotonic()
-            if now - _turn_watch["ack_mono"] > 25.0:
-                active = getattr(_lang_state, "active", "en")
-                # Prefer a LOCAL cached filler clip (req 15): interruptible, no
-                # cloud-TTS cost, same-language-only. Only if no clip exists AND
-                # DEAD_AIR_ACK is explicitly enabled do we fall back to cloud TTS.
-                played = _play_local_clip(session, "filler", active)
-                if played:
-                    _turn_watch["ack_mono"] = now
-                    logger.info("dead_air_ack_spoken", turn_id=turn_id, language=active,
-                                via="local_clip", call_id=_dbg_rid, room=_dbg_rid, source="SESSION")
-                elif _ACK_ENABLED:
-                    _turn_watch["ack_mono"] = now
-                    ack = "ஆமா, ஒரு நிமிஷம்..." if active == "ta" else "One moment..."
-                    try:
-                        session.say(ack, allow_interruptions=True)
-                        logger.info("dead_air_ack_spoken", turn_id=turn_id, language=active,
-                                    via="cloud_tts", call_id=_dbg_rid, room=_dbg_rid, source="SESSION")
-                    except Exception as _ax:
-                        logger.warning("dead_air_ack_failed", error=str(_ax), call_id=_dbg_rid)
-
     @session.on("agent_state_changed")
     def _dbg_agent_state(ev: Any) -> None:  # noqa: ANN401
         old = getattr(ev, "old_state", None)
@@ -3222,8 +3597,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 if not _turn_watch["t"]["llm_req"]:
                     _turn_watch["t"]["llm_req"] = time.monotonic()
             elif new == "speaking":
-                logger.info("llm_response_completed", call_id=_dbg_rid, room=_dbg_rid, source="LLM")
-                logger.info("tts_request_started", call_id=_dbg_rid, room=_dbg_rid, source="TTS")
+                logger.info("agent_speaking_state", call_id=_dbg_rid, room=_dbg_rid, source="SESSION")
                 if not _turn_watch["t"]["llm_done"]:
                     _turn_watch["t"]["llm_done"] = time.monotonic()
             elif old == "speaking" and new == "listening":
@@ -3259,6 +3633,10 @@ async def entrypoint(ctx: JobContext) -> None:
         # Detected" off audio_frames_started, so emit it here (verified: user_state
         # fired 96x on a real call where input_speech_started fired 0x).
         if new == "speaking" and old != "speaking":
+            agent._discard_preparation_on_speech()
+            agent._voice_stage('caller_speech_onset', turn_id=_call_state.user_turn_id + 1,
+                               interrupted_speech_id=getattr(session.current_speech, 'id', None))
+            agent._response_timing.speech_started()
             logger.info("audio_frames_started", call_id=_dbg_rid, room=_dbg_rid, source="STT")
             _reengage["done"] = False  # caller is back; allow a future re-engage
             # New caller utterance → start a fresh turn-timing record.
@@ -3267,33 +3645,25 @@ async def entrypoint(ctx: JobContext) -> None:
             _turn_watch["t"]["speech_start"] = time.monotonic()
         # User stopped speaking -> end-of-turn committed to the pipeline.
         if old == "speaking" and new != "speaking":
-            logger.info("user_turn_committed", call_id=_dbg_rid, room=_dbg_rid, source="TURN_DETECTION")
+            agent._voice_stage('caller_speech_end', turn_id=_call_state.user_turn_id + 1)
+            agent._response_timing.speech_stopped()
+            logger.info("caller_speech_stopped", call_id=_dbg_rid, room=_dbg_rid, source="TURN_DETECTION")
             _turn_watch["t"]["speech_end"] = time.monotonic()
-        # Prolonged silence -> gently check in, once (only after greeting completed
-        # and when not already generating/awaiting a turn reply).
+        # The saved silence timeout is mutual inactivity, not LLM work or a
+        # short thinking pause. Reuse the SDK's existing away event.
         if new == "away" and not _reengage["done"] and _greeted["done"] and not _turn_watch["awaiting_audio"]:
             _reengage["done"] = True
             try:
-                _lang = (getattr(_lang_state, "active", "") or getattr(_call_state, "language", "") or "")
-                _reengage_msg = "ஹலோ, லைன்ல இருக்கீங்களா?" if _lang == "ta" else "Are you still there?"
-                session.say(_reengage_msg, allow_interruptions=True)
-                logger.info("silence_reengage", language=_lang, call_id=_dbg_rid, room=_dbg_rid, source="SESSION")
+                asyncio.create_task(_call_limits.end('continuous silence timeout'))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("silence_reengage_failed", error=str(exc), call_id=_dbg_rid)
 
     @session.on("speech_created")
     def _dbg_speech_created(ev: Any) -> None:  # noqa: ANN401
         logger.info("REPLY_SPEECH_CREATED", source=getattr(ev, "source", None), call_id=_dbg_rid)
-        h = getattr(ev, "speech_handle", None)
-        if h is not None:
-            # Shield the first 800ms of every speech handle from immediate barge-in cancellation
-            # so the caller always hears the assistant start speaking before allowing mid-speech cut.
-            try:
-                h.allow_interruptions = False
-                loop = asyncio.get_running_loop()
-                loop.call_later(0.8, lambda: setattr(h, "allow_interruptions", True))
-            except Exception:
-                h.allow_interruptions = True
+        # Observe only. Never make every generated reply uninterruptible:
+        # callers must be able to correct it before the first audio plays.
+        # Opening greetings retain their separate, bounded protection.
 
     # Surface Groq 429 (ITPM) distinctly so the dashboard can show it, log the
     # EXACT org limit the API returned (not a guessed number), and speak a short
@@ -3435,6 +3805,8 @@ async def entrypoint(ctx: JobContext) -> None:
             _tid = _turn_watch["turn_id"] + 1 if is_final else _turn_watch["turn_id"]
             logger.info(evt, text=str(text)[:300], is_final=bool(is_final),
                         turn_id=_tid, call_id=_dbg_rid, room=_dbg_rid, source="STT")
+            if is_final:
+                agent._voice_stage('final_stt_transcript', turn_id=_call_state.user_turn_id + 1)
             if is_final and not _RE_CARRIER_ANNOUNCEMENT.search(str(text)):
                 # ── STT observability (safe; no secrets) ──────────────────────
                 # Deepgram per-utterance metadata surfaced by the LiveKit event,
@@ -3447,6 +3819,10 @@ async def entrypoint(ctx: JobContext) -> None:
                     v = getattr(ev, attr, None)
                     if isinstance(v, (int, float)):
                         conf = round(float(v), 3); break
+                if getattr(session, '_jj_stt_provider', '') == 'sarvam':
+                    conf = None  # SDK confidence is language_probability for Sarvam.
+                elif conf is None:
+                    conf = getattr(agent, '_transcript_confidence', {}).get(str(text).strip())
                 dur_ms = None
                 st, en = getattr(ev, "start_time", None), getattr(ev, "end_time", None)
                 if isinstance(st, (int, float)) and isinstance(en, (int, float)) and en >= st:
@@ -3454,11 +3830,18 @@ async def entrypoint(ctx: JobContext) -> None:
                 logger.info("stt_raw_final", text=str(text)[:300], turn_id=_tid,
                             stt_detected_language=str(det) if det is not None else None,
                             stt_confidence=conf, stt_duration_ms=dur_ms,
-                            model=config.STT_MODEL, lang_setting=config.STT_LANGUAGE,
+                            model=getattr(session, "_jj_stt_model", config.STT_MODEL),
+                            provider=getattr(session, "_jj_stt_provider", "unknown"),
+                            lang_setting=("unknown" if getattr(session, "_jj_stt_provider", "") == "sarvam" else config.STT_LANGUAGE),
                             call_id=_dbg_rid, room=_dbg_rid, source="STT")
-                if conf is not None and conf < float(os.getenv("STT_MIN_CONFIDENCE", "0.6")):
+                if conf is not None and conf * 100 < agent._confidence_threshold_pct:
                     logger.warning("stt_low_confidence", stt_confidence=conf,
                                    text=str(text)[:160], call_id=_dbg_rid, room=_dbg_rid, source="STT")
+                elif conf is None and agent._confidence_threshold_pct and not getattr(agent, '_confidence_unavailable_logged', False):
+                    agent._confidence_unavailable_logged = True
+                    logger.warning('assistant_confidence_unavailable', provider=getattr(session, '_jj_stt_provider', ''),
+                                   threshold_pct=agent._confidence_threshold_pct,
+                                   impact='no transcript-accuracy probability; language probability is not an accuracy score', call_id=_dbg_rid)
                 # Caller-frustration cue → diagnostic only (the prompt does the
                 # "acknowledge first, don't restart" behaviour).
                 if text and _RE_FRUSTRATION.search(str(text)):
@@ -3499,6 +3882,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # on session.output.audio (NOT the session). All handlers only log — they add
     # nothing to the realtime audio path.
     _tts_prov = getattr(session, "_jj_tts_provider", "") or ""
+    _playback_trace = {}
 
     # The greeting is spoken UNINTERRUPTIBLY until its audio actually reaches the
     # caller, then barge-in is armed. Without this, a VAD/STT "user speaking"
@@ -3528,6 +3912,21 @@ async def entrypoint(ctx: JobContext) -> None:
     if _audio_out is not None:
         @_audio_out.on("playback_started")
         def _on_pb_started(_ev: Any) -> None:  # noqa: ANN401 — runtime event
+            ack = agent_tools.work.last_ack
+            current_speech = session.current_speech
+            _playback_trace.update(turn_id=_call_state.user_turn_id,
+                                   speech_id=getattr(current_speech, 'id', None),
+                                   last_room_audio_wall=None)
+            agent._voice_stage('room_playback_started', **_playback_trace,
+                               measurement='room_output_event_not_handset')
+            is_ack = ack and current_speech and current_speech.id == ack.get('speech_id')
+            if current_speech:
+                agent._response_timing.playback_started(current_speech.id, explicit_progress=bool(is_ack))
+            if is_ack and ack['first_audio'] is None:
+                ack['first_audio'] = time.monotonic()
+                logger.info('task_ack_first_audio', kind=ack['kind'],
+                            request_to_first_audio_ms=round((ack['first_audio']-ack['requested'])*1000),
+                            call_id=_dbg_rid, source='TOOLS')
             logger.info("agent_audio_publish_started", call_id=_dbg_rid, room=_dbg_rid,
                         provider="livekit", tts_provider=_tts_prov, source="LIVEKIT")
             # Protect the first 1.8s of the opening identity ("Hi, this is Priya from...")
@@ -3570,7 +3969,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 ref = t["speech_end"] or t["stt_final"]
                 total_ms = _ms(ref, t["first_audio"])
                 # Classify the dominant slow stage (measured, not guessed).
-                pairs = [("STT_FINAL_SLOW", stt_ms), ("STT_FINAL_SLOW", stt_to_llm_ms),
+                pairs = [("STT_FINAL_SLOW", stt_ms), ("TURN_HANDOFF_SLOW", stt_to_llm_ms),
                          ("LLM_FIRST_TOKEN_SLOW", llm_ft_ms), ("TTS_FIRST_AUDIO_SLOW", ft_to_audio_ms)]
                 worst = max((p for p in pairs if p[1] is not None), key=lambda p: p[1], default=("UNKNOWN", None))
                 cls = worst[0]
@@ -3599,9 +3998,21 @@ async def entrypoint(ctx: JobContext) -> None:
                                    total_ms=latency, slow_stage=cls,
                                    call_id=_dbg_rid, room=_dbg_rid, source="SESSION")
 
+        @_audio_out.on('playback_progressed')
+        def _on_pb_progressed(ev: Any) -> None:
+            # SDK progress describes stretches already played, unlike generated
+            # PCM or the later speech-completion callback. Still not handset audio.
+            end = ev.started_at + ev.duration
+            _playback_trace['last_room_audio_wall'] = max(
+                end, _playback_trace.get('last_room_audio_wall') or end)
+
         @_audio_out.on("playback_finished")
         def _on_pb_finished(ev: Any) -> None:  # noqa: ANN401 — runtime event
             interrupted = bool(getattr(ev, "interrupted", False))
+            agent._voice_stage('room_playback_finished', **_playback_trace,
+                               interrupted=interrupted,
+                               playback_position=getattr(ev, 'playback_position', None),
+                               measurement='room_output_event_not_handset')
             # synchronized_transcript = the portion of the reply actually PLAYED
             # to the caller. Comparing it with the full generated text (logged by
             # turn_summary below) proves whether a short reply was a short
@@ -3658,11 +4069,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 # if the reply ends with a question, a short caller reply next
                 # turn should be read against it (the directive surfaces this).
                 try:
-                    q = (text or "").strip()
-                    if q.endswith("?") and not interrupted:
-                        _call_state.set_pending(None, question=q[-140:])
-                    elif q:
-                        _call_state.clear_pending()
+                    _call_state.observe_assistant(text or "", interrupted=interrupted)
                 except Exception:
                     pass
             logger.info(
@@ -3700,6 +4107,7 @@ async def entrypoint(ctx: JobContext) -> None:
     _conn_model = ((profile.get("stt_model") or "").strip()
                    or provider_registry.default_model_for("STT", _conn_prov)
                    or "(plugin default)")
+    session._jj_stt_model = _conn_model
     logger.info("stt_connected", provider=_conn_prov, model=_conn_model,
                 selected_provider=(profile.get("stt_provider") or "").lower() or None,
                 provider_name=(_conn_def.name if _conn_def else None),
@@ -4228,6 +4636,7 @@ async def entrypoint(ctx: JobContext) -> None:
             # barge-in working. Runs once (entrypoint runs once per call).
             handle = session.say(greeting, allow_interruptions=False)
             _greeting["handle"] = handle
+            agent._greeting_handle, agent._greeting_text = handle, greeting
 
             async def _arm_later() -> None:
                 await asyncio.sleep(GREETING_PROTECT_MAX_S)
@@ -4267,11 +4676,11 @@ async def entrypoint(ctx: JobContext) -> None:
             first_message = (first_message
                              .replace("{business_name}", _bn)
                              .replace("{service_type}", _svc))
+            from assistant_prompts import greeting_for_direction
+            first_message = greeting_for_direction(profile, first_message, _bn)
             # Tidy any double spaces / stray leading punctuation left by removals.
             first_message = re.sub(r"\s{2,}", " ", first_message)
             first_message = re.sub(r"^(Hi|Hello)\s*,\s*,", r"\1,", first_message).strip()
-            if direction == "INBOUND" and re.search(r"\b(calling from|is now a good time)\b", first_message, re.I):
-                first_message = f"Hi, welcome to {_bn}! This is Priya. How may I help you today?"
             logger.info("FIRST_GREETING_STARTED", source="first_message",
                         has_customer_name=bool(customer_name), call_id=ctx.room.name)
             try:
@@ -4280,6 +4689,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 # not cancel a greeting the caller has not heard yet.
                 handle = session.say(first_message, allow_interruptions=False)
                 _greeting["handle"] = handle
+                agent._greeting_handle, agent._greeting_text = handle, first_message
                 # Safety net: if playback never starts, never leave the greeting
                 # permanently uninterruptible.
                 async def _arm_later() -> None:
@@ -4307,6 +4717,8 @@ async def entrypoint(ctx: JobContext) -> None:
 
     # Shutdown handler — registered separately
     agent_tools._call_start_time = time.time()
+    _call_limits.start()
+    ctx.add_shutdown_callback(_call_limits.aclose)
     agent_tools._room_name = ctx.room.name
     # Carry the routing decision to the shutdown hook, which bills the call.
     agent_tools._llm_route = _llm_route
@@ -4627,6 +5039,10 @@ def _billable_seconds(ctx: JobContext, agent_tools) -> tuple[int, str]:
 
 
 async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, phone: str, name: str) -> None:
+    from call_tasks import CallTasks
+    work = getattr(agent_tools, 'work', None)
+    if isinstance(work, CallTasks):
+        await work.close()
     duration, duration_basis = _billable_seconds(ctx, agent_tools)
     room_seconds = int(time.time() - agent_tools._call_start_time)
     if duration_basis != "job_wallclock" and room_seconds > duration + 5:
@@ -4668,7 +5084,8 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
         logger.warning("transcript_read_failed", error=str(exc))
 
     sentiment = None
-    if transcript and os.getenv("OPENAI_API_KEY"):
+    if (transcript and os.getenv("OPENAI_API_KEY")
+            and getattr(agent_tools, '_test_read_only', False) is not True):
         try:
             import openai
             client = openai.AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -4910,6 +5327,13 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
                        call_id=ctx.room.name, source="STT")
 
     await db.remove_active_call(ctx.room.name)
+
+    if getattr(agent_tools, '_test_read_only', False) is True:
+        # Call rows, transcripts and recordings above remain operational.
+        # No campaign mutation, email, SMS or outgoing webhook follows a test.
+        logger.info('test_business_callbacks_skipped', call_id=ctx.room.name, source='WORKER')
+        await _close_job_db('read_only_test_shutdown')
+        return
 
     # ── Settle this room's campaign target, if it belongs to a campaign ──────
     # Closes the dispatch loop: until now a target stayed DISPATCHED forever
