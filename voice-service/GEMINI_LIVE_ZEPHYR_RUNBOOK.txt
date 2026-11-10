@@ -1,0 +1,116 @@
+JillJill: assistant-scoped Gemini Live / Zephyr integration
+10 November 2026, IST
+
+STATUS
+Implemented inside the existing JillJill application. No separate app,
+assistant, SIP trunk, customer account or database schema was created.
+Appointment Booker (cmuv65lxx0013v7f4thzf2qtv) is saved with:
+  metadata.voiceRuntime.engine = gemini-live
+  metadata.voiceRuntime.model = gemini-3.8-live
+  metadata.voiceRuntime.voice = Zephyr
+The saved choice applies to this assistant's next inbound/outbound phone calls
+and its existing designated browser demo. Other assistants retain their saved
+engine or existing environment gate. Changes take effect on NEW sessions.
+
+WHAT WAS VERIFIED ABOUT ZENX
+Playwright CLI inspection of https://zenxai.io/ and its public browser client
+found Gemini Realtime, gemini-3.1-flash-live-preview and Zephyr in the web-call
+request configuration, with LiveKit browser transport. This proves the public
+client selection; it does not reveal server overrides, proprietary prompts,
+training, or the exact backend used for the supplied historical recording.
+Public client: https://zenxai.io/assets/index-CYMpBjsE.js
+Local evidence: output/verify/genx-20261110/zenx-public-client.js
+Zephyr is a Google built-in synthetic voice; no speaker recording was cloned.
+No open-source voice model repository was established as ZenX's provider.
+JillJill uses the current Gemini 3.8 Live rather than pinning the legacy preview.
+The direct official lifecycle document captured in the earlier audit lists
+November 17, 2026 for the 3.1 preview; indexed copies may be stale.
+
+FLOW
+Phone -> existing Vobiz SIP -> existing LiveKit room -> Gemini Live native audio
+                                                   <-> existing business tools
+Browser mic -> existing demo room -> same saved Gemini model/voice
+                                   <-> existing sandbox tools only
+Native speech uses no external STT/TTS stages or Qwen delegation round-trip.
+Tool results are complete, not truncated to the legacy 400-byte response cap.
+Gemini usage records its provider/model/tokens without invented OpenAI or Sarvam
+costs. Exact Gemini multimodal cost remains unavailable until a rate is configured.
+
+EXISTING FEATURES
+Reuses the current assistant's directional business prompts, call state,
+knowledge, AppointmentTools, CallTasks, enabled integrations and transfer targets.
+Campaign dispatch, phone routing, customer database and booking implementations
+remain in place. Browser booking/messages/transfers are simulated and labelled.
+Phone actions still depend on the existing real-action setting and integrations.
+Existing GPT-Live and cascaded paths remain available for rollback.
+The damaged greeting was restored. Existing inbound/outbound prompt bytes were
+preserved; form saves now preserve line endings when text is unchanged.
+The native voice instructions request everyday Tamil/Tanglish, neutral address,
+gentle emotional delivery and one-time email approval. They cannot guarantee
+an accent, exact imitation, factual perfection or a maximum response time.
+
+TEST IT
+1. Open http://localhost:3000/demo while signed in.
+2. Confirm Appointment Booker / Gemini Live / Zephyr and the test-mode notice.
+3. Click Start call and allow your microphone when YOU want the paid audio test.
+4. Try a Tamil question, interrupt a reply, change one appointment detail,
+   and approve an email once. No real booking/email/transfer runs in this demo.
+5. Phone calls using this assistant use its real enabled tools. Place a phone
+   test only when ready for those actions, and state if you do not want booking.
+No paid audio session, phone call, booking, email, SMS or transfer was initiated
+automatically during this implementation's verification.
+
+CHANGE OR ROLLBACK
+http://localhost:3000/assistants/cmuv65lxx0013v7f4thzf2qtv
+Voice stack -> Voice engine / Realtime model / Realtime voice -> Save changes.
+Select GPT-Live to restore the prior native engine, or Existing deployment
+selection to use the prior environment gate. Cascaded STT/LLM/TTS is also retained.
+Rollback does not repair the prior GPT-Live pacing/buffering defects described
+in ZENXAI_COMPARISON_AUDIT_2026-11-10.txt.
+
+VERIFICATION
+- 143 offline Python tests passed: Gemini runtime, actual inbound/outbound
+  entrypoint contracts, GPT-Live regressions, booking consistency, intake memory,
+  cancellation/committed-action handling and the single-call lifecycle.
+- 7 TypeScript tests passed; TypeScript type checking passed.
+- Playwright verified save/reload, assistant selection, desktop/mobile overflow,
+  dropdown Escape behavior and the labelled, idle demo. Start call was not clicked.
+- Read-only Gemini model metadata requests returned HTTP 200 with
+  bidiGenerateContent. This is not proof of live-session quota or voice quality.
+- Installed LiveKit Agents/Google plugin: 1.8.4; Google GenAI: 2.28.0.
+  This uses Gemini API credentials, not Vertex AI (which requires plugin 1.8.5
+  or later for Gemini 3.8 according to LiveKit's documentation).
+- Worker refreshed only after no LiveKit rooms, no recent active calls and no
+  running campaigns were found. 23 historical registry rows dated November 1
+  were inspected and left untouched.
+- Active worker PID 3630, registration AW_iAoGBd34uFrW, India South.
+  Build: 2026-11-10-gemini-live-zephyr-v22.
+  Log: output/logs/worker-local-gemini-v22-refresh-20261110.log
+- Existing local API /health returned HTTP 200; dashboard remains on port 3000.
+
+LIMITS TO VERIFY IN YOUR NEXT CALL
+Native Tamil pronunciation, audible quality, first meaningful word latency,
+long-session behavior, provider live quota, actual booking/email delivery and
+real human transfer have not been exercised in a paid session by this change.
+Startup prewarm logs contain local embedder/event-loop warnings; these are not
+measured call latency. Room playback markers are not handset word timings.
+Provider failure closes the native session rather than silently switching voice.
+
+KEY FILES
+gemini_live_runtime.py, native_voice.py, agent.py, db.py, server.py,
+gpt_live_experiment.py, tests/test_gemini_live_runtime.py,
+tests/test_gpt_live_phone.py, dashboard/lib/native-voice.ts,
+dashboard/lib/assistant-prompts.ts, dashboard/components/AssistantForm.tsx,
+dashboard/app/(admin)/assistants/actions.ts, dashboard/lib/voice-service.ts,
+dashboard/app/(admin)/demo/page.tsx, dashboard/components/DemoWidget.tsx.
+
+SOURCES
+https://docs.livekit.io/agents/models/realtime/gemini/
+https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live
+https://ai.google.dev/gemini-api/docs/deprecations
+https://firebase.google.com/docs/ai-logic/live-api/limits-and-specs?hl=en
+
+UI REVIEW NOTE
+Optional 21st search/review was rejected by automatic approval review because
+project/design context could be sent to an external service. Existing local
+components, local type/lint checks and Playwright CLI were used instead.

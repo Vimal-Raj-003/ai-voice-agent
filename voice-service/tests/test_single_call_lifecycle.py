@@ -194,19 +194,19 @@ def test_the_gate_is_the_last_check_before_the_carrier_rings():
 
 # ── 7/8. the greeting happens exactly once ────────────────────────────────
 def test_exactly_one_greeting_branch_can_run():
-    """STRUCTURAL: the three greeting modes are mutually exclusive.
+    """STRUCTURAL: native, demo, saved and generated greetings are exclusive.
 
     demo / first_message / generate_reply form one if-elif-else chain, and
     `entrypoint` runs once per job, so a call cannot be greeted twice.
     """
     s = _src()
     i = s.index('logger.info("greeting_mode"')
-    block = s[i:i + 6000]
+    block = s[i:s.index('# Shutdown handler', i)]
     assert block.count('if phone == "demo":') == 1
     # One else-branch for generate_reply closes the chain.
     assert 'source="generate_reply"' in block
-    assert block.count("FIRST_GREETING_STARTED") == 3, (
-        "one START per mode; a 4th would mean another greeting path appeared")
+    assert block.count("FIRST_GREETING_STARTED") == 4, (
+        "one START per mode; another branch could duplicate the greeting")
 
 
 def test_the_greeting_follows_the_answer_not_the_dial_request():

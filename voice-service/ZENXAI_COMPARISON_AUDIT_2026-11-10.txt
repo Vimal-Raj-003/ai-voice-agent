@@ -1,0 +1,410 @@
+ZenXAI மற்றும் JillJill voice agent: ஆதாரங்களுடன் ஒப்பீட்டு ஆய்வு
+தேதி: 10 November 2026, IST
+
+முக்கிய முடிவு
+
+ZenXAI demo-வின் public browser request configuration-ல் Gemini Realtime,
+gemini-3.1-flash-live-preview model, Zephyr voice உள்ளன. Browser audio-க்கு
+LiveKit பயன்படுத்தப்படுகிறது. உங்கள் JillJill-லும் LiveKit ஏற்கனவே உள்ளது.
+எனவே முழு application-ஐ மாற்றவோ, புதிய demo உருவாக்கவோ தேவையில்லை.
+
+உங்கள் பிரச்சனைகள் voice model தேர்வு மட்டும் சார்ந்தவை அல்ல. தற்போதைய
+implementation-ல் audio-rate rejection, backend முழுப் பதிலுக்காகக் காத்திருப்பு,
+தமிழ் பதிலை byte அளவில் வெட்டுதல், UI/runtime தேர்வு வேறுபாடு, greeting
+encoding பிழை ஆகியவை ஆதாரத்துடன் கிடைத்துள்ளன. முதலில் இவற்றைச் சரிசெய்து,
+அதே existing browser demo-வில் Gemini Live / Zephyr-ஐ ஒப்பிடுவது பொருத்தம்.
+இதுவரை வேலை செய்யும் phone engine-ஐ அந்த comparison முடிவுக்கு முன் மாற்ற வேண்டாம்.
+
+1. இந்த ஆய்வில் உண்மையில் செய்தவை
+
+- வழங்கிய Screen Recording 2026-11-10 114943.mp4-ன் local metadata மற்றும்
+  பல timestamps-ல் video frames ஆய்வு செய்யப்பட்டன.
+- Duration 196.437 seconds; 1450 x 866 H.264 video; 48 kHz stereo AAC audio.
+- உங்கள் explicit அனுமதிக்குப் பிறகு existing Sarvam saaras:v4 மூலம்
+  9 batch segments transcribe செய்யப்பட்டன. 0.3-second overlap; புதிய LLM
+  requests இல்லை; booking/email/phone actions இல்லை.
+- Playwright CLI மூலம் https://zenxai.io/, அதன் navigation, public script
+  configuration, மற்றும் உங்கள் logged-in localhost Assistant/Live Logs pages
+  ஆய்வு செய்யப்பட்டன. Assistant settings save செய்யப்படவில்லை.
+- தற்போதைய source, installed SDK signatures, நவம்பர் 10-ன் 4 browser journals,
+  2 worker log files, saved assistant configuration மற்றும் knowledge counts
+  ஒப்பிடப்பட்டன. Local adapter-க்கு synthetic offline probe இயக்கப்பட்டது.
+
+வரம்புகள்: Batch transcript மனிதர் கேட்டுச் சரிபார்த்த verbatim transcript அல்ல.
+Speaker diarization / verified word timestamps இல்லை. Native Tamil குரல் தரத்திற்கு
+human listening score வழங்கப்படவில்லை; நீங்கள் விரும்பிய tone reference-ஆக எடுத்துக்
+கொள்ளப்பட்டுள்ளது. Video-விலிருந்து zero latency, exact first-useful-word timing,
+அல்லது 100x speed advantage நிரூபிக்கப்படவில்லை. இந்த audit-ல் புதிய paid voice
+session தொடங்கப்படவில்லை; தற்போதைய model account access test செய்யப்படவில்லை.
+
+2. ZenXAI என்ன பயன்படுத்துகிறது?
+
+Playwright-ல் load ஆன public client asset:
+https://zenxai.io/assets/index-CYMpBjsE.js
+
+Observed request fields:
+  realtime_provider_name = Gemini Realtime
+  realtime_model_config.model = gemini-3.1-flash-live-preview
+  realtime_model_config.voice = Zephyr
+  call creation path = /web_call
+  successful response expects server_url, participant_token, room_name
+  browser then connects through LiveKit client components
+
+இவை public request configuration பற்றிய உறுதியான ஆதாரம். அந்த recording-ன்
+historical server session-ல் அதே model/voice-ஐ server override இல்லாமல் பயன்படுத்தியது
+என்று server trace இல்லாமல் உறுதி செய்ய முடியாது. அவர்களுடைய hidden backend,
+booking database, action tool implementations அல்லது server region தெரியவில்லை.
+Public bundle-ல் model string இருப்பது மட்டும் proprietary model training-ன் ஆதாரம் அல்ல.
+
+Dental agent prompt-ல் Kannada primary language, Chennai Tamil/English support,
+warm conversational delivery என்பவை உள்ளன. Recording-ன் தொடக்க Kannada greeting-உடன்
+இது ஒத்துப்போகிறது. முன் ஆய்வில் கண்ட 'Kore' text South Korea என்ற country name-ன்
+பகுதியாக இருந்தது; உண்மையான request voice Zephyr. Kore பயன்படுத்துகிறது என்ற
+முதல் விளக்கம் இந்த deeper inspection-ல் திருத்தப்பட்டுள்ளது.
+
+Google documentation Tamil-ஐ ஆதரிக்கப்படும் Live API மொழியாகவும் Zephyr-ஐ bright
+female voice-ஆகவும் பட்டியலிடுகிறது. இதனால் அந்த voice ஒரு பொருத்தமான comparison
+candidate. உங்கள் production audio-வில் அதே quality கிடைக்கும் என்பதற்கு test தேவை.
+Source: https://firebase.google.com/docs/ai-logic/live-api/limits-and-specs?hl=en
+
+மிக முக்கியமான lifecycle தகவல்: Google-ன் தற்போதைய பட்டியல்
+gemini-3.1-flash-live-preview-க்கு November 17, 2026 shutdown date மற்றும்
+gemini-3.8-live replacement-ஐ காட்டுகிறது. இன்று November 10. அந்த பழைய preview
+பெயரைப் பார்த்து production-ல் அப்படியே pin செய்வது சரியான migration அல்ல.
+Source: https://ai.google.dev/gemini-api/docs/deprecations
+Source: https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview
+இரண்டு pages-மும் official server-இலிருந்து fetch செய்யப்பட்டன; search tool markdown
+MIME-ஐ parse செய்யாததால் local documentation artifacts-ஆகப் படிக்கப்பட்டன.
+
+3. Recording-ல் நல்ல reference-ஆக எடுத்துக்கொள்ளக்கூடியவை, கவனிக்க வேண்டியவை
+
+Approximate segment windows; exact word timings அல்ல:
+
+0-48 seconds: Kannada greeting மற்றும் response; caller தமிழில் பேசச் சொல்கிறார்.
+47-95 seconds: மொழி correction-க்கு apology, பின்னர் colloquial Tamil பதில்கள்.
+95-143 seconds: Appointment எப்படி செய்வது, confirmation message வருமா என்பதற்கு
+நேரடியாக பதிலளிக்கிறது. Casual Tamil expressions conversational feel தருகின்றன.
+142-166 seconds: Browser caller-ன் number தெரியும் என்று கூறுகிறது. இந்த recording
+அந்த number server-க்கு இருந்ததைக் காட்டவில்லை. அதைக் verified fact என்று நடத்த முடியாது.
+166-190 seconds: SMS வரும், WhatsApp வராது என்று உறுதியாகக் கூறுகிறது; அந்த delivery
+configuration அல்லது successful tool result recording-ல் காட்டப்படவில்லை.
+
+Video frames-ல் Tamil conversation இருந்தும் language badge Kannada என்றே உள்ளது.
+Actual appointment created reference, calendar result, delivered SMS அல்லது email
+இந்த clip-ல் காட்டப்படவில்லை. எனவே நல்ல conversational demo என்பதையும், real booking
+சரியாக முடிந்தது என்பதையும் ஒன்றாகக் கருதக்கூடாது. Domain-க்கு வெளியே நீளமான பதில்கள்,
+மீண்டும் booking-க்கு இழுக்கும் கேள்விகள் ஆகியவையும் transcript-ல் தெரிகின்றன.
+இந்த demo-வின் voice style-ஐ benchmark செய்யலாம்; unsupported claims-ஐ copy செய்ய வேண்டாம்.
+
+4. தற்போதைய JillJill architecture
+
+Browser microphone -- WebRTC ---------------------+
+                                                  |
+Phone -- Vobiz -- LiveKit SIP ---------------------+--> LiveKit room
+                                                          |
+                                                   Existing worker
+                                                          |
+                                                GPT-Live gpt-live-1
+                                                voice + conversation
+                                                          |
+                                                Client DelegationBridge
+                                                final transcript wait
+                                                knowledge lookup
+                                                          |
+                                                OpenRouter Qwen backend
+                                                qwen3-30b-a3b-instruct-2507
+                                                          |
+                                                CallState / CallTasks
+                                                AppointmentTools / HTTP tools
+                                                          |
+                                                PostgreSQL / Cal.com
+                                                email / human SIP transfer
+
+GPT-Live-enabled phone assistant-ல் external Sarvam STT/TTS இந்த audio path-ல் இல்லை.
+மற்ற assistants-ன் legacy pipeline இன்னும் உள்ளது. பழைய November 3 cascaded-call
+latency table-ஐ தற்போதைய GPT-Live performance baseline என்று பயன்படுத்தவில்லை.
+
+Dashboard, campaigns, customers, calendar records மற்றும் routing எல்லாம் ஏற்கனவே
+உள்ள application-ன் பகுதிகள். Voice-engine adapter மாற்றுவது இவற்றை மறுபடியும்
+உருவாக்க வேண்டிய வேலை அல்ல. GPT-Live-க்கு voice/backend தனித்தனி பொறுப்புகள் என்பது
+official architecture-உடன் ஒத்துள்ளது; தற்போதைய bridge-ன் implementation முக்கியம்.
+Source: https://developers.openai.com/api/docs/guides/live
+
+5. JillJill-ல் கிடைத்த உறுதியான பிரச்சனைகள்
+
+P0: சமீபத்திய demo-வில் input audio நிராகரிக்கப்பட்டுள்ளது.
+
+10 Nov 11:52:09 IST worker log:
+  error type: invalid_request_error
+  error code: input_audio_rate_limit_exceeded
+  provider explanation: audio too fast; dropped input; at most 1.2x realtime,
+  bursts at most 5 seconds.
+
+அந்த browser journal-ல் session_error, backend_requests=0; assistant audio start
+இல்லை. இது அந்த attempt-ன் silence-க்கு நேரடி failing stage. Wrong voice ID அல்லது
+model access denied என்று இந்த error சொல்லவில்லை. Provider key மாற்றுவது இதற்கான
+நிரூபிக்கப்பட்ட தீர்வு அல்ல.
+
+Related worker evidence: event-loop stalls, 1,277 ms cold import warning,
+process-unresponsive warnings, VAD slower-than-realtime warnings, process warm-up
+timeout. Installed SDK startup send channel session.started வரை காத்திருக்கிறது;
+audio append forwarding-ல் தனி realtime pacing இல்லை. Accumulated input catch-up
+burst என்பது விசாரிக்க வேண்டிய mechanism. அதன் exact origin/cause இன்னும் sample
+timestamp telemetry மூலம் உறுதி செய்யப்பட வேண்டும்; எல்லா slow turns-க்கும் இதுவே
+ஒரே காரணம் என்று இந்த evidence நிரூபிக்கவில்லை.
+
+Needed fix: audio frame age/queue depth/sent audio seconds vs wall clock அளவிடுதல்;
+bounded queue, sample-count pacing, startup readiness மற்றும் explicit overflow
+handling. Old speech-ஐ silent-ஆக drop செய்யவோ வேகமாக dump செய்யவோ கூடாது. Model/import/
+VAD warm-up-ஐ audio loop-க்கு வெளியே முடித்தல்; CPU/process budget-ஐ அளந்து அமைத்தல்.
+கூடுதல் model சேர்ப்பதற்கு முன் இந்த transport/runtime failure சரியாக வேண்டும்.
+
+P0: Backend result தமிழ் நடுவில் byte அளவில் வெட்டப்படுகிறது.
+
+Source: gpt_live_experiment.py, commentary_text(), line 114 onwards.
+Current behavior: text.encode('utf-8')[:400].decode(...errors='ignore').
+UTF-8 400 bytes என்பது 400 words அல்லது 400 tokens அல்ல. தமிழில் ஒரு முழு
+வாக்கியத்திற்கும் குறைவான தகவல் மட்டும் போகக்கூடும்; last action/status/date விடுபடலாம்.
+
+Offline probe actual function-ஐ இயக்கியது: 1,218 input bytes -> 398 output bytes,
+150 characters. கடைசியில் வைத்த synthetic booking-failure constraint விடுபட்டது:
+critical_tail_preserved=false. இது production booking நடந்ததாகக் கூறும் test அல்ல;
+actual truncation path தகவலை இழக்கிறது என்பதற்கான deterministic reproduction.
+
+இன்றைய journals-ல் முடிந்த 5 delegation results-ல் 3 இந்த cap-ஐத் தாண்டியுள்ளன:
+620, 553, 610 bytes. அந்த முழு result journal-ல் இருந்தாலும் voice model-க்கு clipped
+text தான் அனுப்பப்படுகிறது. எல்லா observed wrong answers-க்கும் clipping மட்டுமே
+காரணம் என்று சொல்லவில்லை; இது தனியாக சரிசெய்ய வேண்டிய defect.
+
+OpenAI/installed SDK documented append limit 500 TOKENS; application-ன் 400-BYTE
+cut என்பது அதைவிட வேறான conservative implementation. Verified action outcome,
+required fields, constraints ஆகியவற்றை semantic units-ஆக preserve செய்து documented
+token budget-க்குள் அனுப்ப வேண்டும். Arbitrary byte cut-ஐ அப்படியே பெரிதாக்குவது போதாது.
+Source: https://developers.openai.com/api/docs/guides/live-delegation
+
+P1: Streaming backend இருந்தாலும் voice result முழுப் பதிலுக்குப் பிறகே வருகிறது.
+
+Source: DelegationBridge.answer() lines 288-338; _handle() lines 248-282.
+Chunks text-ஆக சேகரிக்கப்படுகின்றன; stream முடிந்ததும் answer() return செய்கிறது;
+அதன்பிறகே append_commentary(). Serial lock, final-transcript gate, unconditional
+knowledge lookup மற்றும் tool/model rounds மேலும் critical path-ல் உள்ளன.
+
+Saved request start -> first model text -> result queued (milliseconds):
+  demo ...68d107d3, turn 7:  1015 -> 4769
+  demo ...e761bd4e, turn 4:  1588 -> 3172
+  demo ...e761bd4e, turn 6:  1275 -> 4288
+  demo ...e761bd4e, turn 11: 1438 -> 2623
+  demo ...bffa4578, turn 4:  1036 -> 5165
+
+இவை backend spans; caller speech end -> handset useful audio அல்ல. Request start
+க்கு முன் knowledge wait, பிறகு voice generation/playback இருக்கலாம். First text
+semantic usefulness-ஐ event மட்டும் நிரூபிக்காது. ஒரு unfinished extra request-க்கு
+completed latency எண் உருவாக்கப்படவில்லை.
+
+Offline FakeStream probe actual answer() path-ல் first chunk வந்தபிறகும் caller
+future pending; stream tail release ஆனபிறகே result returned என்பதை உறுதி செய்தது.
+Needed fix: safe sentence/result streaming or shorter structured facts; action success
+மட்டும் completed verified tool result-க்குப் பிறகு. Relevant cached business answers
+மற்றும் routine slot updates-க்கு needless reasoning/retrieval round trips குறைக்க வேண்டும்.
+
+P1: Assistant UI காட்டும் voice settings active runtime-ஐ முழுமையாக விவரிக்கவில்லை.
+
+Saved page/profile: STT Sarvam saaras:v4, TTS Sarvam, voice kavya; minPauseMs=350,
+interruptionThresholdMs=500, confidenceThresholdPct=65; backend OpenRouter Qwen.
+Actual selected native phone: GPT-Live + gleam. Browser test: custom voice ID.
+எனவே Kavya dropdown மாற்றம் native phone voice-ஐ மாற்றாது. Native session constructors
+legacy pause/confidence values-ஐ அதே பொருளில் பயன்படுத்தவில்லை. 350 ms pause value
+என்பது total answer latency guarantee அல்ல. Native phone/backend settings பெரும்பாலும்
+environment gate மூலம் தீர்மானிக்கப்படுகின்றன; இது user-facing source of truth-க்கு முரண்பாடு.
+
+Needed fix: explicit engine/model/voice settings, engine-specific applicable controls,
+effective runtime configuration display. Unsupported controls-ஐ தெளிவாக விளக்க வேண்டும்.
+Selected backend model-ஐ மறைமுகமாக மாற்றக்கூடாது; Gemini direct reasoning தேர்வு செய்தால்
+அதைக் configuration-லேயே explicit-ஆகத் தெரிவிக்க வேண்டும்.
+
+P1: Saved greeting ஏற்கனவே encoding damage பெற்றுள்ளது.
+
+Playwright DOM மற்றும் database இரண்டிலும் firstMessage-ல் 19 literal '?' characters,
+zero non-ASCII characters. இது terminal display font மட்டும் அல்ல. Original Tamil
+greeting-ஐ சரியாக restore செய்து UTF-8 save/read/display round trip verify செய்ய வேண்டும்.
+இந்த audit-ல் value மாற்றப்படவில்லை.
+
+P1: Answer grounding / topic association தவறுகிறது.
+
+இன்றைய saved demo-வில் unrelated good-news context-இன் நாளை என்ற சொல்லை backend
+புதிய appointment request-ன் date-ஆக எடுத்துக்கொண்டது. அந்த booking request-ல் date
+கொடுக்கப்படவில்லை. இன்னொரு session-ல் software business context இருந்தும் medical
+services போன்ற unsupported options backend result-ல் வருகின்றன. நல்ல audio tone
+இவற்றைச் சரிசெய்யாது. Confirmed slots, original requirement, business catalogue,
+scope/unknown facts ஆகியவை response planning-க்கு authoritative-ஆக இருக்க வேண்டும்.
+
+Knowledge source 1 READY; chunks 6. இதனால் knowledge இல்லை என்று கூற முடியாது.
+அதே நேரத்தில் எல்லா business services-மும் சரியாகப் பதிலளிக்கப்படுகின்றன என்பதற்கான
+proof அல்ல. User question -> retrieved source -> spoken factual answer என்ற coverage
+evaluation தேவை. Existing per-call state உள்ளது; அதை புதிதாகச் செய்வதைவிட native model,
+backend, transcript fragments ஆகியவற்றுடன் sync உறுதிப்படுத்த வேண்டும்.
+
+P1: Booking quality-க்கு browser demo மற்றும் live actions வேறு.
+
+ஆய்வு செய்த 4 current browser journals-லும் actions=sandbox_only. இந்த mode real
+appointment/email/transfer செய்வதில்லை. இந்த demos-ல் real booking நடக்காததை calendar
+failure என்று கருதக்கூடாது. Current live booking API failure-க்கு புதிய correlated
+phone trace இல்லை; அதை reproducible real-call failure என்று இந்த audit கூறவில்லை.
+
+Existing tools.py-ல் caller-confirmed email, booking hold, duplicate suppression,
+CallTasks committed-operation protection, Cal.com result மற்றும் DB mirror உள்ளன.
+இவற்றை native adapter வழியாக சரியாக இயக்க வேண்டும். New engine நல்ல குரலில் பேசுவது
+மட்டுமே booking correctness-க்கு proof அல்ல. Email queued என்பதையும் delivered என்பதையும்
+வேறுபடுத்த வேண்டும். Calendar/Google keys இருப்பது boolean-ஆக மட்டும் உறுதி செய்யப்பட்டது;
+API access, calendar health, email deliverability சோதிக்கப்படவில்லை.
+
+6. பரிந்துரைக்கும் architecture
+
+Existing browser / Vobiz phone / LiveKit SIP
+                    |
+              Existing LiveKit room
+                    |
+              Explicit voice-engine selector
+                    |
+        +-----------+------------------+
+        |                              |
+  repaired GPT-Live              Gemini Live candidate
+  rollback/comparison            native audio + Zephyr
+        |                              |
+        +------ shared tool adapter ---+
+                    |
+         Existing CallState / CallTasks
+         Verified business knowledge
+         Existing booking/email/transfer/custom HTTP tools
+                    |
+         Existing DB / Cal.com / campaign lifecycle
+
+Gemini branch-ல் ordinary dialogue மற்றும் function selection-ஐ native model செய்யலாம்.
+Routine appointment flow-க்கு ஒவ்வொரு turn-லும் Qwen round trip கட்டாயமாக வேண்டாம்.
+Complex reasoning மட்டும் தேவைப்பட்டால் selected backend-ஐ explicit tool-ஆக அழைக்கலாம்.
+இது proposed design; ZenX server-லும் இதே tool architecture உள்ளது என்ற claim அல்ல.
+
+Single authoritative state: service, valid name, confirmed recipient, timezone/date,
+time, booking permission, issue, negated requirements, language, action receipt.
+Caller correction ஒரு field-ஐ மட்டுமே மாற்ற வேண்டும். Backend/native conversation
+memory இருந்தாலும் external write-க்கு schema validation மற்றும் verified receipt தேவை.
+
+Native voice மற்றும் business backend prompt பொறுப்புகளைத் தெளிவாக்க வேண்டும்.
+Short voice policy: natural spoken Tamil/Tanglish, neutral நீங்க/நீங்கள், soft professional
+delivery, one missing question, brief context-appropriate empathy. Business truth,
+correction/confirmation rules, availability and idempotency shared tools/state-ல் அமைய வேண்டும்.
+Prompt மட்டும் எல்லா timing/action properties-யும் enforce செய்யாது.
+
+7. Installed compatibility மற்றும் புதிய dependency தேவை
+
+Installed: livekit-agents 1.8.4; livekit-plugins-google 1.8.4;
+livekit-plugins-openai 1.8.4; google-genai 2.28.0; openai 2.54.0.
+Google realtime constructor, tools/config options உள்ளன. GOOGLE_API_KEY private env-ல்
+present; key value காட்டப்படவில்லை. இந்த model-க்கு account access verify செய்யப்படவில்லை.
+
+LiveKit docs-படி Gemini 3.1 mid-session updates-க்கு Python plugin >=1.8.2 தேவை;
+installed 1.8.4 அதற்குப் போதுமானது. Gemini 3.8 Vertex AI route-க்கு >=1.8.5 தேவை;
+அந்த requirement-ஐ எல்லா Gemini API routes-க்கும் blanket-ஆகப் பயன்படுத்தக்கூடாது.
+3.1-ல் affective-dialog/proactive options unsupported; async tool support பற்றியும்
+model-specific restrictions உள்ளன. 'Emotional' வேண்டுமென்று unsupported flag சேர்க்கக் கூடாது.
+Source: https://docs.livekit.io/agents/models/realtime/gemini/
+
+புதிய open-source framework அல்லது GPU server இப்போது அவசியம் என்பதற்கான ஆதாரம் இல்லை.
+LiveKit open-source foundation மற்றும் installed Google plugin போதுமான integration
+starting point. Existing audio/runtime defects எந்த cloud model-க்கும் பாதிப்பை ஏற்படுத்தலாம்.
+VibeVoice-Realtime என்பது streaming TTS; அது booking/reasoning/memory முழு agent அல்ல.
+அதன் published ~300 ms TTS first-audio எண் complete Tamil voice-agent latency அல்ல;
+documented experimental speaker list-ல் Tamil இல்லை. Tamil production alternative-ஆக
+அதை உடனே மாற்றுவது இந்த evidence-ல் நியாயப்படுத்தப்படவில்லை.
+Source: https://github.com/microsoft/VibeVoice
+
+8. மாற்றம் செய்யும்போது தொட வேண்டிய இடங்கள்
+
+முதலில் engine-independent repairs:
+- voice-service/gpt_live_experiment.py: byte clipping, safe result streaming,
+  transcript/delegation correlation, backend timing and error evidence.
+- voice-service/gpt_live_phone.py: audio pacing/readiness integration, final tool
+  receipts, native runtime limits/error reporting; common call lifecycle preserve.
+- voice-service/agent.py: native selection, warm-up, shared state/tool setup,
+  phone recording/campaign finalization preserve.
+- voice-service/assistant_prompts.py மற்றும் saved assistant prompt/greeting:
+  shorter voice policy, verified scope, explicit direction; UTF-8 greeting restore.
+- voice-service/knowledge.py, callstate.py, call_tasks.py, tools.py:
+  தேவையான seams மட்டும்; real confirmed action guards-ஐ நீக்கக்கூடாது.
+
+Gemini comparison implement செய்யும்போது கூடுதலாக:
+- Proposed new voice-service/gemini_live_runtime.py: current session lifecycle-க்குள்
+  Google realtime adapter; existing tool wrappers/state/recording reuse.
+- voice-service/gpt_live_gate.py அல்லது shared engine config module; private env
+  defaults/runbook; auto architecture fallback தவிர்க்க explicit selection.
+- dashboard/components/AssistantForm.tsx; dashboard/app/(admin)/assistants/actions.ts;
+  voice-service/db.py: saved engine/model/voice selection-ஐ runtime வரை கொண்டு செல்லுதல்.
+  Existing metadata-ல் configuration வைக்க முடியுமா என்று முதலில் தீர்மானிக்கலாம்;
+  schema migration கட்டாயம் என்று இப்போது கூறவில்லை.
+- dashboard/components/DemoWidget.tsx; dashboard/lib/voice-service.ts;
+  dashboard/app/api/demo/proxy/route.ts; voice-service/server.py:
+  current demo dispatch/engine status reuse; புதிய demo application வேண்டாம்.
+- voice-service/provider_rates.py; dashboard/lib/cost.ts: actual native provider
+  usage accounting; irrelevant STT/TTS charges சேர்க்காமல் இருப்பது.
+- Existing native tests plus shared synthetic booking/confirmation/interruption checks.
+  Installed plugin compatibility test-க்கு முன் blind upgrades வேண்டாம்.
+
+9. செய்ய வேண்டிய வரிசை மற்றும் acceptance criteria
+
+A. Reproducible transport fixes: audio-rate error, startup backlog, loop stalls.
+B. Remove semantic data loss: preserve complete verified results within token limits;
+   eliminate full-answer buffering when safe partial information is available.
+C. Make saved UI configuration truthful; repair greeting and domain grounding.
+D. Existing browser demo-வில் repaired GPT-Live மற்றும் Gemini Live/Zephyr comparison.
+   Production phone configuration preserve; fresh model alias/access test first.
+E. Same synthetic appointment cases with existing real tool interfaces sandboxed.
+F. Voice மற்றும் tools இரண்டும் pass ஆனபிறகு ஒரு controlled user phone test;
+   அப்போதுதான் selected assistant-க்கு rollout, easy rollback. Customer calls/messages
+   automatic-ஆக தொடங்க வேண்டாம்.
+
+Proposed targets, achieved results அல்ல:
+- Simple no-tool questions: caller last word -> first relevant audible answer
+  p95 <=1,000 ms target; browser மற்றும் handset தனித்தனியாக அளவிடுதல்.
+- Tool-backed answers: completion time separately report; checking filler-ஐ actual
+  answer என்று கணக்கிடக்கூடாது. External calendar completion-க்கு 1-second universal
+  guarantee தர முடியாது; measured tool time budget தனியாக அமைய வேண்டும்.
+- 20 synthetic scenarios அனைத்திலும் correct name rejection, one email confirmation,
+  preserved date/time/service, exactly-once booking, no invented success, no re-intake loop.
+- Appointment failure/pending/delivery outcomes exact; interruption committed booking-ஐ
+  undo செய்ததாகக் கூறாமலும் duplicate submit இல்லாமலும் இருக்க வேண்டும்.
+- 3 Tamil listeners மூலம் blinded ordinary Tamil/Tanglish samples; native pronunciation,
+  warmth, intelligibility, appropriate emotion மதிப்பீடு; average >=4/5 target.
+- Same questions, same network/device conditions, repetitions; p50/p95 and failure counts.
+  Browser broadband result-ஐ 8 kHz telephone result-ஆகக் காட்டக்கூடாது.
+
+'100x better' என்பது இப்போது அளந்த metric அல்ல. Better என்பதைக் first useful answer,
+native Tamil listening score, correct booking, no repeat questions, reliable interruption
+என்ற observable outcomes-ஆக வரையறுப்பதே சரியான engineering இலக்கு.
+Source: https://developers.openai.com/cookbook/examples/audio/voice_agent_evaluation
+
+10. Reproducible evidence மற்றும் மாற்றப்படாதவை
+
+Local analysis artifacts, voice-service/க்கு relative:
+  output/verify/genx-20261110/transcript.json
+  output/verify/genx-20261110/frame-*.jpg
+  output/verify/genx-20261110/audit-evidence.json
+  output/verify/genx-20261110/runtime-settings-audit.json
+  output/verify/genx-20261110/audit_probe.py
+  output/verify/genx-20261110/google-deprecations.txt
+
+Offline reproduction, voice-service directory-ல்:
+  /home/jilljill2023/venvs/jilljill-voice/bin/python -B -X utf8 \
+      output/verify/genx-20261110/audit_probe.py
+Expected diagnostic findings: answer_waits_for_stream_end=true;
+critical_tail_preserved=false; historical input_audio_rate_limit_exceeded count=1.
+இவை defect கண்டுபிடிக்கப்பட்டது என்ற findings; repairs pass ஆனது என்ற முடிவு அல்ல.
+
+Production source/configuration, saved prompts/greeting, credentials, running services
+மாற்றப்படவில்லை. Dependencies install/upgrade, service restart, Git push, real booking,
+email, outbound call அல்லது புதிய paid voice conversation செய்யப்படவில்லை. இந்த report
+மற்றும் local evidence/probe artifacts மட்டும் உருவாக்கப்பட்டன.
+
+Automatic approval review ZenX 'Call Agent' click-ஐ தடுத்தது; microphone/external paid
+session தொடங்கக்கூடும் என்பதே stated reason. அந்த action retry/bypass செய்யப்படவில்லை.
+Public-client analysis மூலம் பாதிக்கப்படாத ஆய்வு முடிக்கப்பட்டது; புதிய ZenX session-ன்
+audible timing மற்றும் server tool behavior இந்த audit-ல் அளக்கப்படவில்லை.

@@ -167,9 +167,11 @@ export function computeCallCost(
   }
   // — STT —
   if (call.sttSeconds && call.sttSeconds > 0) {
-    add("STT", call.sttProviderUsed, call.sttSkuUsed, "STT_MINUTE",
+    // GPT-Live reuses the existing duration meter; it replaces both STT/TTS.
+    const nativeAudio = call.sttProviderUsed === "openai" && call.sttSkuUsed === "gpt-live-1";
+    add(nativeAudio ? "LLM" : "STT", call.sttProviderUsed, call.sttSkuUsed, "STT_MINUTE",
         call.sttSeconds / SECONDS_PER_MINUTE, "min",
-        `${call.sttProviderUsed} ${call.sttSkuUsed} STT`);
+        nativeAudio ? "OpenAI GPT-Live full-duplex audio" : `${call.sttProviderUsed} ${call.sttSkuUsed} STT`);
   }
   // — TTS —
   if (call.ttsChars && call.ttsChars > 0) {

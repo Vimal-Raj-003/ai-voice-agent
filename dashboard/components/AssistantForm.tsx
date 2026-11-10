@@ -20,6 +20,7 @@ import MessageField from "./MessageField";
 import UrlSetup from "./UrlSetup";
 import LlmStackFields from "./LlmStackFields";
 import TtsStackFields from "./TtsStackFields";
+import { voiceSettings, GEMINI_LIVE_MODELS, GEMINI_LIVE_VOICES, type VoiceEngine } from "@/lib/native-voice";
 
 type ToolOption = {
   id: string;
@@ -96,6 +97,8 @@ export default function AssistantForm({
   dangerAction,
 }: Props) {
   const selectedSet = new Set(selectedToolIds);
+  const savedVoice = voiceSettings(initial?.metadata);
+  const [voiceEngine, setVoiceEngine] = useState<VoiceEngine>(savedVoice.engine);
   // Edit mode when an id is present (or explicitly passed). Drives the button
   // label and makes create-vs-edit unambiguous in the UI.
   const isEdit = mode ? mode === "edit" : Boolean(initial?.id);
@@ -291,7 +294,7 @@ export default function AssistantForm({
             <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
               Voice stack
               <InfoTooltip width={300}>
-                The three providers that run a call: the language model that thinks, the text-to-speech voice the caller hears, and the speech-to-text engine that transcribes them.
+                Choose the voice engine for this assistant. Gemini Live handles speech and reasoning directly and uses your existing business tools.
               </InfoTooltip>
             </h3>
             {/* MEASURED: a two-column internal layout was tried here (brief §4
@@ -301,6 +304,36 @@ export default function AssistantForm({
                 beside it — exactly the truncation §4 rules out. Call accuracy
                 below DOES pair cleanly, because its four knobs are short. */}
             <div className="grid grid-cols-1 gap-3">
+              <Field label="Voice engine">
+                <Select name="voiceEngine" defaultValue={voiceEngine} onChange={(value) => setVoiceEngine(value as VoiceEngine)}
+                  options={[
+                    {value: "inherit", label: "Existing configuration"},
+                    {value: "gemini-live", label: "Gemini Live — native audio"},
+                    {value: "gpt-live", label: "OpenAI GPT-Live — existing voice setup"},
+                    {value: "pipeline", label: "STT → LLM → TTS"},
+                  ]} />
+              </Field>
+              <div hidden={voiceEngine !== "gemini-live"} className="space-y-3">
+                <Field label="Realtime audio model">
+                  <Select name="realtimeModel" defaultValue={savedVoice.model} options={GEMINI_LIVE_MODELS.map((model) => ({
+                    value: model, label: model,
+                    description: model === "gemini-3.8-live" ? "Current Gemini Live model" : "Legacy preview; prefer the current model",
+                  }))} />
+                </Field>
+                <Field label="Realtime voice">
+                  <Select name="realtimeVoice" defaultValue={savedVoice.voice}
+                    options={GEMINI_LIVE_VOICES.map((voice) => ({value: voice, label: voice}))} />
+                </Field>
+                <p className="text-xs text-gray-400">
+                  Used for this assistant’s browser demo and phone calls. Gemini handles speech and reasoning;
+                  your saved prompt, knowledge, booking and transfer tools remain in use.
+                </p>
+                <p className="text-xs text-gray-400">
+                  Minimum pause sets turn detection. STT confidence and pipeline sensitivity do not apply to native audio.
+                  Response time also depends on the provider, network and tools.
+                </p>
+              </div>
+              <div hidden={voiceEngine === "gemini-live"} className="space-y-3">
               {/* LLM provider + model are coupled: the model dropdown lists
                   only models the selected provider can serve, resets on
                   provider change, and blocks invalid pairs. See
@@ -318,6 +351,7 @@ export default function AssistantForm({
                 initialVoice={initial?.voiceId ?? ""}
               />
               <SttProviderField initial={initial?.sttProvider ?? "DEEPGRAM"} />
+              </div>
             </div>
           </section>
           <CallAccuracySection initial={initial} />

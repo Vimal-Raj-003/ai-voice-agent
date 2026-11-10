@@ -34,6 +34,19 @@ logger = get_logger("provider_rates")
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
+
+async def ensure_gpt_live_rate() -> None:
+    """Seed only the new voice meter; preserve any operator's existing rate."""
+    import db
+    pool = await db.get_pool()
+    await pool.execute('''INSERT INTO provider_rates
+        (id, provider, sku, kind, "rateUsd", source, last_verified_at, notes, created_at, updated_at)
+        VALUES ('openai-gpt-live-session-minute', 'openai', 'gpt-live-1', 'STT_MINUTE',
+                0.05, 'DEFAULT', now(), $1, now(), now())
+        ON CONFLICT (provider, sku, kind) DO NOTHING''',
+        'Full-duplex session minute; existing audio-duration meter, not separate STT/TTS. '
+        'https://developers.openai.com/api/docs/models/gpt-live-1')
+
 # Map our (provider, sku) tuple to the corresponding openrouter.ai model id.
 # Add a row here when you start using a new model so the cron picks it up.
 OPENROUTER_LOOKUP: dict[tuple[str, str], str] = {

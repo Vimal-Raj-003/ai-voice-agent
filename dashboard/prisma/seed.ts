@@ -30,6 +30,7 @@ const SEED_RATES: Array<{
   { provider: "deepgram", sku: "nova-2", kind: "STT_MINUTE", rateUsd: "0.0043", source: "DEFAULT" },
   { provider: "sarvam", sku: "saaras-v3", kind: "STT_MINUTE", rateUsd: "0.0036", source: "DEFAULT", notes: "~₹0.30/min" },
   { provider: "openai", sku: "whisper-1", kind: "STT_MINUTE", rateUsd: "0.006", source: "DEFAULT" },
+  { provider: "openai", sku: "gpt-live-1", kind: "STT_MINUTE", rateUsd: "0.05", source: "DEFAULT", notes: "Full-duplex session minute; existing audio-duration meter, not separate STT/TTS. https://developers.openai.com/api/docs/models/gpt-live-1" },
 
   // — TTS (USD per 1k chars) — manual refresh.
   { provider: "elevenlabs", sku: "turbo-v2-5", kind: "TTS_KCHARS", rateUsd: "0.30", source: "DEFAULT", notes: "Creator plan" },

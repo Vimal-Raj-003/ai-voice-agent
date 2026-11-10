@@ -100,7 +100,7 @@ _SCRIPT_WORDS = {
 }
 
 
-def script_lang(text: str) -> str:
+def script_lang(text: str, *, include_hindi: bool = False) -> str:
     """Base language implied by NATIVE SCRIPT in `text` ("" when none).
 
     Script is unambiguous evidence — unlike an STT language guess it cannot be a
@@ -113,6 +113,10 @@ def script_lang(text: str) -> str:
         return "te"
     if _MALAYALAM_SCRIPT.search(t):
         return "ml"
+    # Native-audio transcripts have no STT language code. Keep the historical
+    # cascaded-STT policy unchanged unless the native caller opts in explicitly.
+    if include_hindi and re.search(r'[\u0900-\u097f]', t):
+        return 'hi'
     return ""
 
 

@@ -2,6 +2,10 @@ import type { Prisma } from "@prisma/client";
 
 export type PromptDirection = "INBOUND" | "OUTBOUND";
 
+export function preservePromptLineEndings(previous: string, submitted: string): string {
+  return previous.replace(/\r\n?/g, "\n") === submitted.replace(/\r\n?/g, "\n") ? previous : submitted;
+}
+
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : {};

@@ -1667,6 +1667,7 @@ async def get_assistant_as_profile(assistant_id: str) -> dict | None:
         "organization_id": r["organizationId"],
         "system_prompt": r["systemPrompt"],
         "outbound_system_prompt": outbound_prompt(r.get('metadata')),
+        "metadata": r.get('metadata'),
         "first_message": r["firstMessage"],
         "end_call_message": r["endCallMessage"],
         "llm_provider": (r["llmProvider"] or "OPENAI").lower(),

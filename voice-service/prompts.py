@@ -294,6 +294,7 @@ def build_prompt(
     diagnostics: dict | None = None,
     call_direction: str | None = None,
     hallucination_guard: bool = True,
+    native_audio: bool = False,
 ) -> str:
     """Assemble the prompt for one call.
 
@@ -320,7 +321,8 @@ def build_prompt(
     # The UNIVERSAL conversation engine is appended to EVERY role, so a custom
     # Sales/Support/Collections agent gets the same human phone behaviour as the
     # receptionist. The role prompt above supplies only objective/knowledge/tools.
-    body += UNIVERSAL_CONVERSATION + TONE_POLICY
+    if not (native_audio and is_custom_role):
+        body += UNIVERSAL_CONVERSATION + TONE_POLICY
     if is_custom_role:
         body += ('\n[SAVED ASSISTANT INSTRUCTIONS] Follow the saved role, identity, task and speaking style above. '
                  'Conversation-engine wording is a default, not a replacement persona or booking script. '
@@ -350,7 +352,7 @@ def build_prompt(
                  'invent an offer, price, previous enquiry or consent, or substitute a generic how-can-I-help line.')
     if diagnostics is not None:
         diagnostics.update(
-            platform_rules_appended=["UNIVERSAL_CONVERSATION", "CONTEXTUAL_TONE"]
+            platform_rules_appended=([] if native_audio and is_custom_role else ["UNIVERSAL_CONVERSATION", "CONTEXTUAL_TONE"])
             + ([] if is_custom_role else ["RECEPTIONIST_TRANSFER"])
             + ["BUSINESS_CONTEXT", "IST_TIME"]
             + (["CALLER_NOTES"] if caller_history else []),

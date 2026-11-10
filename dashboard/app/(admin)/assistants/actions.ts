@@ -7,9 +7,10 @@ import { requireRole } from "@/lib/require-role";
 import { coerceModelForProvider } from "@/lib/llm-models";
 import { coerceVoiceForProvider } from "@/lib/tts-voices";
 import { TRANSFER_CATEGORIES, isE164 } from "@/lib/human-transfer";
-import { withOutboundPrompt } from "@/lib/assistant-prompts";
+import { assistantPrompts, preservePromptLineEndings, withOutboundPrompt } from "@/lib/assistant-prompts";
+import { withVoiceSettings } from "@/lib/native-voice";
+import type { LlmProvider, SpeechSensitivity, SttProvider, TtsProvider } from "@prisma/client";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function _bool(v: FormDataEntryValue | null): boolean {
   return v === "true" || v === "on";
 }
@@ -51,22 +52,18 @@ function readAssistantPayload(formData: FormData) {
     name: String(formData.get("name") || "Untitled"),
     systemPrompt: String(formData.get("systemPrompt") || ""),
     firstMessage: String(formData.get("firstMessage") || "") || null,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    llmProvider: llmProvider as any,
+    llmProvider: llmProvider as LlmProvider,
     llmModel,
     llmFallbackModel,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ttsProvider: ttsProvider as any,
+    ttsProvider: ttsProvider as TtsProvider,
     voiceId,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    sttProvider: String(formData.get("sttProvider") || "DEEPGRAM") as any,
+    sttProvider: String(formData.get("sttProvider") || "DEEPGRAM") as SttProvider,
     // Call accuracy & speech tuning
     silenceTimeoutSeconds: _range(formData.get("silenceTimeoutSeconds"), 30, 5, 300),
     maxDurationSeconds: _range(formData.get("maxDurationSeconds"), 1800, 60, 7200),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     endOfSpeechSensitivity: String(
       formData.get("endOfSpeechSensitivity") || "LOW",
-    ) as any,
+    ) as SpeechSensitivity,
     interruptionThresholdMs: _range(
       formData.get("interruptionThresholdMs"),
       150,
@@ -211,12 +208,24 @@ export async function saveAssistant(
     const transfer = readTransferTargets(formData);
     if (transfer.error) return { error: transfer.error };
     if (id) {
-      const existing = await prisma.assistant.findUniqueOrThrow({ where: { id }, select: { metadata: true } });
+      const existing = await prisma.assistant.findUniqueOrThrow({ where: { id }, select: { metadata: true, systemPrompt: true } });
+      data.systemPrompt = preservePromptLineEndings(existing.systemPrompt || "", data.systemPrompt);
+      let metadata = existing.metadata as unknown;
+      if (formData.has("outboundSystemPrompt")) {
+        metadata = withOutboundPrompt(metadata, preservePromptLineEndings(
+          assistantPrompts(existing.systemPrompt || "", existing.metadata).outbound,
+          String(formData.get("outboundSystemPrompt") ?? "")));
+      }
+      if (formData.has("voiceEngine")) {
+        metadata = withVoiceSettings(metadata, {
+          engine: String(formData.get("voiceEngine")), model: String(formData.get("realtimeModel") || "gemini-3.8-live"),
+          voice: String(formData.get("realtimeVoice") || "Zephyr"),
+        });
+      }
       await prisma.assistant.update({ where: { id }, data: {
         ...data,
-        ...(formData.has("outboundSystemPrompt") ? {
-          metadata: withOutboundPrompt(existing.metadata, String(formData.get("outboundSystemPrompt") ?? "")),
-        } : {}),
+        ...(formData.has("outboundSystemPrompt") || formData.has("voiceEngine")
+          ? {metadata: metadata as ReturnType<typeof withVoiceSettings>} : {}),
       } });
       await syncAssistantTools(id, readToolIds(formData));
       await syncTransferTargets(id, transfer.rows);
@@ -224,7 +233,12 @@ export async function saveAssistant(
       const { id: orgId } = await getDefaultOrg();
       const created = await prisma.assistant.create({
         data: { organizationId: orgId, ...data,
-          metadata: withOutboundPrompt(null, String(formData.get("outboundSystemPrompt") ?? data.systemPrompt)),
+          metadata: withVoiceSettings(withOutboundPrompt(null,
+            String(formData.get("outboundSystemPrompt") ?? data.systemPrompt)), {
+              engine: String(formData.get("voiceEngine") || "inherit"),
+              model: String(formData.get("realtimeModel") || "gemini-3.8-live"),
+              voice: String(formData.get("realtimeVoice") || "Zephyr"),
+            }),
         },
       });
       await syncAssistantTools(created.id, readToolIds(formData));

@@ -401,21 +401,23 @@ def _cross_provider_fallback(exclude: str, specs: dict[str, ProviderSpec]) -> tu
 
 
 # ── Construction ─────────────────────────────────────────────────────────────
-def build_llm(provider: str, model: str, *, profile: dict | None = None) -> Any | None:
+def build_llm(provider: str, model: str, *, profile: dict | None = None,
+              api_key: str | None = None) -> Any | None:
     """Instantiate the LLM for `provider`/`model`, or None if it cannot be built.
 
     `provider` decides the endpoint and credential; `model` is passed through
-    verbatim. A model name never changes which vendor is called.
+    verbatim. A model name never changes which vendor is called. An explicit
+    per-call api_key does not modify environment variables or another call.
     """
     spec = _specs().get(provider)
     if spec is None:
         return None
-    ok, why = provider_available(provider)
+    ok, why = provider_available(provider) if api_key is None else (bool(api_key), 'empty per-call credential')
     if not ok:
         logger.warning("llm_build_skipped", provider=provider, model=model,
                        root_cause=why, source="LLM")
         return None
-    key = os.environ[spec.env_key]
+    key = os.environ[spec.env_key] if api_key is None else api_key
     profile = profile or {}
     temperature = profile.get('temperature')
     max_tokens = profile.get('max_tokens')

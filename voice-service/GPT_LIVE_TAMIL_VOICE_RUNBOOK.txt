@@ -1,0 +1,58 @@
+Tamil voice candidate, 2026-11-10
+
+The user reported that gleam sounds like an English speaker speaking Tamil.
+OpenAI documents gleam as an English/North American feminine voice. This is
+consistent with the report, but no recording was auditioned to establish a
+single acoustic cause. Prompt-only softness did not satisfy the user.
+
+One original synthetic adult feminine Tamil voice profile was created using
+OpenAI prompt-to-voice. The request contained a generic vocal description and
+synthetic Tamil sample, with no customer audio, personal speech or business
+instructions. The saved creation result is in the ignored local artifact:
+output/verify/tamil-voice-candidate.json
+The artifact retains the original voice-design prompt and returned identifier.
+No API key or response headers were saved. No automatic creation retry ran.
+OpenAI's documentation says prompt-generated voice creation is free; listening
+uses regular paid GPT-Live sessions. Creation returns metadata, not a preview.
+https://developers.openai.com/api/docs/guides/custom-voices
+
+Installed LiveKit OpenAI plugin 1.8.4 accepts voice={"id":"voice_..."}.
+gpt_live_gate.configured_voice now validates a custom identifier and preserves
+its case. Invalid IDs fail rather than silently reverting to an English voice.
+GPT_LIVE_VOICE_ID optionally selects a reviewed custom voice for native calls.
+GPT_LIVE_TEST_VOICE_ID overrides that selection ONLY for the designated browser
+test path. The generated candidate is staged through this browser-only key.
+The phone named voice selection remains gleam; other business controls,
+credentials, telephony routing and the full-duplex architecture are preserved.
+
+The original Tamil voice description was added to the saved inbound/outbound
+Assistant page prompts as recommended by OpenAI. Language switching and all
+existing booking, email, memory and transfer instructions remain intact.
+Previous prompt settings and browser selection were backed up locally under:
+output/verify/assistant-tamil-voice-before-*.json
+Reviewed prompt copies remain in assistant-prompts/appointment-booker-*.txt.
+
+Worker build: 2026-11-10-gpt-live-tamil-voice-v21.
+Only the idle worker needs reload for the new adapter/selection. The dashboard
+and FastAPI code do not need restart for the browser-only voice identifier.
+No occupied LiveKit rooms or running campaigns were present at the restart
+check. Existing phone voice changes were not enabled automatically.
+
+Verification: six new custom-voice tests failed before the adapter change.
+Afterward, 60 native browser/phone offline tests passed. Coverage includes
+browser/phone separation, invalid identifier rejection and the actual installed
+SDK constructor accepting the custom voice object without opening audio.
+Code/configuration checks do NOT prove native Tamil pronunciation, subjective
+voice quality, paid-session authorization, or handset latency.
+
+Audition: open http://localhost:3000/demo, end any older demo session, then
+click Start call. The next new designated browser call uses the candidate.
+Listening is a user-initiated paid GPT-Live session. No paid audio session was
+started automatically. Compare ordinary Tamil, names, dates, email spelling
+and short emotional replies before promoting this voice to real phone calls.
+
+Rollback of the browser voice: remove/blank GPT_LIVE_TEST_VOICE_ID in the
+private voice-service/.env, then safely reload the idle worker. This restores
+the named voice or an explicitly configured global custom voice. Restoring an
+older prompt is optional and should use the local backup without overwriting
+newer business instructions.

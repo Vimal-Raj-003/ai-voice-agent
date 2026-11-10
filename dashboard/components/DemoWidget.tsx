@@ -8,7 +8,9 @@ import {
 import { Mic, PhoneOff, Sparkles } from "lucide-react";
 import DemoAudioMonitor from "./DemoAudioMonitor";
 
-export default function DemoWidget() {
+export default function DemoWidget({config}: {config?: {
+  engine: string; assistant_name: string | null; model: string | null; voice: string | null; sandbox: boolean;
+} | null}) {
   const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "ended" | "error">("idle");
   const [error, setError] = useState<string>("");
   const [room, setRoom] = useState<Room | null>(null);
@@ -47,7 +49,13 @@ export default function DemoWidget() {
       const { token, room: roomName, url } = await r.json();
       const lkRoom = new Room({ adaptiveStream: true, dynacast: true });
       roomRef.current = lkRoom;
-      detachRef.current = attachRoomLifecycleLogging(lkRoom, "demo");
+      const detachLifecycle = attachRoomLifecycleLogging(lkRoom, "demo");
+      const audioElements = new Set<HTMLAudioElement>();
+      detachRef.current = () => {
+        detachLifecycle();
+        for (const el of audioElements) el.remove();
+        audioElements.clear();
+      };
       lkRoom.on(RoomEvent.TrackSubscribed, (track) => {
         if (track.kind === Track.Kind.Audio) {
           const el = track.attach() as HTMLAudioElement;
@@ -55,13 +63,21 @@ export default function DemoWidget() {
           el.autoplay = true;
           el.muted = false;
           document.body.appendChild(el);
+          audioElements.add(el);
           // Some browsers won't autoplay media that attaches a few seconds
           // after the click gesture. Explicitly start playback and swallow the
           // promise rejection so a blocked autoplay doesn't crash the handler.
           void el.play().catch((e) => console.warn("remote audio autoplay blocked", e));
         }
       });
-      lkRoom.on(RoomEvent.Disconnected, () => setStatus("ended"));
+      lkRoom.on(RoomEvent.Disconnected, () => {
+        if (roomRef.current !== lkRoom) return;
+        detachRef.current?.();
+        detachRef.current = null;
+        roomRef.current = null;
+        setRoom(null);
+        setStatus("ended");
+      });
       logRoomConnect("demo", roomName);
       await lkRoom.connect(url, token);
       await lkRoom.localParticipant.setMicrophoneEnabled(true);
@@ -71,6 +87,10 @@ export default function DemoWidget() {
     } catch (exc) {
       const msg = exc instanceof Error ? exc.message : String(exc);
       setError(msg);
+      await disconnectOnce(roomRef.current, "demo", "connection failed");
+      detachRef.current?.();
+      detachRef.current = null;
+      setRoom(null);
       setStatus("error");
       roomRef.current = null;
     } finally {
@@ -95,6 +115,12 @@ export default function DemoWidget() {
         <Sparkles className="mx-auto text-purple-300" size={28} />
         <h2 className="mt-2 text-2xl font-bold">Try the agent</h2>
         <p className="text-gray-400 text-sm mt-1">Open mic in your browser; the AI will pick up.</p>
+        {config && <div className="mt-3 space-y-1 text-xs text-gray-400">
+          {config.assistant_name && <p>{config.assistant_name}</p>}
+          <p>{config.engine === "gemini-live" ? "Gemini Live" : config.engine === "gpt-live" ? "OpenAI GPT-Live" : "STT → LLM → TTS"}
+            {config.voice ? ` · ${config.voice}` : ""}</p>
+          {config.sandbox && <p>Test mode: booking, messages and transfers are simulated.</p>}
+        </div>}
         <div className="mt-6 flex justify-center">
           {status !== "connected" ? (
             <button onClick={start} disabled={status === "connecting"} className="rounded-full bg-white text-black px-6 py-3 font-medium inline-flex items-center gap-2 disabled:opacity-50">

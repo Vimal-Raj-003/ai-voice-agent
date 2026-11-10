@@ -1,0 +1,97 @@
+JillJill saved assistant prompts and repeatable browser demo
+2026-11-04, worker build 2026-11-04-gpt-live-saved-prompts-v20
+
+CURRENT STATUS
+The user has already confirmed the native phone conversation works. This
+update improves saved-prompt authority and repairs repeat browser demo calls.
+API /health and dashboard /login returned HTTP 200 after the safe restart.
+Worker registered as AW_zQ9shHdnqFoq at 13:09:40 UTC (18:39:40 IST).
+No active room participants or running campaigns were present before restart.
+No paid audio session, phone call or customer message was initiated here.
+
+SAVED ASSISTANT SETTINGS
+Appointment Booker: cmuv65lxx0013v7f4thzf2qtv
+Inbound source: assistant-prompts/appointment-booker-inbound.txt
+Outbound source: assistant-prompts/appointment-booker-outbound.txt
+The inbound text is saved in assistants.systemPrompt; outbound is saved in
+metadata.directionPrompts.outbound. Unrelated metadata and all other assistant
+columns were preserved except firstMessage and updatedAt. The opening is:
+"வணக்கம், {business_name}. நான் Juli, appointment assistant பேசுறேன்."
+Previous prompts are backed up locally in the ignored file:
+output/verify/assistant-prompt-before-v20-20261104-130730.json
+
+Both native browser and phone voice instructions now include the saved
+directional prompt. Native backend construction omits conflicting legacy
+language/persona additions when a saved custom prompt exists. Runtime adds
+transport facts, actual call direction, sandbox/live tool capability facts,
+delegation protocol and verified context. The prompt files are reviewable
+copies, not hidden runtime overrides: future Assistant page saves govern NEW
+calls. An existing connected session does not hot-reload edited settings.
+
+The saved instructions cover professional appointment intake, one missing
+question at a time, neutral caller address, verified service knowledge,
+name/date distinction, correction memory, once-only email agreement, honest
+tool results, requested human transfer, brief relevant emotional responses,
+off-topic boundaries, and caller-led multilingual conversation.
+Native first-turn language routing includes Hindi script without changing
+legacy cascaded STT routing. Supported-language instructions do not prove
+equal speech quality across languages; audible checks remain necessary.
+
+DEMO REPAIR
+The previous API allocated its exact configured room once and returned 409
+for subsequent starts. Each new authenticated start now gets a fresh random
+child room under the designated private test base. Trusted dispatch metadata
+still pins the selected assistant, direction and sandbox demo identity.
+Active demos block overlapping allocation. An ambiguous dispatch failure
+blocks further allocation until review/restart; the API never blindly retries
+an allocation that might already exist. The process cap remains 64 demos.
+Browser disconnect/failure cleanup clears room references and remote audio
+elements so Start call can be used again after a completed/disconnected call.
+
+HOW TO TEST
+1. Refresh http://127.0.0.1:3000/assistants/cmuv65lxx0013v7f4thzf2qtv
+   to review/edit the saved inbound and outbound prompts.
+2. Refresh http://127.0.0.1:3000/demo, then click Start call and allow the mic.
+   Starting the session uses paid audio; it was not started automatically.
+3. End the demo and try Start call again to check repeat-start behavior.
+4. For real inbound service, call 08065481576 (+918065481576).
+   The existing number, SIP bindings and assistant routing are preserved.
+
+Browser tools remain sandbox-only. Real phone actions remain enabled by the
+existing VOICE_TEST_READ_ONLY=false authorization. Human destinations and
+configured integrations determine whether real transfers/actions succeed.
+Voice remains gleam. No credentials, dependencies or SIP configuration changed
+in this update. Other assistants retain their existing engine and settings.
+
+VERIFICATION
+Offline voice-service suite: 908 passed, 1 skipped (network/integration tests
+excluded). After the final opening adjustment, 54 focused native tests passed.
+Dashboard focused tests: 9 passed. TypeScript no-emit check passed.
+New regressions cover repeated demo allocation, active/uncertain allocation,
+trusted metadata, saved prompt propagation and multilingual first turns.
+
+With explicit permission, exactly six synthetic text-only requests were sent
+to the configured OpenRouter qwen/qwen3-30b-a3b-instruct-2507 backend. There
+were zero retries, zero executed tools and zero business actions. Results:
+- Tamil booking: a relevant single service intake question.
+- Noon correction: selected time update to 12:00.
+- One email approval: selected confirmation of nila@example.test.
+- Food question: correctly identified itself as AI, but added unnecessary
+  generic follow-up questions. The final prompt was tightened afterwards;
+  that last refinement was NOT retested externally because the six-request
+  allowance was exhausted.
+- Malayalam booking: relevant Malayalam response, truncated at the test's
+  180-token output cap; not a complete-answer pass.
+- Technical human request: selected transfer_to_human category software.
+The last three action selections are model requests, not evidence that a real
+booking, email or transfer completed. Text request timings were approximately
+0.98-2.22 seconds and are NOT handset/native voice response measurements.
+Exact synthetic results: output/verify/saved-prompt-v20-model-check.json
+
+No new audible browser/phone test was performed after this update. One-second
+maximum voice latency, flawless language understanding, carrier transfer and
+customer email delivery are not established by the checks above.
+
+Implementation references: assistant_prompts.py, prompts.py, lang.py,
+gpt_live_experiment.py, gpt_live_phone.py, gpt_live_gate.py, server.py,
+agent.py, and dashboard/components/DemoWidget.tsx.

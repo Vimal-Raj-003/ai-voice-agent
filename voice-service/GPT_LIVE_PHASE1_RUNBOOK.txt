@@ -1,0 +1,337 @@
+JillJill GPT-Live Phase 1: local, opt-in browser experiment
+
+LATEST UPDATE: v20
+See GPT_LIVE_PROMPT_UPDATE.txt for current settings and test steps. Each demo
+start now receives a fresh trusted child room under the designated base;
+older exact-room reuse instructions below are superseded. Browser remains
+sandbox-only; selected-assistant phone GPT-Live is enabled separately.
+
+STATUS
+2026-11-04 follow-up: user confirmed the v17 browser voice conversation worked
+well and authorized the same engine on real phone calls with a softer female
+voice. Selected-assistant phone integration is now enabled. See
+GPT_LIVE_PHONE_RUNBOOK.txt for current v19 settings and verification.
+The Phase 1 browser experiment below remains sandbox-only.
+
+Updated 2026-11-04: user authorized browser-test enablement and safe restart.
+Designated browser test is enabled; ordinary inbound/outbound calls stay legacy.
+The user saved OPENAI_API_KEY privately. No key value is reproduced here.
+No SIP number, trunk, assistant row, customer row, schema, UI or shared
+dependency was changed. Two user-initiated tests failed: the first before
+caller audio arrived, the second after audio arrived because event tracing
+crashed audio forwarding/playback. See v16 and v17 repairs below. No paid
+audio test was initiated by the assistant. Live audible success is unverified.
+
+ROUTE AND REQUIREMENTS
+Existing dashboard /demo -> authenticated /api/demo/proxy -> existing
+voice-service /api/demo/token -> same voice-agent worker -> server-selected
+demo-gpt-live-* room -> direct OpenAI GPTLiveModel(gpt-live-1, marin, client).
+Sarvam STT/TTS are not attached to this experimental AgentSession.
+Client delegation uses the selected assistant's exact configured backend
+provider/model through llm_routing, with per-call credentials. No automatic
+backend model replacement or retry is performed in this phase.
+
+Required OpenAI credential: existing organization OpenAI BYOK, otherwise
+OPENAI_API_KEY in the ignored voice-service/.env. Never put a key in Git,
+an example file, chat, a command argument, or browser code. Both API and worker
+must resolve it. LiveKit Inference credentials are NOT used for GPT-Live.
+Existing LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, database/BYOK
+decryption configuration, VOICE_API_TOKEN and selected backend credential
+(currently OpenRouter: OPENROUTER_API_KEY or organization BYOK) remain needed.
+
+Installed worker: livekit-agents 1.8.4, livekit-plugins-openai 1.8.4,
+OpenAI SDK 2.54.0. GPTLiveModel, its constructor, client delegation,
+append_commentary and native session construction were checked offline.
+No upgrade was made. OpenAI account/model access is NOT verified by imports.
+The key needs a funded API account/project with gpt-live-1 access and an
+available concurrent session slot; a ChatGPT subscription is not sufficient.
+
+COST / APPROVAL BOUNDARY
+Do not click Start call until the user approves the audio test cost.
+Published voice price checked 2026-11-04: $0.05/minute, billed per second.
+One capped three-minute test is approximately $0.15 in voice charges,
+PLUS selected backend usage and applicable LiveKit/recording costs.
+Backend requests are capped at 12 per session, with at most three model
+rounds per delegation and zero automatic retries. Those backend costs are
+not included in $0.15; they depend on prompt/history and provider rates.
+No paid calls were made during implementation or offline verification.
+
+ENABLE ONLY AFTER APPROVAL, WHEN EXISTING CALLS AND CAMPAIGNS ARE IDLE
+1. Leave the dashboard running. Inspect existing Windows and WSL listeners
+   and worker processes. Reuse the current checkout and WSL venv. Do not
+   launch a duplicate worker or replace the environment.
+2. Wait for current calls to end. Stop the existing API in its owning terminal
+   with Ctrl+C. Gracefully stop ONLY the verified worker master (SIGTERM in
+   its owning WSL shell); never pkill all Python processes or use SIGKILL.
+   The last inspected master PID was 2343: verify it again before signaling.
+   If graceful draining has not completed, wait; do not force termination.
+3. Start API with these environment values in PowerShell (after the old API
+   has stopped). Choose a fresh unique room name for EVERY test and use the
+   SAME values in API and worker:
+
+   Set-Location 'C:\Users\CT\Voice Agent\ai-voice-agent\voice-service'
+   $env:GPT_LIVE_EXPERIMENT_ENABLED = 'true'
+   $env:GPT_LIVE_TEST_ROOM = 'demo-gpt-live-manual-001'
+   $env:GPT_LIVE_TEST_ASSISTANT_ID = 'cmuv65lxx0013v7f4thzf2qtv'
+   $env:GPT_LIVE_TEST_DIRECTION = 'INBOUND'
+   .\.venv\Scripts\python.exe -X utf8 -m uvicorn server:app --host 127.0.0.1 --port 8000
+
+4. In another PowerShell terminal, after the old worker has fully exited:
+
+   wsl --cd 'C:\Users\CT\Voice Agent\ai-voice-agent\voice-service' -e env GPT_LIVE_EXPERIMENT_ENABLED=true GPT_LIVE_TEST_ROOM=demo-gpt-live-manual-001 GPT_LIVE_TEST_ASSISTANT_ID=cmuv65lxx0013v7f4thzf2qtv GPT_LIVE_TEST_DIRECTION=INBOUND /home/jilljill2023/venvs/jilljill-voice/bin/python -B -X utf8 agent.py start
+
+   To simulate outbound purpose in the browser, use OUTBOUND in BOTH commands
+   with a fresh room name. This does not place an outbound phone call.
+5. Confirm build 2026-11-04-gpt-live-phase1-off-v15 and LiveKit worker
+   registration. Check http://127.0.0.1:8000/health. Registration/health has
+   not been verified for this new build until this restart happens.
+6. Visit http://127.0.0.1:3000/demo while logged in; use existing Start call.
+   The API blocks missing voice credentials before dispatch. Only this
+   server-selected browser room opts in; ordinary inbound/outbound dispatches
+   remain legacy even while the experimental flag is true.
+
+SAFETY
+This is a single-local-API-process Phase 1 facility, not a multi-replica rollout.
+The server reserves each test room once and checks existing LiveKit rooms.
+Ambiguous dispatch timeouts do not automatically retry that room.
+Worker selection trusts dispatch metadata only, never room or participant
+metadata. Exact room, assistant, demo marker and direction must match local
+configuration. SIP participants are rejected. No silent legacy fallback.
+External actions are sandboxed. Existing update_call_details and CallState
+rules run locally; availability is a simulated two-second lookup; real
+booking/email/calendar/customer-memory writes and human transfers never run.
+Booking returns the existing read-only result, not a fake successful booking.
+Custom HTTP/MCP business integrations are not invoked in this experiment.
+No legacy post-call business callbacks execute. Phone calls stay on the
+legacy path and retain their current business-action settings.
+
+MANUAL AUDIO TEST (synthetic details only)
+- Ask company/service questions in Tamil and Tanglish; include paraphrases.
+- State existing slow website maintenance, not a new website. Ask for recall
+  after several turns. Verify the backend receives current context.
+- Pause mid-sentence. Verify the voice waits without filler or premature intake.
+- Interrupt a spoken answer with a different question. Check obsolete audio
+  and results are discarded without repeating the old response.
+- Give a date, then change only time to 12 noon. Verify date/service/name stay.
+- Answer a name question with a scheduling phrase. It must not become a name.
+- Spell/correct a synthetic email, approve its readback once, then change topic.
+  Verify it does not repeatedly ask the same email confirmation.
+- Ask availability to exercise the mocked slow operation. No generic automatic
+  checking announcement is added by this implementation.
+- Ask booking/email/transfer: verify clear test/read-only disclosure and zero
+  external business writes. No real confirmation/delivery claim is acceptable.
+- End the browser session; check clean shutdown, final usage and recording.
+
+EVIDENCE AND TIMING
+Local journal: voice-service/output/verify/gpt-live/<room>-<timestamp>.jsonl
+Local two-channel WAV: existing RECORDINGS_DIR, path logged as recording_finalized.
+Caller track is recorded on the existing caller channel; agent channel contains
+generated PCM before room playback. It is NOT a handset recording.
+No customer Call/Transcript/Appointment rows are created for this browser test;
+therefore its recording is not added to the normal customer Calls table.
+
+Journal correlates room/call ID, finalized caller turn ID, delegation ID,
+caller transcripts, state snapshots, tool arguments/results, backend start/
+first text, non-silent generated segments, SDK speech events, playback start/
+finish/position/interruption, usage and shutdown. Events before transcript
+finalization can precede a finalized turn ID; use timestamps plus the recording
+to align them, rather than subtracting unrelated first events.
+Silence does not qualify as generated voice. Non-silent audio is only a
+candidate: manually identify the FIRST RELEVANT ANSWER, excluding greeting,
+fillers and unrelated speech. Align caller speech end in the recording to
+that answer; distinguish generated PCM from room playback. For interruptions,
+compare caller onset with actual stopped room playback. Playback-finished
+callback time alone is not the exact last audible frame. Handset timing is
+NOT measured in a browser test. Meaningful timing fields stay null until
+review; no one-second guarantee or automatic quality PASS is inferred.
+
+RETURN TO LEGACY
+After ending the test, gracefully stop/drain only the verified API and worker
+instances as above. In the API terminal:
+
+   $env:GPT_LIVE_EXPERIMENT_ENABLED = 'false'
+   .\.venv\Scripts\python.exe -X utf8 -m uvicorn server:app --host 127.0.0.1 --port 8000
+
+Start the same worker with the flag explicitly false:
+
+   wsl --cd 'C:\Users\CT\Voice Agent\ai-voice-agent\voice-service' -e env GPT_LIVE_EXPERIMENT_ENABLED=false /home/jilljill2023/venvs/jilljill-voice/bin/python -B -X utf8 agent.py start
+
+Existing /demo requests then use the original demo dispatch. Normal phone
+calls do not depend on this flag. No database or assistant rollback is needed.
+
+OFFLINE REGRESSION COMMAND (no model requests)
+   wsl --cd 'C:\Users\CT\Voice Agent\ai-voice-agent\voice-service' -e /home/jilljill2023/venvs/jilljill-voice/bin/python -B -X utf8 -m pytest -q --tb=short -o addopts= -m 'not integration' -p no:cacheprovider --disable-warnings
+
+Official references:
+https://docs.livekit.io/agents/models/realtime/gpt-live/
+https://developers.openai.com/api/docs/guides/live-migration
+https://developers.openai.com/api/docs/guides/live-prompting
+https://developers.openai.com/api/docs/models/gpt-live-1
+
+IMPLEMENTATION VERIFICATION, 2026-11-04
+PASS: actual SDK imports, constructor and delegation signatures; native model
+      and AgentSession construction without opening an OpenAI connection.
+PASS: full non-integration suite: 881 passed, 1 skipped (50.74 s).
+PASS: subsequent final timing-correlation/lifecycle focused suite: 28 passed.
+      Mocked backend replies in these tests prove contracts, not Tamil quality.
+PASS: compile checks and git diff --check; original worker master 2343 remained
+      alive; experimental flag absent/default false in file and process.
+BLOCKER: server OPENAI_API_KEY and selected organization's OpenAI BYOK absent.
+NOT TESTED: account/model access, new worker registration after restart,
+      real GPT-Live audio/Tamil quality, thinking pauses, live barge-in,
+      meaningful answer/room/handset latency and actual paid usage/cost.
+No files were committed or pushed; no processes were restarted or calls made.
+
+CURRENT READINESS, 2026-11-04 10:52 UTC (supersedes the earlier access blocker)
+PASS: user-saved voice-service/.env key is nonempty and loaded by both API
+      and worker; equality was checked internally without printing the key.
+PASS: read-only GET https://api.openai.com/v1/models/gpt-live-1 returned HTTP 200,
+      model_id=gpt-live-1. No paid model response or audio connection was created.
+      Metadata access does not prove billing eligibility or a live audio handshake.
+PASS: LiveKit rooms=0 and running/scheduled campaigns=0 before restart.
+      Existing stale active_calls markers were not deleted or modified.
+PASS: old worker 2343 gracefully stopped; same WSL venv started worker 5477.
+      Build 2026-11-04-gpt-live-phase1-off-v15 confirmed in prewarm logs.
+      LiveKit registration AW_4qFCGdiju5Qd, region India South, protocol 18.
+PASS: API restarted, listener PID 2472, health HTTP 200. Dashboard listener
+      PID 5404 was preserved; unauthenticated /demo redirects to /login.
+PASS: exact test dispatch selects GPT-Live; ordinary inbound/outbound metadata
+      still selects the legacy path. Both service environments agree:
+      GPT_LIVE_EXPERIMENT_ENABLED=true
+      GPT_LIVE_TEST_ROOM=demo-gpt-live-manual-20261104-105122
+      GPT_LIVE_TEST_ASSISTANT_ID=cmuv65lxx0013v7f4thzf2qtv
+      GPT_LIVE_TEST_DIRECTION=INBOUND
+MANUAL TEST: log in, open http://127.0.0.1:3000/demo, click Start call and allow
+      microphone access. The selected assistant is Appointment Booker.
+      Actions stay sandboxed for this test; normal phone-call settings remain.
+NOT TESTED: actual GPT-Live audio connection, funding/quota for live sessions,
+      Tamil/Tanglish quality, real interruption cutoff, meaningful voice latency.
+No browser token endpoint was called and no audio session was dispatched.
+Worker log: output/logs/worker-demo-gpt-live-manual-20261104-105122.log
+API logs: output/logs/api-gpt-live-20261104-105122.stdout.log and .stderr.log
+
+DEMO STARTUP REPAIR, v16, 2026-11-04 11:07 UTC
+Observed failed room: demo-gpt-live-manual-20261104-105122.
+API request at 10:55:47.404Z; dispatch completed 10:55:50.257Z: 2853 ms.
+The actual dashboard demoToken helper used a 2500 ms timeout. The browser
+aborted before receiving its token, leaving the allocated worker without
+caller audio. The repeated attempt got 409 because the room was single-use.
+The journal contains no caller transcript, generated voice or recording,
+and zero backend requests. OpenAI sessions were acquired but received no
+audio; the greeting timed out and context_injection_incomplete was logged.
+Do not interpret zero-duration SDK metrics as a verified billing statement.
+
+Reproduced before fixing:
+- Actual dashboard helper with a deterministic 2853 ms allocation: FAIL,
+  dashboard aborted before the room token returned.
+- Actual native lifecycle with SDK AgentHandoff: FAIL, missing .role.
+- Startup without caller microphone: FAIL, native voice model constructed.
+
+Repairs:
+- Only demoToken allocation timeout becomes 15000 ms; ordinary request
+  timeouts and normal phone-call dispatch remain unchanged.
+- Experimental worker waits up to 30 seconds for demo-user's subscribed,
+  unmuted audio track and first PCM frame BEFORE opening GPT-Live. Its
+  temporary probe is closed; native SDK RoomIO still owns conversation audio.
+- Chat history handler accepts ChatMessage and ignores AgentHandoff safely.
+- Disk-heavy recorder start and experimental import leave the audio loop.
+- A test model error/reconnect ends the experiment instead of repeating
+  connections. Experimental RoomIO deletes its own room when closed.
+
+PASS: original slow-allocation replay after the fix; dashboard regressions
+      6 passed; TypeScript --noEmit --incremental false passed.
+PASS: focused Python experimental/legacy suite 126 passed; final native
+      startup suite 30 passed, including actual Handoff and PCM-readiness seams.
+PASS: no active room participants or campaigns before restart.
+PASS: worker 6009, build 2026-11-04-gpt-live-browser-startup-v16,
+      registration AW_5ac4TAgu72eR; API listener 12032 healthy HTTP 200.
+      Existing dashboard listener 5404 preserved. Normal call routing legacy.
+Previous v16 room: demo-gpt-live-manual-20261104-110654 (now used; do not reuse).
+Assistant and direction remain Appointment Booker / INBOUND.
+Previous worker log: output/logs/worker-v16-demo-gpt-live-manual-20261104-110654.log
+Previous API logs: output/logs/api-gpt-live-v16-110654.stdout.log and .stderr.log
+NOT TESTED after repair: real browser audio/model answers, Tamil quality,
+      thinking pauses, meaningful answer timing and audible interruption cutoff.
+No new audio session was dispatched by the assistant. Refresh /demo, click
+Start call once, and allow microphone access for the next user-run test.
+
+AUDIO EVENT REPAIR, v17, 2026-11-04 11:25 UTC
+Failed user-run call: demo-gpt-live-manual-20261104-110654.
+Job AJ_7PaVYtJEjHSR; room RM_YeejjLnZPUTF; prior build v16.
+Journal: output/verify/gpt-live/demo-gpt-live-manual-20261104-110654-1793790970876086772.jsonl
+Recording: 2026/11/04/demo-gpt-live-manual-20261104-110654.wav
+
+Evidence and root cause:
+- Caller microphone PCM reached the worker at 11:16:10.907 UTC, before
+  the GPT-Live model was constructed. RoomIO linked demo-user, and native
+  model transcript-delta handling ran. This call was not blocked by a
+  missing microphone publication, key, or an observed access rejection.
+- At 11:16:15.096 and 11:16:15.876 UTC, the native callback raised:
+  TypeError: run_test_session.<locals>.emit() got multiple values for argument 'event'.
+  The trace calls GPTLiveSession._end_speech from push_audio and ends in
+  Error in _forward_audio_task. Audio forwarding stopped as a result.
+- Three callbacks had the same collision: input_speech_started,
+  input_speech_stopped and playback_started. The installed EventEmitter
+  propagates TypeError into its caller. Speech instrumentation could kill
+  transcript/input processing; playback instrumentation could prevent
+  publishing the first frame. Earlier fake lifecycle tests dropped these
+  native callbacks and had no output sink, so they missed the bug.
+- Generated non-silent PCM began at 11:16:14.333 UTC; the recording contains
+  11.4 seconds of generated agent PCM and 35.0 seconds of caller PCM.
+  This is not proof that any generated audio reached the browser speaker.
+  Room playback finalized at position 0.0, interrupted, transcript empty.
+  No assistant answer transcript or backend request was recorded. Exact
+  words, useful-answer latency and audible interruption cutoff cannot be
+  determined from these event logs. No new external transcription upload.
+
+Changes:
+- gpt_live_experiment.py: rename raw event payloads to sdk_event at all
+  three callbacks. Preserve the canonical journal event name.
+- Its evidence writer now catches failures, reports gpt_live_evidence_failed
+  once through worker logging, and disables that journal instead of raising
+  into audio callbacks. A failed journal means timing evidence is incomplete;
+  ordinary audio and conversation processing continue.
+- tests/test_gpt_live_experiment.py: replay registered native speech events,
+  installed GPTLiveSession transcript assembly and push_audio, and actual
+  AudioOutput playback events with a local PCM sink. Replace only the native
+  network task and surrounding service I/O. Verify final transcript capture,
+  continued outbound input buffering, both output frames reaching the sink,
+  recording, cleanup, and continuity with an injected diagnostic TypeError.
+- agent.py: build 2026-11-04-gpt-live-audio-events-v17.
+
+Reproducible offline verification:
+  python -B -m pytest tests/test_gpt_live_experiment.py -k native_lifecycle
+    -o addopts= -p no:cacheprovider --disable-warnings -q --tb=short
+  Before fix: 4 failed / 1 passed, with the exact duplicate-event TypeError
+  in speech start, speech stop, playback start and native PCM flow replay.
+  After fix: all six lifecycle/replay cases pass, including journal failure.
+  Focused experimental + single-call lifecycle + provider routing: 131 passed.
+  No network task, paid model response, or business write in these tests.
+  git diff --check passed. No dependency, UI, SIP or legacy audio change.
+
+Ready runtime (no live audio test initiated after repair):
+- No LiveKit rooms/participants; campaigns only COMPLETED before restart.
+- Gracefully stopped WSL worker 6009. New worker PID 6575.
+- Build v17 loaded; cloud registration AW_BH75nEYFLNjs at 11:25:05.723 UTC,
+  agent voice-agent, India South, protocol 18.
+- API listener PID 10132 (launcher 18980), /health HTTP 200.
+- Existing dashboard listener PID 5404 preserved; /login HTTP 200.
+- Worker and API key-loaded/key-matches-private-file checks both true;
+  no key value or fingerprint was displayed and the saved key was preserved.
+- Current room: demo-gpt-live-manual-20261104-112455 (fresh at verification).
+- Assistant: Appointment Booker / cmuv65lxx0013v7f4thzf2qtv, INBOUND.
+- GPT-Live gpt-live-1 / marin / client delegation; backend remains the
+  assistant-selected OpenRouter qwen/qwen3-30b-a3b-instruct-2507.
+- Experiment enabled only for this server-selected browser room. Normal
+  inbound/outbound calls still select the existing legacy path. Experimental
+  business tools remain sandbox-only; normal action settings are preserved.
+- Worker log: output/logs/worker-v17-demo-gpt-live-manual-20261104-112455.log
+- API logs: output/logs/api-gpt-live-v17-112455.stdout.log and .stderr.log
+
+Next user action: refresh http://127.0.0.1:3000/demo, click Start call once,
+allow microphone access, and speak. Do not reuse the prior room/session.
+Still pending: a user-run audible test, Tamil answer relevance, meaningful
+speech latency, thinking-pause behavior, and audible interruption cutoff.
+Offline frame/event replay proves this crash is fixed, not voice quality or
+a one-second response result. No automatic paid audio session, customer
+call/message, commit, push, deployment, or credential change was performed.

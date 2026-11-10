@@ -120,6 +120,14 @@ async def _startup_db() -> None:
     # Start the Live Logs drain on the FastAPI loop so server-side structlog
     # events reach the error_logs table / dashboard SSE stream.
     start_log_drain()
+    if os.getenv('GPT_LIVE_PHONE_ENABLED', 'false').strip().lower() == 'true':
+        try:
+            from provider_rates import ensure_gpt_live_rate
+            await ensure_gpt_live_rate()
+            logger.info('gpt_live_rate_ready', source='API')
+        except Exception as exc:
+            logger.warning('gpt_live_rate_unavailable', error_type=type(exc).__name__,
+                           impact='voice usage is captured; cost rate needs configuration', source='API')
     logger.info("server_started", source="API")
 
 
@@ -544,6 +552,38 @@ async def dispatch_bulk(request: Request) -> dict:
 
 # ── Demo + internal ───────────────────────────────────────────────────────────
 
+_gpt_live_demo_lock = asyncio.Lock()
+_gpt_live_dispatched_rooms: set[str] = set()
+_gpt_live_demo_uncertain = False
+
+
+async def _dispatch_browser_demo(lk, room_name: str, metadata: dict, experimental: bool):
+    global _gpt_live_demo_uncertain
+    request = lkapi.CreateAgentDispatchRequest(agent_name='voice-agent', room=room_name,
+                                              metadata=json.dumps(metadata))
+    if not experimental:
+        await lk.agent_dispatch.create_dispatch(request)
+        return
+    # Phase 1 uses one local API process. Reserve before the request so an
+    # ambiguous dispatch timeout cannot lead to a second worker in the room.
+    async with _gpt_live_demo_lock:
+        if _gpt_live_demo_uncertain:
+            raise HTTPException(409, 'A previous demo allocation has an unknown outcome. Review it before restarting tests.')
+        if room_name in _gpt_live_dispatched_rooms:
+            raise HTTPException(409, 'This test room was already dispatched; choose a fresh GPT_LIVE_TEST_ROOM.')
+        existing = await lk.room.list_rooms(lkapi.ListRoomsRequest(names=[room_name, *_gpt_live_dispatched_rooms]))
+        if any(r.name == room_name or getattr(r, 'num_participants', 0) > 0 for r in existing.rooms):
+            raise HTTPException(409, 'A demo call is still active. End it before starting another.')
+        if len(_gpt_live_dispatched_rooms) >= 64:
+            raise HTTPException(409, 'Phase 1 dispatch cap reached; stop tests and review usage.')
+        _gpt_live_dispatched_rooms.add(room_name)
+        try:
+            await lk.agent_dispatch.create_dispatch(request)
+        except BaseException:
+            _gpt_live_demo_uncertain = True
+            raise
+
+
 @app.post("/api/demo/token", dependencies=[Depends(require_token)])
 async def demo_token() -> dict:
     """Mint a LiveKit JWT for browser-based demo + dispatch a demo agent into the room."""
@@ -552,7 +592,44 @@ async def demo_token() -> dict:
     api_key    = os.environ["LIVEKIT_API_KEY"]
     api_secret = os.environ["LIVEKIT_API_SECRET"]
     livekit_url = os.environ["LIVEKIT_URL"]
-    room_name = f"demo-{random.randint(10000, 99999)}"
+    from gpt_live_gate import ExperimentRejected, configured_test, test_metadata, TestSelection
+    try:
+        experimental = configured_test()
+    except ExperimentRejected as exc:
+        raise HTTPException(503, str(exc)) from None
+    profile = None
+    selected_assistant = experimental.assistant_id if experimental else None
+    if experimental:
+        profile = await db.get_assistant_as_profile(experimental.assistant_id)
+        if not profile or profile.get('id') != experimental.assistant_id:
+            raise HTTPException(503, 'Selected demo assistant is unavailable.')
+        from native_voice import runtime_settings
+        selected_native = runtime_settings(profile)
+        if selected_native is not None and selected_native.engine == 'pipeline':
+            experimental = None
+    if experimental:
+        import secrets
+        child = TestSelection(experimental.room + '-' + secrets.token_hex(8), experimental.assistant_id, experimental.direction)
+        room_name, metadata = child.room, test_metadata(child, room_base=experimental.room)
+    else:
+        room_name, metadata = f"demo-{random.randint(10000, 99999)}", {"phone_number": "demo", "is_demo": True}
+        if selected_assistant:
+            metadata['agent_profile_id'] = selected_assistant
+    if experimental:
+        # No OpenAI connection is opened here. Fail before dispatch if the
+        # selected assistant/credential is missing; normal demos are unchanged.
+        profile = profile or await db.get_assistant_as_profile(experimental.assistant_id)
+        if not profile or profile.get('id') != experimental.assistant_id:
+            raise HTTPException(503, 'GPT-Live test assistant is unavailable.')
+        from provider_credentials import load_for_org
+        keys = await load_for_org(profile.get('organization_id'))
+        from native_voice import runtime_settings
+        native = runtime_settings(profile)
+        if native is not None and native.engine == 'gemini-live':
+            if not (keys.get('google') or keys.get('gemini') or os.getenv('GOOGLE_API_KEY', '').strip()):
+                raise HTTPException(503, 'Gemini Live requires a configured Google credential; model access has not been verified.')
+        elif not (keys.get('openai') or os.getenv('OPENAI_API_KEY', '').strip()):
+            raise HTTPException(503, 'GPT-Live test requires OpenAI BYOK or OPENAI_API_KEY; access is not yet verified.')
     token = (
         AccessToken(api_key, api_secret)
         .with_identity("demo-user")
@@ -564,17 +641,29 @@ async def demo_token() -> dict:
     logger.info("demo_token_created", room=room_name, source="API")
     lk = _lk_client()
     try:
-        await lk.agent_dispatch.create_dispatch(
-            lkapi.CreateAgentDispatchRequest(
-                agent_name="voice-agent",
-                room=room_name,
-                metadata=json.dumps({"phone_number": "demo", "is_demo": True}),
-            ),
-        )
+        await _dispatch_browser_demo(lk, room_name, metadata, experimental is not None)
         logger.info("agent_dispatch_created", room=room_name, agent="voice-agent", source="LIVEKIT")
     finally:
         await lk.aclose()
     return {"token": token, "room": room_name, "url": livekit_url}
+
+
+@app.get('/api/demo/config', dependencies=[Depends(require_token)])
+async def demo_config() -> dict:
+    """Read-only effective demo selection. Never dispatch or open provider audio."""
+    from gpt_live_gate import configured_test
+    from native_voice import runtime_settings
+    selected = configured_test()
+    if selected is None:
+        return dict(engine='pipeline', assistant_name=None, model=None, voice=None, sandbox=False)
+    profile = await db.get_assistant_as_profile(selected.assistant_id)
+    if not profile or profile.get('id') != selected.assistant_id:
+        raise HTTPException(503, 'Selected demo assistant is unavailable.')
+    native = runtime_settings(profile)
+    engine = native.engine if native else 'gpt-live'
+    return dict(engine=engine, assistant_name=profile.get('name'),
+                model=native.model if engine == 'gemini-live' else ('gpt-live-1' if engine == 'gpt-live' else None),
+                voice=native.voice if engine == 'gemini-live' else None, sandbox=engine != 'pipeline')
 
 
 @app.post("/api/calls/monitor-token", dependencies=[Depends(require_token)])

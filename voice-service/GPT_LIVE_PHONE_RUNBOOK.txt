@@ -1,0 +1,187 @@
+JillJill native GPT-Live phone integration, 2026-11-04
+
+LATEST UPDATE: v20 saved-prompt and demo repair
+See GPT_LIVE_PROMPT_UPDATE.txt for current saved inbound/outbound prompts,
+repeatable browser demo allocation, verification and remaining audio checks.
+The user has confirmed the earlier phone voice conversation works. Older
+first-phone-test and hardcoded Tamil-delivery statements below are historical;
+saved Assistant page instructions now govern delivery on both native paths.
+
+CURRENT STATUS
+The user confirmed the repaired browser demo spoke correctly and promptly,
+then authorized GPT-Live on existing phone calls and requested a soft female
+voice with natural Tamil delivery. This is implemented and enabled for the
+existing Appointment Booker assistant only. No new app, assistant, SIP trunk
+or phone number was created. No paid test, customer call or message was
+initiated by the coding assistant. The first native phone call is still for
+the user to place; handset voice quality and latency are not yet measured.
+
+EFFECTIVE CONFIGURATION
+GPT_LIVE_PHONE_ENABLED=true
+GPT_LIVE_PHONE_ASSISTANT_IDS=cmuv65lxx0013v7f4thzf2qtv
+GPT_LIVE_VOICE=gleam
+GPT_LIVE_PHONE_BACKEND_REQUEST_CAP=48
+VOICE_TEST_READ_ONLY=false (existing setting preserved)
+
+Assistant: Appointment Booker, cmuv65lxx0013v7f4thzf2qtv.
+Voice model: OpenAI gpt-live-1, client delegation, direct BYOK/server key.
+Backend: assistant-selected OpenRouter qwen/qwen3-30b-a3b-instruct-2507.
+Voice: gleam, a documented natural feminine voice, with soft conversational
+Tamil delivery instructions. Tamil voice quality has not been auditioned by
+the coding assistant. Voice changes take effect in a NEW session only.
+Native instructions include the saved directional prompt, resolved business
+and customer context, and previous caller history. INBOUND means the caller
+called us; OUTBOUND uses the authorized earlier-enquiry/appointment follow-up
+purpose without inventing past details. Caller address remains நீங்க/நீங்கள்.
+Current saved maximum duration: 1800 seconds; silence timeout: 25 seconds.
+No extra pause floor or serial STT/TTS was added to native audio.
+
+Existing DID: +918065481576, dial locally as 08065481576.
+Read-only cloud verification:
+- Inbound trunk ST_mKsscodyJixr includes +918065481576 and local variants.
+- Outbound trunk ST_reLomjZWYvH3 uses +918065481576.
+- Dispatch SDR_TyoQ4D9sGqxY routes that inbound trunk to voice-agent.
+- Database number routing is active and resolves the same assistant ID.
+These bindings were inspected, not modified. No carrier call was placed.
+
+AUDIO AND BUSINESS FLOW
+Caller <-> Vobiz PSTN/SIP <-> existing LiveKit room/RoomIO <-> GPT-Live audio.
+GPT-Live client delegation -> existing selected backend and knowledge ->
+existing AppointmentTools / custom HTTP integrations -> verified result ->
+GPT-Live speech. Sarvam STT/TTS are not constructed on this selected native
+phone path. Other assistants keep their existing engine; the old pipeline
+and its dependencies remain available for those assistants and rollback.
+
+The common entrypoint retains DID/campaign assistant selection, DND/rate
+limits, SIP-only input (excluding dashboard monitors), answer/hangup stamps,
+outbound dial exactly once, configured noise cancellation, caller records,
+PII-redacted dashboard transcripts, recording policy/consent, local or egress
+recording, Vobiz recording identity, campaign settlement and shutdown hooks.
+Native generated PCM feeds the same local recorder when recording is enabled.
+The configured opening greeting uses native generate_reply, not legacy TTS.
+The same configured tool list and transfer targets are passed to delegation.
+
+Real phone tools use the existing real-action settings and integrations.
+Browser demo tools remain sandbox-only, regardless of phone enablement.
+No booking, calendar event, email, SMS, transfer or custom action was actually
+performed during verification. Existing integration configuration still
+determines which actions are available and whether they succeed.
+
+INTERRUPTIONS, STATE AND LIMITS
+Interim transcripts invalidate obsolete native generation/read waiters but
+do not mutate confirmed CallState. A delegation awaiting the current final
+transcript stays alive. Final transcripts use existing state/language rules;
+the existing update_call_details implementation handles field corrections.
+Caller corrections preserve other confirmed fields; explicit language
+switches use the existing language lock rather than fragment language guesses.
+Existing CallTasks shield submitted operations from speech cancellation.
+Custom/integration calls also use that owner, so an interrupted response
+cannot cancel an already submitted action. Stale spoken results are discarded.
+Backend work waits until the shared call/recording setup is ready. Native
+backend requests are capped at 48 per phone call, three model rounds per
+delegation, four tool calls per round, 64 delegation IDs, zero automatic model
+retries. The cap is server-configurable, bounded 1..120. No classifier added.
+Provider failures end the native call; no silent switch of voice architecture.
+Evidence callbacks cannot raise into the audio path; raw personal state/tool
+payloads are omitted from native diagnostic events. Existing transcript
+storage/redaction policy remains responsible for saved conversation content.
+
+USAGE AND COST
+Native provider-reported session seconds, backend tokens and SIP connected
+seconds are tracked separately. If native usage is absent, the duration
+fallback is explicitly logged as estimated. No fake backend tokens are
+estimated for native calls without a backend request. No Sarvam STT/TTS
+usage is attributed to native calls.
+To avoid a schema migration, the existing audio-duration columns store
+(openai, gpt-live-1, seconds). The dashboard recognizes this exact pair and
+renders an LLM-category full-duplex audio line, not separate STT/TTS lines.
+The existing STT_MINUTE rate kind serves only as its minute meter. A single
+gpt-live-1 rate row is seeded at $0.05/session-minute; existing operator rates
+are never overwritten. Backend and carrier usage retain their own rates.
+No full seed script or database migration was run. The voice-only costUsd
+snapshot is separate from the dashboard's usage-based total computation.
+
+CHANGED FILES FOR THIS PHONE INTEGRATION
+- agent.py: scoped engine selection after assistant resolution, native
+  session/agent binding, legacy observer separation, native opening, metering.
+  Common SIP, database, recording and campaign lifecycle remains shared.
+- gpt_live_phone.py: native phone runtime, saved-prompt and delivery rules,
+  real-tool delegation, recording tee, transcript/usage/playback observers,
+  idempotent cleanup. Receives the existing VAD factory/carrier pattern;
+  does not re-import the executing worker or add another VAD implementation.
+- gpt_live_gate.py: opt-in assistant-scoped phone gate and validated voice.
+- gpt_live_experiment.py: share existing delegation with live/sandbox modes,
+  usage/language hooks, safe committed-work ownership, stale-response/read
+  cancellation; browser sandbox selection and its tests remain intact.
+- provider_rates.py, server.py: seed only the native minute rate at enabled
+  API startup; no routing or customer action from this seed.
+- dashboard/lib/cost.ts, dashboard/prisma/seed.ts: recognize the new minute
+  meter without double-counting audio; preserve legacy pricing behavior.
+- voice-service/.env.example: default-OFF phone gate and documented options.
+- tests/test_gpt_live_phone.py, tests/test_single_call_lifecycle.py,
+  dashboard/tests/gpt-live-cost.test.ts: native/legacy regression coverage.
+Existing Phase 1 repairs and other uncommitted user changes were preserved.
+Private voice-service/.env stores only the authorized non-secret selection
+changes above; all credentials and unrelated parsed env values were verified
+unchanged. No key value/fingerprint was displayed or put into source.
+
+VERIFICATION
+- Full offline suite before the final interruption refinement:
+  896 passed, 1 skipped. Integration/network tests excluded.
+- Final native phone/browser/lifecycle tests: 93 passed.
+- Existing pending-work/committed-operation tests after refinement: 43 passed.
+- Dashboard demo allocation, directional prompt and new cost tests: 9 passed.
+- TypeScript --noEmit --incremental false: passed. git diff --check: passed.
+- The actual entrypoint was exercised in both directions with mocked SIP
+  and native network tasks; it used no legacy STT/TTS, dialed once only for
+  outbound, recorded native PCM, persisted transcript through the shared
+  handler, and preserved the existing shutdown hook. Tests include final
+  noon context, pending-read cancellation without confirmed-state mutation,
+  submitted-operation settlement, and separate voice/backend/carrier meters.
+These are offline functional checks, not proof of handset quality or timing.
+
+READY SERVICES
+No active rooms or running campaigns before each graceful worker restart.
+Final worker PID 7656, build 2026-11-04-gpt-live-phone-v19.
+LiveKit registration AW_t23gFDDWPFT5 at 11:57:21.432 UTC (17:27:21 IST),
+voice-agent, India South, protocol 18.
+API PID 6004, launcher 8040, /health HTTP 200. Native rate seed ready.
+Dashboard PID 5404 preserved; /login HTTP 200 and TypeScript check passed.
+Worker and API key presence/equality checks: true, without exposing the key.
+Worker effective phone selection, voice and request cap matched private env.
+Other assistant selection still returns legacy. No rooms at final verification.
+Worker log: output/logs/worker-v19-demo-gpt-live-manual-20261104-115321.log
+API logs: output/logs/api-gpt-live-v18-115321.stdout.log and .stderr.log
+Fresh optional browser room: demo-gpt-live-manual-20261104-115321.
+The browser /demo Start call remains sandbox-only and requires user initiation.
+
+USER PHONE TEST
+Call 08065481576 yourself. Ask a short Tamil service question, interrupt a
+reply with a correction, then check prior-context recall. Real configured
+booking/email actions are enabled, so request them only when intended.
+After the call, correlate room/call/SIP IDs and turn IDs from live logs with
+the local/Vobiz recordings. Distinguish native generated PCM, room playback
+and what the handset actually heard. Capture speech-end to first meaningful
+answer and caller interruption onset to last audible agent audio. These
+measurements, the new voice preference and real-action delivery remain pending.
+The user's successful demo experience is not a measured one-second guarantee
+for SIP; carrier transport and audio bandwidth differ from browser audio.
+
+CONTROL LIMITATIONS / ROLLBACK
+Saved STT/TTS model/voice and cascade pause/confidence controls apply to the
+legacy path. They cannot configure the native model's internal turn-taking
+or manufacture an accuracy probability. Native voice is currently the server
+GPT_LIVE_VOICE setting, not Sarvam's voice selector. Saved prompts, backend
+selection, max duration, silence and recording settings still apply as above.
+To return future selected phone calls to the old pipeline, set
+GPT_LIVE_PHONE_ENABLED=false and gracefully restart the worker when idle.
+To try another supported native voice, change GPT_LIVE_VOICE and restart the
+API/worker when idle; never attempt to mutate an active session's voice.
+Do not delete the working legacy code/providers or change SIP credentials.
+No commits, pushes or deployments were performed.
+
+OFFICIAL SOURCES (checked 2026-11-04)
+https://docs.livekit.io/agents/models/realtime/gpt-live/
+https://developers.openai.com/api/docs/guides/live-conversations
+https://developers.openai.com/api/docs/guides/live-prompting
+https://developers.openai.com/api/docs/models/gpt-live-1
