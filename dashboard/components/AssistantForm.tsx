@@ -10,10 +10,9 @@ import { saveAssistant } from "@/app/(admin)/assistants/actions";
 import type { AssistantActionState } from "@/app/(admin)/assistants/actions";
 import Select from "./Select";
 import BooleanSelect from "./BooleanSelect";
-import ToggleSwitch from "./ToggleSwitch";
-import { ChevronRight } from "lucide-react";
 import FormField from "./FormField";
 import InfoTooltip from "./InfoTooltip";
+import ThemeToggle from "./ThemeToggle";
 import SystemPromptField from "./SystemPromptField";
 import { assistantPrompts } from "@/lib/assistant-prompts";
 import MessageField from "./MessageField";
@@ -21,6 +20,8 @@ import UrlSetup from "./UrlSetup";
 import LlmStackFields from "./LlmStackFields";
 import TtsStackFields from "./TtsStackFields";
 import { voiceSettings, GEMINI_LIVE_MODELS, GEMINI_LIVE_VOICES, type VoiceEngine } from "@/lib/native-voice";
+import {extraTransferPeople} from "@/lib/human-transfer";
+import {businessName} from "@/lib/assistant-identity";
 
 type ToolOption = {
   id: string;
@@ -111,7 +112,7 @@ export default function AssistantForm({
   return (
     // The page width is owned by the route-scoped AdminContainer; this form
     // lays out as independently stacked columns across whatever it is given.
-    <>
+    <div className="assistant-settings">
       {/* Page header. Save lives here, top-right, instead of in a full-width
           footer strip — measured, that strip was 57px tall and as wide as the
           content (1276px at 1600) for a single button, and it put Delete
@@ -129,18 +130,18 @@ export default function AssistantForm({
         // Delete nearly unreadable). var(--bg-base) follows the theme and lets
         // content scroll cleanly underneath.
         style={{ background: "var(--bg-base)", borderColor: "var(--surface-border)" }}
-        className="sticky top-0 z-30 -mt-2 mb-3 flex flex-wrap items-center justify-between gap-3 border-b py-2.5"
+        className="sticky top-0 z-30 mb-3 flex flex-wrap items-center justify-between gap-2 border-b py-2"
       >
-        <h1 className="min-w-0 flex-1 truncate text-xl font-bold sm:text-2xl">
-          {title ?? initial?.name}
-        </h1>
+        <div className="min-w-0 flex-1 basis-64">
+          <h1 className="flex items-center break-words text-xl font-semibold">{title ?? initial?.name ?? "New assistant"}<InfoTooltip>Configure how your assistant speaks and helps callers. Save changes to apply settings to new calls.</InfoTooltip></h1>
+        </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           {/* Compact danger action, separated by a rule so it never reads as
               part of the primary action pair. */}
           {dangerAction && (
             <form action={dangerAction} className="flex items-center gap-2">
-              <button className="rounded-lg border border-red-500/30 px-2.5 py-1.5 text-xs text-red-400 transition hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-300">
-                Delete assistant
+              <button aria-label="Delete assistant" className="min-h-9 rounded-lg border border-red-500/30 px-3 py-1.5 text-sm text-red-400 transition hover:border-red-500/50 hover:bg-red-500/10">
+                Delete
               </button>
               <span aria-hidden className="h-5 w-px bg-white/10" />
             </form>
@@ -151,16 +152,17 @@ export default function AssistantForm({
             disabled={pending}
             aria-busy={pending}
             onClick={() => console.log("[assistant.save] button_clicked", { isEdit })}
-            className="rounded-lg bg-gradient-to-r from-cyan-300 via-violet-300 to-pink-300 px-4 py-1.5 text-sm font-semibold text-black shadow-[0_0_20px_rgba(167,139,250,0.25)] transition hover:from-cyan-200 hover:via-violet-200 hover:to-pink-200 disabled:cursor-not-allowed disabled:opacity-60"
+            className="min-h-9 rounded-lg bg-violet-300 px-3 py-1.5 text-sm font-semibold text-black transition hover:bg-violet-200 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {pending
               ? isEdit
-                ? "Saving changes…"
+                ? "Saving…"
                 : "Creating…"
               : isEdit
-                ? "Save changes"
-                : "Create assistant"}
+                ? "Save"
+                : "Create"}
           </button>
+          <ThemeToggle />
         </div>
       </div>
 
@@ -175,48 +177,29 @@ export default function AssistantForm({
         </div>
       )}
 
-      <form id="assistant-form" action={formAction} className="space-y-4">
+      <form id="assistant-form" action={formAction} className={`flex min-h-0 flex-col gap-3 ${voiceEngine === "gemini-live" ? "xl:h-[calc(100svh-77px)]" : ""}`}
+        onInvalidCapture={(event) => {
+          const input = event.target as HTMLInputElement;
+          const details = input.closest("details");
+          if (details && !details.open) {
+            event.preventDefault();
+            details.open = true;
+            requestAnimationFrame(() => { input.focus(); input.reportValidity(); });
+          }
+        }}>
       {/* Mode selector for the single saveAssistant action: present id → update
           that row; empty → create. Kept in sync with the record being edited. */}
       <input type="hidden" name="assistantId" defaultValue={initial?.id ?? ""} />
-      {/* Independently stacked columns, NOT grid rows.
-          As rows, CSS grid's default align-items:stretch made every card in a
-          row grow to the height of the tallest (Identity, which holds the
-          System Prompt textarea), so the shorter cards carried dead space —
-          and row 2 could not begin until the tallest cell of row 1 ended,
-          which is what pushed Human call forwarding far down the page.
-
-          Now the grid's cells ARE the columns, each a flex stack. Cards keep
-          their natural height (no h-full anywhere) and the next card in a
-          column flows straight up after the previous one, independent of the
-          other column. items-start stops the columns themselves from
-          stretching to equal height. */}
-      {/* TWO columns, never three: LEFT = Identity, Knowledge, Privacy;
-          RIGHT = Voice stack, Call accuracy, Human forwarding. 55/45 on
-          desktop (see .assistant-grid in globals.css), equal halves on
-          tablet, one stacked column on mobile in exactly that card order —
-          DOM order is the mobile order, so no `order-*` reshuffling is needed.
-
-          `minmax(0, Nfr)` rather than bare `Nfr`: a bare fr track has an
-          automatic minimum of min-content, so a long select or phone number
-          could push a column past its share. */}
-      {/* Two columns from 1280px only — the same breakpoint as the 55/45 rule.
-          MEASURED at 834 with the 256px sidebar: each column was 243px, which
-          truncated the LLM model to "openai…", STT to "Deepgram Nova-3 Multi…"
-          and the knowledge URL input to "https://www.y". The brief keeps two
-          columns only while the controls fit comfortably, so below 1280 this
-          stacks instead. */}
-      <div className="assistant-grid grid grid-cols-1 items-start gap-4 xl:grid-cols-2">
-        {/* LEFT column — Identity, Knowledge, Privacy & messages */}
-        <div className="flex min-w-0 flex-col gap-4">
-          <section className="glass rounded-2xl p-4 space-y-3">
+      <div className={`grid grid-cols-1 items-start gap-3 ${voiceEngine === "gemini-live" ? "xl:h-full xl:grid-cols-3 xl:grid-rows-[minmax(0,1fr)] xl:items-stretch" : "xl:grid-cols-2"}`}>
+        <div className={`flex min-h-0 min-w-0 flex-col gap-3 ${voiceEngine === "gemini-live" ? "xl:h-full" : ""}`}>
+          <section data-settings-section="conversation" className="glass flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-2xl p-4 [&>h3]:shrink-0 [&>label]:shrink-0">
             <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
               Identity
               <InfoTooltip width={300}>
                 Who this assistant is on a call: the name it answers to, the first line it speaks, and the system prompt it follows for the rest of the conversation.
               </InfoTooltip>
             </h3>
-            <Field label="Name">
+            <div className="grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-2"><Field label="Name">
               <input
                 name="name"
                 required
@@ -224,75 +207,30 @@ export default function AssistantForm({
                 placeholder="My Assistant"
                 className={inputCls}
               />
-            </Field>
+            </Field><Field label="Business name" hint="Used only by this assistant for {business_name} in its prompt and greeting.">
+              <input name="businessName" defaultValue={businessName(initial?.metadata)} placeholder="Business in your saved prompt" className={inputCls}/>
+            </Field></div>
             <Field label="First message (greeting)">
-              <input
+              <textarea
                 name="firstMessage"
+                rows={2}
                 defaultValue={initial?.firstMessage ?? ""}
                 placeholder="Hi! Thanks for calling Acme Dental, this is Priya. How can I help?"
                 className={inputCls}
               />
             </Field>
-            <SystemPromptField
-              defaultValue={initial?.systemPrompt ?? ""}
-              defaultOutboundValue={assistantPrompts(initial?.systemPrompt ?? "", initial?.metadata).outbound}
-              rows={14}
-            />
-          </section>
-          {/* Knowledge sits directly under Identity and uses the full width of
-              this column. It keeps its natural height (no h-full), so Privacy
-              flows straight up after it. Safe inside this <form>: no nested
-              form, no named inputs, every button is type="button". */}
-          {initial?.id && <UrlSetup assistantId={initial.id} />}
-          {/* Privacy & messages - presentation-only grouping. Same field
-              names, same defaults, same validation; only the control shape
-              changed (two multi-row textareas -> one-line preview rows that
-              open a dialog), so the save payload is identical. */}
-          <section className="glass rounded-2xl p-3 space-y-2">
-            <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
-              Privacy &amp; messages
-              <InfoTooltip width={300}>
-                Spoken notices and transcript handling: the recording-consent line, the voicemail message, and whether personal details are masked in stored transcripts.
-              </InfoTooltip>
-            </h3>
-            <MessageField
-              name="recordingConsentMessage"
-              label="Consent"
-              defaultValue={initial?.recordingConsentMessage ?? ""}
-              placeholder="This call may be recorded for quality and training purposes."
-              tooltip="Played after the greeting when recording is enabled. Required for two-party-consent jurisdictions (most US states, India). Leave empty to skip."
-            />
-            <MessageField
-              name="voicemailMessage"
-              label="Voicemail"
-              defaultValue={initial?.voicemailMessage ?? ""}
-              placeholder="Hi, this is Priya from Acme Dental — please call us back at +91…"
-              tooltip="Spoken when voicemail is detected. Leave blank to hang up silently."
-            />
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-2.5 py-1.5">
-              <span className="flex shrink-0 items-center text-[10px] uppercase tracking-widest text-gray-400">
-                Redact PII
-                <InfoTooltip>
-                  Auto-mask credit cards (Luhn-checked), Aadhaar, SSN, email, and
-                  phone numbers in the stored transcript.
-                </InfoTooltip>
-              </span>
-              <div className="min-w-0 flex-1">
-                <BooleanSelect
-                  name="redactionEnabled"
-                  defaultValue={initial?.redactionEnabled ?? true}
-                />
-              </div>
+            <div data-settings-section="system-prompt" className="flex min-h-28 flex-1">
+              <SystemPromptField fillPreview={voiceEngine === "gemini-live"}
+                defaultValue={initial?.systemPrompt ?? ""}
+                defaultOutboundValue={assistantPrompts(initial?.systemPrompt ?? "", initial?.metadata).outbound}
+                rows={14}/>
             </div>
           </section>
         </div>
-
-        {/* RIGHT column — Voice stack, Call accuracy & speech, Human call
-            forwarding, then Tools when any are bound. */}
-        <div className="flex min-w-0 flex-col gap-4">
-          <section className="glass rounded-2xl p-4 space-y-3">
+        <div className={`flex min-h-0 min-w-0 flex-col gap-3 ${voiceEngine === "gemini-live" ? "xl:h-full xl:overflow-y-auto" : ""}`}>
+          <section data-settings-section="voice" className="glass flex min-w-0 flex-col gap-3 rounded-2xl p-4">
             <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
-              Voice stack
+              Voice &amp; model
               <InfoTooltip width={300}>
                 Choose the voice engine for this assistant. Gemini Live handles speech and reasoning directly and uses your existing business tools.
               </InfoTooltip>
@@ -313,25 +251,17 @@ export default function AssistantForm({
                     {value: "pipeline", label: "STT → LLM → TTS"},
                   ]} />
               </Field>
-              <div hidden={voiceEngine !== "gemini-live"} className="space-y-3">
+              <div hidden={voiceEngine !== "gemini-live"} className="contents">
                 <Field label="Realtime audio model">
                   <Select name="realtimeModel" defaultValue={savedVoice.model} options={GEMINI_LIVE_MODELS.map((model) => ({
                     value: model, label: model,
                     description: model === "gemini-3.8-live" ? "Current Gemini Live model" : "Legacy preview; prefer the current model",
                   }))} />
                 </Field>
-                <Field label="Realtime voice">
+                <Field label="Realtime voice" hint="Used for this assistant’s browser demo and phone calls. The saved prompt, knowledge, booking and transfer tools remain in use. Minimum pause sets turn detection; STT confidence and pipeline sensitivity do not apply to native audio. Response time also depends on the provider, network and tools.">
                   <Select name="realtimeVoice" defaultValue={savedVoice.voice}
                     options={GEMINI_LIVE_VOICES.map((voice) => ({value: voice, label: voice}))} />
                 </Field>
-                <p className="text-xs text-gray-400">
-                  Used for this assistant’s browser demo and phone calls. Gemini handles speech and reasoning;
-                  your saved prompt, knowledge, booking and transfer tools remain in use.
-                </p>
-                <p className="text-xs text-gray-400">
-                  Minimum pause sets turn detection. STT confidence and pipeline sensitivity do not apply to native audio.
-                  Response time also depends on the provider, network and tools.
-                </p>
               </div>
               <div hidden={voiceEngine === "gemini-live"} className="space-y-3">
               {/* LLM provider + model are coupled: the model dropdown lists
@@ -354,10 +284,54 @@ export default function AssistantForm({
               </div>
             </div>
           </section>
-          <CallAccuracySection initial={initial} />
-          <HumanTransferFields targets={transferTargets} />
+          <div data-settings-section="knowledge" className="flex min-h-64 min-w-0 shrink-0 flex-1 flex-col">
+            {initial?.id ? <UrlSetup assistantId={initial.id} /> : <p className="rounded-xl border border-white/10 p-4 text-sm text-gray-400">Create your assistant first to add websites and documents.</p>}
+          </div>
+          <div data-settings-section="actions" className="min-w-0"><HumanTransferFields targets={transferTargets} extraPeople={extraTransferPeople(initial?.metadata)} /></div>
+        </div>
+        <div className={`flex min-h-0 min-w-0 flex-col gap-3 ${voiceEngine === "gemini-live" ? "xl:overflow-y-auto" : "xl:col-span-2"}`}>
+            <div data-settings-section="speech" className="min-w-0"><CallAccuracySection initial={initial} engine={voiceEngine}/></div>
+          <section data-settings-section="privacy" className="glass min-w-0 shrink-0 rounded-2xl p-3 space-y-2">
+            <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
+              Privacy &amp; messages
+              <InfoTooltip width={300}>
+                Spoken notices and transcript handling: the recording-consent line, the voicemail message, and whether personal details are masked in stored transcripts.
+              </InfoTooltip>
+            </h3>
+            <MessageField
+              inline
+              name="recordingConsentMessage"
+              label="Consent"
+              defaultValue={initial?.recordingConsentMessage ?? ""}
+              placeholder="This call may be recorded for quality and training purposes."
+              tooltip="Played after the greeting when recording is enabled. Required for two-party-consent jurisdictions (most US states, India). Leave empty to skip."
+            />
+            <MessageField
+              inline
+              name="voicemailMessage"
+              label="Voicemail"
+              defaultValue={initial?.voicemailMessage ?? ""}
+              placeholder="Hi, this is Priya from Acme Dental — please call us back at +91…"
+              tooltip="Spoken when voicemail is detected. Leave blank to hang up silently."
+            />
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-2.5 py-1.5">
+              <span className="flex shrink-0 items-center text-[10px] uppercase tracking-widest text-gray-400">
+                Redact PII
+                <InfoTooltip>
+                  Auto-mask credit cards (Luhn-checked), Aadhaar, SSN, email, and
+                  phone numbers in the stored transcript.
+                </InfoTooltip>
+              </span>
+              <div className="min-w-0 flex-1">
+                <BooleanSelect
+                  name="redactionEnabled"
+                  defaultValue={initial?.redactionEnabled ?? true}
+                />
+              </div>
+            </div>
+          </section>
         {tools.length > 0 && (
-          <section className="glass rounded-2xl p-4 space-y-2.5">
+          <section data-settings-section="actions" className="glass min-w-0 rounded-2xl p-4 space-y-3">
             <div>
               <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
                 Tools enabled
@@ -368,7 +342,8 @@ export default function AssistantForm({
                 </InfoTooltip>
               </h3>
             </div>
-            <div className="grid grid-cols-1 gap-2">
+            <p className="text-xs text-gray-400">{selectedToolIds.length} selected</p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {tools.map((t) => {
                 const checked = selectedSet.has(t.id);
                 return (
@@ -410,15 +385,15 @@ export default function AssistantForm({
       </div>
 
     </form>
-    </>
+    </div>
   );
 }
 
-// Right-column component on the new 2-col layout. Uses its own internal
-// 2-col grid for the 10 knobs so they wrap nicely under lg.
-function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
+// Speech settings span the editor so labels and number fields have room.
+function CallAccuracySection({ initial, engine }: { initial?: Partial<Assistant>; engine: VoiceEngine }) {
+  const native=engine==='gemini-live'||engine==='gpt-live';
   return (
-    <section className="glass rounded-2xl p-4 space-y-3">
+    <section className="glass flex min-w-0 flex-1 flex-col gap-3 rounded-2xl p-4">
       <div>
         <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
           Call accuracy &amp; speech
@@ -432,15 +407,16 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
       {/* Compact two-column field layout from 1536px (brief §5). These four
           knobs are short — a select and two number inputs — so they pair
           cleanly; below 1536 they stay stacked rather than truncate. */}
-      <div className="grid grid-cols-1 gap-3 2xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 [&>label:first-child]:sm:col-span-2">
         <Field
           label="End-of-speech sensitivity"
-          hint="Silence wait: Low 2s, Medium 1s, High 0.4s. The larger of this and Min pause is used; model/STT/TTS add response time. Saved changes apply to new calls."
+          hint={native?"This control applies to the STT/LLM/TTS pipeline. Your native voice model manages speech detection; Gemini Live uses Minimum pause below. The saved pipeline value is preserved.":"Silence wait: Low 2s, Medium 1s, High 0.4s. The larger of this and Min pause is used; model/STT/TTS add response time. Saved changes apply to new calls."}
         >
           <Select
             name="endOfSpeechSensitivity"
             options={SENSITIVITY}
             defaultValue={initial?.endOfSpeechSensitivity ?? "LOW"}
+            disabled={native}
           />
         </Field>
         <Field
@@ -469,33 +445,20 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
             className={inputCls}
           />
         </Field>
-        <ToggleSwitch
-          name="recordingEnabled"
-          label="Recording"
-          tooltip="Save call audio to your storage backend."
-          defaultChecked={initial?.recordingEnabled ?? true}
-        />
+        <input type="hidden" name="recordingEnabled" value={String(initial?.recordingEnabled ?? true)} />
       </div>
 
-      {/* Advanced knobs stay MOUNTED inside <details> rather than being
-          conditionally rendered, so a collapsed field still submits its current
-          value and expanding/collapsing never saves or resets anything. */}
-      <details className="group rounded-xl border border-white/10 bg-white/[0.02]">
-        <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold uppercase tracking-widest text-gray-400 transition hover:text-gray-200">
-          <span className="inline-flex items-center gap-1.5">
-            <ChevronRight size={12} className="transition group-open:rotate-90" />
-            Advanced speech &amp; safety settings
+      <div className="flex items-center border-t border-white/10 pt-3 text-xs font-semibold text-gray-400">
+            Advanced speech settings
             <InfoTooltip width={300}>
-              Finer turn-taking and safety controls: pause handling, confidence
-              floor, call duration limits, denoising, voicemail detection and the
-              hallucination guard. The defaults suit most calls.
+              Adjust pause handling, recognition confidence and call duration limits.
+              Saved changes apply to new calls.
             </InfoTooltip>
-          </span>
-        </summary>
-        <div className="grid grid-cols-1 gap-3 border-t border-white/10 p-3">
+      </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 [&>label:last-of-type]:sm:col-span-2">
         <Field
-          label="Min pause before agent responds (ms)"
-          hint="Minimum end-of-turn wait. The larger of this and the selected sensitivity is used. This is not a total voice-response latency guarantee."
+          label="Minimum pause (ms)"
+          hint={engine==='gemini-live'?"Gemini Live silence duration before a turn ends, with a 200 ms minimum. This does not guarantee total response latency.":engine==='gpt-live'?"GPT-Live manages full-duplex turn taking. The saved pipeline value is preserved.":"Minimum end-of-turn wait. The larger of this and the selected sensitivity is used. This is not a total voice-response latency guarantee."}
         >
           <input
             type="number"
@@ -503,12 +466,13 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
             min={0}
             max={3000}
             defaultValue={initial?.minPauseMs ?? 200}
+            readOnly={engine==='gpt-live'}
             className={inputCls}
           />
         </Field>
         <Field
-          label="STT confidence threshold (%)"
-          hint="Ask for clarification below this provider confidence score. 0 disables the gate. Providers such as Sarvam may not supply a probability; no score is invented."
+          label="STT confidence (%)"
+          hint={native?"Native audio does not expose a separate STT confidence probability. This pipeline-only value is preserved; clarification follows the saved assistant instructions.":"Ask for clarification below this provider confidence score. 0 disables the gate. Providers such as Sarvam may not supply a probability; no score is invented."}
         >
           <input
             type="number"
@@ -516,6 +480,7 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
             min={0}
             max={100}
             defaultValue={initial?.confidenceThresholdPct ?? 0}
+            readOnly={native}
             className={inputCls}
           />
         </Field>
@@ -532,26 +497,11 @@ function CallAccuracySection({ initial }: { initial?: Partial<Assistant> }) {
             className={inputCls}
           />
         </Field>
-        <ToggleSwitch
-          name="backgroundDenoising"
-          label="Background denoising"
-          tooltip="LiveKit BVCTelephony noise cancellation."
-          defaultChecked={initial?.backgroundDenoising ?? true}
-        />
-        <ToggleSwitch
-          name="voicemailDetection"
-          label="Voicemail detection"
-          tooltip="Detect answering-machine tone, optionally leave a message, then hang up."
-          defaultChecked={initial?.voicemailDetection ?? false}
-        />
-        <ToggleSwitch
-          name="hallucinationGuard"
-          label="Hallucination guard"
-          tooltip={'Auto-append "do not invent information" to the system prompt.'}
-          defaultChecked={initial?.hallucinationGuard ?? true}
-        />
+        {/* Preserve existing backend safety values when saving unrelated settings. */}
+        <input type="hidden" name="backgroundDenoising" value={String(initial?.backgroundDenoising ?? true)} />
+        <input type="hidden" name="voicemailDetection" value={String(initial?.voicemailDetection ?? false)} />
+        <input type="hidden" name="hallucinationGuard" value={String(initial?.hallucinationGuard ?? true)} />
         </div>
-      </details>
     </section>
   );
 }

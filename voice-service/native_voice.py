@@ -14,6 +14,28 @@ GEMINI_VOICES = {
 }
 
 
+def initial_native_language(profile: dict, fallback: str = 'ta') -> str:
+    """Seed from the spoken greeting; legacy STT choices do not control native audio.
+
+    This is only an initial hint. Meaningful caller speech and explicit language
+    requests still flow through the existing language observer.
+    """
+    from lang import normalize_lang, script_lang
+    greeting = str(profile.get('first_message') or '')
+    return (script_lang(greeting, include_hindi=True)
+            or normalize_lang(profile.get('stt_language'))
+            or normalize_lang(fallback) or 'ta')
+
+
+def spoken_native_text(role: str, text: str, carrier_pattern=None) -> str:
+    """Separate application snapshots and carrier announcements from speech logs."""
+    if role not in ('user', 'assistant'):
+        return ''
+    if role == 'user':
+        return '' if carrier_pattern and carrier_pattern.search(text) else text.strip()
+    return text.split('[APPLICATION CALL MEMORY', 1)[0].strip()
+
+
 @dataclass(frozen=True)
 class NativeSettings:
     engine: str

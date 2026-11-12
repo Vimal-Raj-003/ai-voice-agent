@@ -100,6 +100,9 @@ async def test_book_appointment_returns_confirmation(monkeypatch):
     # No Cal.com configured → local-only path (legacy behaviour preserved).
     monkeypatch.delenv("CALCOM_API_KEY", raising=False)
     monkeypatch.delenv("CALCOM_EVENT_TYPE_ID", raising=False)
+    monkeypatch.setattr('tools.db.check_slot',AsyncMock(return_value=True))
+    monkeypatch.setattr('tools.db.find_booked_appointment',AsyncMock(return_value=None))
+    monkeypatch.setattr('tools.db.find_booked_slot',AsyncMock(return_value=None))
 
     async def fake_insert(name, phone, date, time, service, **kwargs):
         assert kwargs.get("calcom_uid") is None

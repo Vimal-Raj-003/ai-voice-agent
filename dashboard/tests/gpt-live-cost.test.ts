@@ -42,3 +42,24 @@ test("legacy Sarvam calls keep separate STT and TTS meters", () => {
   assert(cost.lines.some((line) => line.category === "STT"));
   assert(cost.lines.some((line) => line.category === "TTS"));
 });
+
+test("Gemini phone text input includes Sarvam once with its call-time rate", () => {
+  const call: CallCostInput = { ...native,llmProviderUsed:'google',llmSkuUsed:'gemini-3.1-flash-live-preview',
+    sttProviderUsed:'sarvam',sttSkuUsed:'saaras:v4',sttSeconds:60,telephonyProvider:null,
+    metadata:{voiceUsage:{provider:'google',model:'gemini-3.1-flash-live-preview',complete:true,
+      tokens:{inputText:1000,outputAudio:1000},
+      speechInput:{provider:'sarvam',model:'saaras:v4',seconds:60,source:'forwarded_audio_frames'},
+      rateSnapshot:{version:1,capturedAt:'2026-11-11T00:00:00Z',rows:[
+        {provider:'google',sku:'gemini-3.1-flash-live-preview/text',kind:'LLM_INPUT_MTOK',rateUsd:.75},
+        {provider:'google',sku:'gemini-3.1-flash-live-preview/audio',kind:'LLM_OUTPUT_MTOK',rateUsd:12},
+        {provider:'sarvam',sku:'saaras:v4',kind:'STT_MINUTE',rateUsd:.01},
+      ]}}}};
+  const cost=computeCallCost(call,new Map([['sarvam|saaras:v4|STT_MINUTE',99]]));
+  assert.equal(cost.lines.filter(line=>line.category==='STT').length,1);
+  assert.equal(cost.lines.find(line=>line.category==='STT')?.costUsd,.01);
+  assert.equal(cost.lines.some(line=>line.category==='TTS'),false);
+  assert(Math.abs(cost.totalUsd-.02275)<1e-10);
+  const demo=computeCallCost({...call,metadata:{voiceUsage:{provider:'google',complete:true,
+    tokens:{inputText:1000,outputAudio:1000},mode:'demo'}}},new Map());
+  assert.equal(demo.lines.some(line=>line.category==='STT'),false);
+});

@@ -11,11 +11,18 @@
 //
 // Storage access is wrapped because it throws in some privacy modes; the
 // fallback is simply "expanded, preference not remembered".
-import { createContext, useCallback, useContext, useSyncExternalStore } from "react";
+import { createContext, useCallback, useContext, useState, useSyncExternalStore } from "react";
 
 const KEY = "jilljill.sidebar.collapsed";
 
 const listeners = new Set<() => void>();
+
+function subscribeViewport(notify: () => void) {
+  const media = window.matchMedia("(max-width: 767px)");
+  media.addEventListener("change", notify);
+  return () => media.removeEventListener("change", notify);
+}
+const narrowViewport = () => window.matchMedia("(max-width: 767px)").matches;
 
 function read(): boolean {
   try {
@@ -62,9 +69,18 @@ const SidebarCtx = createContext<Ctx>({
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
   // Server snapshot is "expanded": the sidebar renders full-width in the HTML
   // and narrows on hydration if that is the stored preference.
-  const collapsed = useSyncExternalStore(subscribe, read, () => false);
-  const setCollapsed = useCallback((v: boolean) => write(v), []);
-  const toggle = useCallback(() => write(!read()), []);
+  const savedCollapsed = useSyncExternalStore(subscribe, read, () => false);
+  const narrow = useSyncExternalStore(subscribeViewport, narrowViewport, () => false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const collapsed = narrow ? !mobileOpen : savedCollapsed;
+  const setCollapsed = useCallback((v: boolean) => {
+    if (narrow) setMobileOpen(!v);
+    else write(v);
+  }, [narrow]);
+  const toggle = useCallback(() => {
+    if (narrow) setMobileOpen(open => !open);
+    else write(!read());
+  }, [narrow]);
 
   return (
     <SidebarCtx.Provider value={{ collapsed, setCollapsed, toggle }}>

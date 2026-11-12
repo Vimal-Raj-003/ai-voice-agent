@@ -23,6 +23,8 @@ from types import SimpleNamespace
 import re
 from typing import Any, Callable
 from contact_corrections import latest_email, correction_requested, rejection_requested, EMAIL_TOPIC, turn_intent, correct_email_part, CONFIRMATION, plausible_name, fragmented_spelling
+from call_intelligence import CallIntelligence
+from caller_consent import booking_declined, bare_refusal
 
 # Generic acknowledgements / fillers — never stored as a value or a fact. "yes"/
 # "no" can still RESOLVE a confirm question (handled explicitly in resolve()).
@@ -90,6 +92,7 @@ class CallState:
     _locked: set[str] = field(default_factory=set)
     log: Callable[..., None] | None = None
     _model_tool_turns: dict = field(default_factory=dict, repr=False)
+    intelligence: CallIntelligence = field(default_factory=CallIntelligence, repr=False)
 
     def preparation_copy(self):
         """A prompt-only view: no committed fields, work cancellation or logging."""
@@ -98,12 +101,14 @@ class CallState:
             if isinstance(value, (dict, list, set)):
                 setattr(preview, key, deepcopy(value))
         preview.log = None
+        preview.intelligence = deepcopy(self.intelligence)
         directive = self.work.directive() if self.work else ''
         preview.work = (SimpleNamespace(directive=lambda: directive, invalidate=lambda: None)
                         if self.work else None)
         return preview
 
     def _emit(self, event: str, **kw: Any) -> None:
+        self.intelligence.event(event)
         if self.log:
             try:
                 self.log(event, **kw)
@@ -122,6 +127,9 @@ class CallState:
         self.user_turn_id += 1
         from conversation_style import conversation_tone
         self.response_tone = conversation_tone([text], initial=self.response_tone)
+        self.intelligence.user(text, self.user_turn_id)
+        if self.intelligence.policy.emotion:
+            self.response_tone = self.intelligence.tone
         before = {k: self.entities.get(k) for k in ('name', 'email', 'date', 'time', 'service')}
         before_hold = self.booking_hold
         intent = turn_intent(text)
@@ -132,8 +140,11 @@ class CallState:
         if (len(text.split()) >= 5 and not latest_email(text)
                 and not fragmented_spelling(text) and self.pending_slug != 'name_spelling'):
             self.add_fact(text[:360])
-        if re.search(r"(?:don['’]?t|do not|not now).*?\bbook\b|\bbook\b.*?(?:பண்ணாத|செய்யாத|வேண்டாம்)|details\s*(?:மட்டும்|only)", text, re.I):
+        declined = booking_declined(text)
+        if declined:
             self.booking_hold = True
+            self.add_fact(text[:360])
+            self.clear_pending()
         retry_email = bool(re.search(r'\bresend\b|\bsend\s+(?:it\s+)?again\b|\bretry\s+(?:the\s+)?(?:email|mail)\b|திரும்ப.*அனுப்ப|மறுபடியும்.*அனுப்ப', text, re.I))
         if retry_email:
             self.email_retry_requested = True
@@ -142,7 +153,8 @@ class CallState:
         elif intent == 'content' and re.search(r'\b(?:book|appointment)\b', text, re.I):
             self.cancel_requested = False
         try:
-            self._observe_user_details(text)
+            if not declined:
+                self._observe_user_details(text)
         finally:
             after = {k: self.entities.get(k) for k in before}
             if before != after or before_hold != self.booking_hold or intent in ('correction', 'cancel') or retry_email:
@@ -260,6 +272,7 @@ class CallState:
         if text == self._last_observed_assistant and (message_id is None or message_id == self._last_observed_assistant_id):
             return
         self._last_observed_assistant, self._last_observed_assistant_id = text, message_id
+        self.intelligence.assistant(text, self, interrupted)
         if (self.contact_repair and self.entities.get('email_confirmed') != 'yes') or self.pending_slug in ("email", "email_confirmation", "name_spelling", "name_confirmation"):
             return
         questions = re.findall(r"[^.!?]*\?", text)
@@ -352,7 +365,7 @@ class CallState:
                 return 'Rejected unsupported name. Ask only for the caller name; never store an unknown placeholder.'
         if values.get('booking_permission') == 'allowed':
             permission = re.search(r'\b(?:book|confirm|schedule)\b|புக்|பதிவு', evidence, re.I)
-            refused = re.search(r"don['’]?t|do not|not now|பண்ணாத|செய்யாத|வேண்டாம்", evidence, re.I)
+            refused = booking_declined(evidence) or re.search(r"don['’]?t|do not|not now|பண்ணாத|செய்யாத|வேண்டாம்", evidence, re.I)
             if permission and not refused and '?' not in evidence:
                 self.booking_hold = False
             else:
@@ -477,6 +490,8 @@ class CallState:
         t = _norm(text)
         if not t:
             return False
+        if booking_declined(t) or bare_refusal(t):
+            return False
         slug = self.pending_slug
         if slug in ("date", "time", "name", "service", "choice", "order_id", "company", "product", "email", "phone", "age", "requirement"):
             ok = self.update_entity(slug, t)
@@ -584,7 +599,8 @@ class CallState:
         line += ("\nUse this state: never re-ask a Known/Confirmed value; apply the caller's "
                  "latest correction; current-call contact values override old caller notes. "
                  "Don't contradict Confirmed tool facts.")
-        return line
+        guidance = self.intelligence.directive(self)
+        return line + ('\n' + guidance if guidance else '')
 
     def snapshot(self) -> dict[str, Any]:
         return {

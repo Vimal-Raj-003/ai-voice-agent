@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Room, RoomEvent, Track } from "livekit-client";
 import { Mic, Volume2 } from "lucide-react";
 
@@ -64,13 +64,17 @@ export default function DemoAudioMonitor({ room }: { room: Room | null }) {
 
   useEffect(() => {
     if (!room) {
+      let disposed=false;
+      queueMicrotask(()=>{
+      if(disposed)return;
       setMicStatus("inactive");
       setMicBars(new Array(BAR_COUNT).fill(0));
       setAgentBars(new Array(BAR_COUNT).fill(0));
       setMicDb(-100);
       setAgentActive(false);
       setInfo({ published: false, muted: false, connected: false, roomName: "" });
-      return;
+      });
+      return()=>{disposed=true;};
     }
 
     const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
@@ -179,7 +183,7 @@ export default function DemoAudioMonitor({ room }: { room: Room | null }) {
   const dbText = micDb <= -99 ? "—" : `${micDb.toFixed(0)} dB`;
 
   return (
-    <div className="rounded-3xl border border-white/10 bg-black/30 p-6 w-full max-w-xs text-left">
+    <div className="glass min-w-0 rounded-2xl p-4 w-full text-left">
       {/* MIC INPUT */}
       <div className="flex items-center gap-2">
         <Mic size={16} className="text-purple-300" />
@@ -187,7 +191,7 @@ export default function DemoAudioMonitor({ room }: { room: Room | null }) {
         <span className={`ml-auto text-xs font-mono ${statusTone}`}>{MIC_STATUS_LABEL[micStatus]}</span>
       </div>
 
-      <div className="mt-3 flex items-end gap-[3px] h-16">
+      <div className="mt-3 flex items-end gap-[3px] h-10">
         {micBars.map((v, i) => (
           <div
             key={i}
@@ -211,14 +215,14 @@ export default function DemoAudioMonitor({ room }: { room: Room | null }) {
       </div>
 
       {/* AGENT OUTPUT */}
-      <div className="mt-5 flex items-center gap-2">
+      <div className="mt-3 flex items-center gap-2">
         <Volume2 size={16} className="text-blue-300" />
         <span className="text-sm font-semibold tracking-wide">AGENT OUTPUT</span>
         <span className={`ml-auto text-xs font-mono ${agentActive ? "text-blue-300" : "text-gray-500"}`}>
           {agentActive ? "Agent speaking" : "Silent"}
         </span>
       </div>
-      <div className="mt-3 flex items-end gap-[3px] h-10">
+      <div className="mt-3 flex items-end gap-[3px] h-8">
         {agentBars.map((v, i) => (
           <div
             key={i}
@@ -229,12 +233,13 @@ export default function DemoAudioMonitor({ room }: { room: Room | null }) {
       </div>
 
       {/* diagnostics */}
-      <div className="mt-5 space-y-1 border-t border-white/10 pt-3 text-[10px] font-mono text-gray-500">
+      <details className="mt-3 space-y-1 border-t border-white/10 pt-3 text-xs text-gray-400">
+        <summary className="cursor-pointer">Connection details</summary>
         <div className="flex justify-between"><span>LiveKit</span><span className={info.connected ? "text-emerald-300" : "text-red-300"}>{info.connected ? "connected" : "disconnected"}</span></div>
         <div className="flex justify-between"><span>mic published</span><span className={info.published ? "text-emerald-300" : "text-gray-500"}>{info.published ? "YES" : "NO"}</span></div>
         <div className="flex justify-between"><span>mic muted</span><span className={info.muted ? "text-red-300" : "text-gray-500"}>{info.muted ? "YES" : "NO"}</span></div>
         <div className="flex justify-between"><span>room</span><span className="text-gray-400">{info.roomName || "—"}</span></div>
-      </div>
+      </details>
     </div>
   );
 }

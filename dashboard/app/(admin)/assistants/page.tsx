@@ -1,57 +1,32 @@
-import Link from "next/link";
-import { prisma } from "@/lib/prisma";
-import { getDefaultOrg } from "@/lib/org";
-import { Bot, Plus } from "lucide-react";
-import EmptyState from "@/components/EmptyState";
-import SavedToast from "@/components/SavedToast";
+import {prisma} from '@/lib/prisma';
+import {getDefaultOrg} from '@/lib/org';
+import SavedToast from '@/components/SavedToast';
+import AssistantLibrary from '@/components/AssistantLibrary';
+import {voiceSettings} from '@/lib/native-voice';
 
-export default async function AssistantsPage() {
-  const { id: orgId } = await getDefaultOrg();
-  const rows = await prisma.assistant.findMany({
-    where: { organizationId: orgId },
-    orderBy: { updatedAt: "desc" },
+export default async function AssistantsPage(){
+  const {id:orgId}=await getDefaultOrg();
+  const rows=await prisma.assistant.findMany({where:{organizationId:orgId},orderBy:{name:'asc'}});
+  // Knowledge tables are owned by the voice service, outside Prisma's models.
+  const sources=await prisma.$queryRaw<{assistant_id:string;count:number}[]>`
+    SELECT s.assistant_id,count(*)::int AS count FROM knowledge_sources s
+    JOIN assistants a ON a.id=s.assistant_id WHERE a."organizationId"=${orgId}
+    GROUP BY s.assistant_id`;
+  const counts=new Map(sources.map(s=>[s.assistant_id,s.count]));
+  const assistants=rows.map(a=>{
+    const meta=(a.metadata||{}) as Record<string,unknown>;const voice=voiceSettings(a.metadata);
+    const native=voice.engine==='gemini-live'||voice.engine==='gpt-live';
+    const languageNames:Record<string,string>={ta:'Tamil',en:'English',te:'Telugu',ml:'Malayalam',hi:'Hindi',kn:'Kannada',mr:'Marathi',bn:'Bengali',gu:'Gujarati',pa:'Punjabi',ur:'Urdu',es:'Spanish',fr:'French',de:'German',ar:'Arabic',zh:'Chinese',ja:'Japanese',ko:'Korean',pt:'Portuguese'};
+    const languages=native
+      ? ['Tamil','Tanglish','English','Telugu','Malayalam','Hindi','Kannada','Marathi','Bengali','Gujarati','Punjabi','Urdu','Spanish','French','German','Arabic','Chinese','Japanese','Korean','Portuguese'].filter(name=>new RegExp(`\\b${name}\\b`,'i').test(a.systemPrompt))
+      : a.sttLanguage==='multi'||a.sttLanguage==='unknown'||a.sttLanguage==='auto'?['Auto-detect']: [languageNames[a.sttLanguage.split('-')[0]]||a.sttLanguage];
+    const role=typeof meta.roleKey==='string'?meta.roleKey:a.name.toLowerCase().includes('vasan')?'vasan':a.name.toLowerCase().includes('appointment')?'appointment':a.name.toLowerCase().includes('support')?'support':a.name.toLowerCase().includes('sales')?'sales':a.name.toLowerCase().includes('marketing')?'marketing':'receptionist';
+    return {id:a.id,name:a.name,description:a.description,active:a.isActive,role,engine:voice.engine==='gemini-live'?'Gemini Live':voice.engine==='gpt-live'?'GPT-Live':'STT / LLM / TTS',model:voice.engine==='gemini-live'?voice.model:voice.engine==='gpt-live'?'gpt-live-1':a.llmModel,voice:voice.engine==='gemini-live'?voice.voice:voice.engine==='gpt-live'?String((meta.voiceRuntime as Record<string,unknown>|undefined)?.voice||''):a.voiceId||'',languages,knowledge:counts.get(a.id)||0,setupRequired:meta.setupRequired===true};
   });
-  return (
-    <div className="space-y-6">
-      <SavedToast message="Assistant saved successfully" />
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Assistants</h1>
-        <Link
-          href="/assistants/new"
-          className="inline-flex items-center gap-2 rounded-lg bg-white text-black px-3 py-1.5 text-sm font-medium hover:opacity-90"
-        >
-          <Plus size={14} /> New
-        </Link>
-      </div>
-      {rows.length === 0 ? (
-        <EmptyState
-          icon={Bot}
-          title="No assistants yet"
-          description="Assistants define the personality, voice, and tools your AI agent uses on a call. Create one to get started."
-          action={{ href: "/assistants/new", label: "Create your first assistant" }}
-        />
-      ) : (
-      <div className="glass rounded-2xl divide-y divide-white/5">
-        {rows.map((a) => (
-          <Link
-            key={a.id}
-            href={`/assistants/${a.id}`}
-            className="flex items-center justify-between p-4 hover:bg-white/[0.02]"
-          >
-            <div>
-              <div className="font-medium">{a.name}</div>
-              <div className="text-xs text-gray-500">
-                {a.llmProvider}/{a.llmModel} · TTS {a.ttsProvider}
-                {a.voiceId ? `/${a.voiceId}` : ""}
-              </div>
-            </div>
-            <span className="text-xs text-gray-500">
-              {a.updatedAt.toLocaleString()}
-            </span>
-          </Link>
-        ))}
-      </div>
-      )}
-    </div>
-  );
+  let previews:Record<string,boolean>={};
+  try{
+    const response=await fetch(`${process.env.VOICE_SERVICE_URL||'http://127.0.0.1:8000'}/api/assistant-voice-previews`,{method:'POST',headers:{Authorization:`Bearer ${process.env.VOICE_SERVICE_TOKEN||''}`,'Content-Type':'application/json'},body:JSON.stringify({assistants:assistants.map(({id,model,voice})=>({id,model,voice}))}),cache:'no-store',signal:AbortSignal.timeout(8000)});
+    if(response.ok)previews=await response.json();
+  }catch{/* Keep settings usable when the recording service is unavailable. */}
+  return <><SavedToast message="Assistant saved successfully"/><AssistantLibrary assistants={assistants.map(a=>({...a,preview:previews[a.id]===true}))}/></>;
 }

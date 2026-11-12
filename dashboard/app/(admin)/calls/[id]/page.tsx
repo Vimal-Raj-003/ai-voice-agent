@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import Money from "@/components/Money";
 import { prisma } from "@/lib/prisma";
 import {
   Badge,
@@ -10,7 +11,10 @@ import {
 import CallRecording from "@/components/CallRecording";
 import CallNotesEditor from "@/components/CallNotesEditor";
 import CallCostBreakdown from "@/components/CallCostBreakdown";
-import { buildRateMap, computeCallCost } from "@/lib/cost";
+import CallIntelligence from "@/components/CallIntelligence";
+import { buildRateMap, computeCallCost,callChannel } from "@/lib/cost";
+import {getDefaultOrg} from "@/lib/org";
+import Link from "next/link";
 
 export default async function CallDetail({
   params,
@@ -18,10 +22,11 @@ export default async function CallDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  const org=await getDefaultOrg();
   const [c, transcript, rates] = await Promise.all([
-    prisma.call.findUnique({ where: { id } }),
+    prisma.call.findFirst({ where: { id,organizationId:org.id } }),
     prisma.transcriptMessage.findMany({
-      where: { callId: id },
+      where: { callId: id,call:{organizationId:org.id} },
       orderBy: { timestamp: "asc" },
     }),
     prisma.providerRate.findMany(),
@@ -29,16 +34,17 @@ export default async function CallDetail({
   if (!c) notFound();
 
   // Live cost recomputed from usage × current rates.
-  const breakdown = computeCallCost(c, buildRateMap(rates));
+  const breakdown = computeCallCost(c, buildRateMap(rates),{includeUnavailable:true});
+  const channel=callChannel(c);
   const cost = breakdown.totalUsd;
 
   return (
     <div className="space-y-6 max-w-3xl">
       <div className="space-y-2">
         <div className="flex items-center gap-3">
-          <h1 className="text-3xl font-bold">{c.toNumber}</h1>
+          <h1 className="text-3xl font-bold">{channel==='Demo'?'Browser demo':c.toNumber}</h1>
           <Badge tone={directionTone(c.direction)}>
-            {c.direction.toLowerCase()}
+            {channel}
           </Badge>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -54,7 +60,7 @@ export default async function CallDetail({
           </span>
           {cost > 0 && (
             <span className="text-gray-500 text-xs">
-              · ${cost.toFixed(4)}
+              · <Money usd={cost} decimals={4}/>
             </span>
           )}
           <span className="text-gray-500 text-xs">
@@ -63,9 +69,12 @@ export default async function CallDetail({
         </div>
       </div>
 
+      <Link href={`/calls/${c.id}/logs`} className="inline-block text-sm text-violet-300 underline">View call logs and errors</Link>
+
       <CallRecording callId={c.id} durationSeconds={c.durationSeconds} />
 
       <CallCostBreakdown breakdown={breakdown} />
+      <CallIntelligence metadata={c.metadata} />
 
       <CallNotesEditor callId={c.id} initial={c.notes} />
 

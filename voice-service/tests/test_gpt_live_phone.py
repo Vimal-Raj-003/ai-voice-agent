@@ -62,7 +62,9 @@ def test_native_prompt_preserves_saved_rules_and_direction():
 
 @pytest.mark.parametrize('direction', ['INBOUND', 'OUTBOUND'])
 @pytest.mark.parametrize('engine', ['gpt-live', 'gemini-live'])
-async def test_actual_phone_entrypoint_keeps_sip_tools_recording_and_transcripts(monkeypatch, mock_pool, direction, engine):
+@pytest.mark.parametrize('denoising', ['enabled', 'assistant-off', 'override-off'])
+@pytest.mark.parametrize('phone_input', ['native', 'sarvam'])
+async def test_actual_phone_entrypoint_keeps_sip_tools_recording_and_transcripts(monkeypatch, mock_pool, direction, engine, denoising, phone_input):
     import agent as ag
     import gpt_live_phone as native
     if engine == 'gemini-live':
@@ -75,7 +77,11 @@ async def test_actual_phone_entrypoint_keeps_sip_tools_recording_and_transcripts
     monkeypatch.setenv('GPT_LIVE_PHONE_ASSISTANT_IDS', aid)
     monkeypatch.setenv('GPT_LIVE_VOICE', 'gleam')
     monkeypatch.setenv('VOICE_TEST_READ_ONLY', 'false')
-    monkeypatch.setenv('ENABLE_BVC_TELEPHONY', 'false')
+    monkeypatch.setenv('GEMINI_PHONE_INPUT', phone_input)
+    if denoising == 'override-off':
+        monkeypatch.setenv('ENABLE_BVC_TELEPHONY', 'false')
+    else:
+        monkeypatch.delenv('ENABLE_BVC_TELEPHONY', raising=False)
     monkeypatch.setattr(observability, 'start_log_drain', lambda: None)
     monkeypatch.setattr(observability, 'attach_sdk_log_bridge', lambda: None)
     monkeypatch.setattr(ag, 'is_rate_limited', lambda _: False)
@@ -83,14 +89,15 @@ async def test_actual_phone_entrypoint_keeps_sip_tools_recording_and_transcripts
     monkeypatch.setattr(ag, '_load_caller_history', AsyncMock(return_value='Synthetic prior website issue'))
     profile = dict(id=aid, name='Synthetic assistant', _profile_source='assistant', model='qwen/qwen3-30b-a3b-instruct-2507',
                    llm_provider='openrouter', system_prompt='SAVED RULE: help with website maintenance.',
-                   first_message='வணக்கம் {business_name}', enabled_tools=[], recording_enabled=True,
+                   first_message='வணக்கம் {business_name}', stt_language='en',
+                   background_denoising=denoising!='assistant-off', enabled_tools=[], recording_enabled=True,
                    recording_consent_message='This call is recorded.', max_duration_seconds=60)
     if engine == 'gemini-live':
         profile['metadata'] = {'voiceRuntime': {'engine': 'gemini-live', 'voice': 'Zephyr', 'model': 'gemini-3.8-live'}}
     monkeypatch.setattr(ag, '_resolve_profile', AsyncMock(return_value=profile))
     monkeypatch.setattr(ag.knowledge, 'get_brain_digest', AsyncMock(return_value=''))
     monkeypatch.setattr(ag.knowledge, 'has_knowledge', AsyncMock(return_value=False))
-    monkeypatch.setattr(ag.provider_credentials, 'load_for_org', AsyncMock(return_value={'openai':'synthetic', 'google':'synthetic'}))
+    monkeypatch.setattr(ag.provider_credentials, 'load_for_org', AsyncMock(return_value={'openai':'synthetic', 'google':'synthetic', 'sarvam':'synthetic'}))
     monkeypatch.setattr(ag.db, 'get_phone_number_routing', AsyncMock(return_value={'assistantId':aid}))
     monkeypatch.setattr(ag.db, 'get_human_transfer_targets', AsyncMock(return_value={}))
     monkeypatch.setattr(ag.db, 'get_assistant_tools', AsyncMock(return_value=[]))
@@ -142,9 +149,10 @@ async def test_actual_phone_entrypoint_keeps_sip_tools_recording_and_transcripts
             self.say = Mock(side_effect=AssertionError('Native voice must not use legacy say/TTS'))
             self.generate_reply = Mock()
         def _is_closing(self): return False
-        async def start(self, *, agent, room, room_input_options):
+        async def start(self, *, agent, room, room_input_options, room_output_options=None):
             self._activity = object()
             self.agent, self.input_options = agent, room_input_options
+            self.output_options = room_output_options
             agent.session = self
             if engine == 'gpt-live':
                 agent.duplex_session = self.duplex = sdk.GPTLiveSession(self.kwargs['llm'])
@@ -171,14 +179,18 @@ async def test_actual_phone_entrypoint_keeps_sip_tools_recording_and_transcripts
     runtime = owner._gpt_live_runtime
     session = runtime.session
     assert session.input_options.participant_kinds == [rtc.ParticipantKind.PARTICIPANT_KIND_SIP]
-    assert 'stt' not in session.kwargs and 'tts' not in session.kwargs
+    assert (session.input_options.noise_cancellation is not None) == (denoising == 'enabled')
+    assert 'tts' not in session.kwargs
+    assert ('stt' in session.kwargs) == (engine == 'gemini-live' and phone_input == 'sarvam')
     if engine == 'gpt-live':
         assert session.kwargs['tools'] == []
         assert runtime.voice_name == 'gleam' and runtime.bridge.sandbox is False
         assert 'book_appointment' in {t.info.name for t in runtime.bridge.tools}
     else:
         assert runtime.voice_name == 'Zephyr' and runtime.sandbox is False
+        assert session.output_options.sync_transcription is False
         assert 'book_appointment' in {t.info.name for t in runtime.tools}
+        assert runtime.state.language=='ta', 'Legacy STT language must not seed English over the native Tamil greeting'
     assert 'Synthetic prior website issue' in runtime.agent.instructions
     session.generate_reply.assert_called_once()
     assert 'INBOUND' in runtime.agent.instructions if direction == 'INBOUND' else 'OUTBOUND' in runtime.agent.instructions
@@ -202,6 +214,19 @@ async def test_actual_phone_entrypoint_keeps_sip_tools_recording_and_transcripts
     session.emit('conversation_item_added', NS(item=message))
     await asyncio.sleep(0)
     ag.db.insert_transcript_message.assert_awaited_once()
+    if engine == 'gemini-live':
+        ag.db.insert_transcript_message.reset_mock()
+        session.emit('conversation_item_added', NS(item=llm.ChatContext().add_message(
+            role='assistant',content='Only spoken words.[APPLICATION CALL MEMORY; turn=1]\n{"entities":{}}')))
+        await asyncio.sleep(0)
+        assert ag.db.insert_transcript_message.await_args.kwargs['content']=='Only spoken words.'
+        ag.db.insert_transcript_message.reset_mock()
+        session.emit('conversation_item_added', NS(item=llm.ChatContext().add_message(
+            role='assistant',content='[APPLICATION CALL MEMORY; turn=1]\n{"entities":{}}')))
+        session.emit('conversation_item_added', NS(item=llm.ChatContext().add_message(
+            role='user',content='This call is now being recorded.')))
+        await asyncio.sleep(0)
+        ag.db.insert_transcript_message.assert_not_awaited()
     await callbacks[-1]()
     original_shutdown.assert_awaited_once()
     await runtime.close()

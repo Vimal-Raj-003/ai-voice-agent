@@ -8,8 +8,8 @@
 // them. Collapsed keeps every destination reachable — SidebarNav renders
 // icon-only with tooltips — rather than hiding features.
 //
-// On mobile the sidebar is hidden entirely and the existing drawer behaviour is
-// untouched; collapsing only applies from md upwards.
+// Mobile uses a compact rail with an expandable overlay; desktop keeps the
+// saved width preference.
 import { PanelLeftClose, PanelLeftOpen, Sparkles } from "lucide-react";
 import { useSidebar } from "@/lib/sidebar-context";
 
@@ -25,9 +25,13 @@ export default function SidebarFrame({
   const { collapsed, toggle } = useSidebar();
 
   return (
+    <>
+    {!collapsed && <button type="button" aria-label="Close navigation" onClick={toggle}
+      className="fixed inset-0 z-30 bg-black/50 md:hidden" />}
     <aside
       data-collapsed={collapsed ? "true" : "false"}
-      className={`glass m-3 mr-0 flex shrink-0 flex-col gap-3 self-start overflow-y-auto overflow-x-hidden rounded-2xl p-4 sticky top-3 max-h-[calc(100vh-1.5rem)] transition-[width] duration-200 ${
+      style={{background: "var(--bg-base)"}}
+      className={`glass m-3 mr-0 flex shrink-0 flex-col gap-3 self-start overflow-y-auto overflow-x-hidden rounded-2xl p-4 sticky top-3 max-md:fixed max-md:top-0 max-md:bottom-0 max-md:z-40 max-h-[calc(100vh-1.5rem)] transition-[width] duration-200 ${
         collapsed ? "w-[72px] items-center px-2" : "w-64"
       }`}
     >
@@ -69,5 +73,6 @@ export default function SidebarFrame({
       {nav}
       {footer}
     </aside>
+    </>
   );
 }

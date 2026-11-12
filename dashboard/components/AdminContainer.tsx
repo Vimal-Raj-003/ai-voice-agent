@@ -36,7 +36,11 @@ export default function AdminContainer({
     : collapsed
       ? "max-w-[1400px]"
       : "max-w-6xl";
+  const padding = pathname.startsWith("/assistants/")
+    ? "px-4 pb-3 sm:px-5"
+    : pathname==='/demo' ? "px-4 py-4 sm:px-6"
+    : wide ? "px-4 py-6 sm:px-6 lg:px-8" : "px-8 py-10";
   return (
-    <div className={`mx-auto px-8 py-10 ${maxWidth}`}>{children}</div>
+    <div className={`mx-auto ${padding} ${maxWidth}`}>{children}</div>
   );
 }

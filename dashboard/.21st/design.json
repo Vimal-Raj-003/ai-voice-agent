@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "project": {
+    "name": "dashboard",
+    "productType": null,
+    "stack": [
+      "nextjs",
+      "react",
+      "tailwind-v4"
+    ]
+  },
+  "sources": {
+    "tokens": [
+      "app/globals.css"
+    ],
+    "components": [],
+    "assets": [],
+    "instructions": []
+  },
+  "design": {
+    "colorMode": "light",
+    "colors": {
+      "--color-accent-cyan": {
+        "value": "#22d3ee",
+        "source": "app/globals.css"
+      },
+      "--color-accent-violet": {
+        "value": "#a78bfa",
+        "source": "app/globals.css"
+      },
+      "--color-accent-magenta": {
+        "value": "#f472b6",
+        "source": "app/globals.css"
+      },
+      "--color-accent-emerald": {
+        "value": "#34d399",
+        "source": "app/globals.css"
+      },
+      "--surface-border": {
+        "value": "rgba(15, 23, 42, 0.08)",
+        "source": "app/globals.css"
+      },
+      "--text-primary": {
+        "value": "#0f172a",
+        "source": "app/globals.css"
+      },
+      "--text-secondary": {
+        "value": "#334155",
+        "source": "app/globals.css"
+      },
+      "--text-muted": {
+        "value": "#4b5569",
+        "source": "app/globals.css"
+      },
+      "--border-default": {
+        "value": "rgba(15, 23, 42, 0.14)",
+        "source": "app/globals.css"
+      },
+      "--border-strong": {
+        "value": "rgba(15, 23, 42, 0.28)",
+        "source": "app/globals.css"
+      },
+      "--accent": {
+        "value": "#6d28d9",
+        "source": "app/globals.css"
+      },
+      "--modal-border": {
+        "value": "var(--border-default)",
+        "source": "app/globals.css"
+      }
+    },
+    "typography": {
+      "--text-disabled": {
+        "value": "#94a3b8",
+        "source": "app/globals.css"
+      }
+    },
+    "spacing": {},
+    "radius": {},
+    "shadows": {
+      "--surface-shadow": {
+        "value": "0 8px 32px -16px rgba(15, 23, 42, 0.08)",
+        "source": "app/globals.css"
+      },
+      "--modal-shadow": {
+        "value": "0 24px 64px -24px rgba(15, 23, 42, 0.25)",
+        "source": "app/globals.css"
+      }
+    },
+    "motion": {},
+    "density": "unknown"
+  },
+  "components": {
+    "installed": [],
+    "preferredPrimitives": [],
+    "patterns": []
+  },
+  "constraints": {
+    "must": [],
+    "avoid": []
+  },
+  "decisions": [],
+  "evidence": [
+    {
+      "fact": "design.colorMode:light",
+      "source": "app/globals.css"
+    },
+    {
+      "fact": "design.tokens",
+      "source": "app/globals.css"
+    },
+    {
+      "fact": "project.stack:nextjs",
+      "source": "package.json"
+    },
+    {
+      "fact": "project.stack:react",
+      "source": "package.json"
+    },
+    {
+      "fact": "project.stack:tailwind-v4",
+      "source": "package.json"
+    }
+  ],
+  "generatedAt": "2026-11-10T07:06:56.742Z"
+}

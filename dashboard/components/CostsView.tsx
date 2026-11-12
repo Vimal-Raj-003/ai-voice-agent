@@ -21,6 +21,7 @@ import CostByProvider from "./charts/CostByProvider";
 import { COST_CATEGORY_LABEL, type CostCategory, type CostLine } from "@/lib/cost";
 import { type Currency, type FxRate, formatMoney } from "@/lib/currency";
 import CurrencyToggle from "@/components/CurrencyToggle";
+import { useCurrency } from "@/lib/currency-context";
 
 export type CallCostRow = {
   id: string;
@@ -92,9 +93,9 @@ export default function CostsView(p: CostsViewProps) {
   // Currency can be CONTROLLED by a parent (Overview owns the header toggle and
   // shares one choice with this section) or left uncontrolled, which preserves
   // the original standalone behaviour.
-  const [ownCurrency, setOwnCurrency] = useState<Currency>("USD");
-  const currency = p.currency ?? ownCurrency;
-  const setCurrency = p.onCurrencyChange ?? setOwnCurrency;
+  const globalCurrency = useCurrency();
+  const currency = p.currency ?? globalCurrency.currency;
+  const setCurrency = p.onCurrencyChange ?? globalCurrency.setCurrency;
   const [openId, setOpenId] = useState<string | null>(null);
   // The call list can run to hundreds of rows, so it starts compact and grows
   // a page at a time instead of dominating the screen. No data is dropped —

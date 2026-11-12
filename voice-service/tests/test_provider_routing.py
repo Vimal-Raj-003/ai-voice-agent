@@ -162,7 +162,7 @@ async def test_missing_price_ids_are_reported_once_not_per_sku(monkeypatch):
         def error(self, event, **kw): emitted.append((event, kw))
 
     async def fake_models():
-        # Catalogue missing TWO of the looked-up ids.
+        # Direct Gemini audio pricing is not an OpenRouter lookup anymore.
         return [{"id": "openai/gpt-4o-mini", "pricing": {"prompt": "0", "completion": "0"}},
                 {"id": "openai/gpt-4o", "pricing": {"prompt": "0", "completion": "0"}},
                 {"id": "meta-llama/llama-3.3-70b-instruct",
@@ -186,9 +186,9 @@ async def test_missing_price_ids_are_reported_once_not_per_sku(monkeypatch):
     assert per_sku == [], "the per-SKU warning must be gone"
     agg = [kw for e, kw in emitted if e == "openrouter_price_lookup_incomplete"]
     assert len(agg) == 1, "exactly one aggregated line per refresh"
-    assert agg[0]["missing_count"] == 2
+    assert agg[0]["missing_count"] == 1
     assert "routing is unaffected" in agg[0]["impact"]
-    assert res["missing"] == 2
+    assert res["missing"] == 1
 
 
 @pytest.mark.asyncio

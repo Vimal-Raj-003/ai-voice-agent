@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import threading
 import uuid
 import weakref
@@ -343,6 +344,13 @@ async def insert_appointment(
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Upsert contact so the FK on appointments.phone_number is satisfied.
+            # Serialize the existing single-calendar slot across worker jobs;
+            # checking before this transaction alone has a concurrent-call race.
+            await conn.execute('SELECT pg_advisory_xact_lock(hashtext($1))', f'appointment-slot:{date}:{time}')
+            occupied = await conn.fetchval('''SELECT id FROM appointments
+                WHERE date=$1 AND time=$2 AND status='BOOKED'::"AppointmentStatus" LIMIT 1''', date, time)
+            if occupied:
+                raise ValueError('Appointment slot is no longer available.')
             # The agent typically calls book_appointment mid-call, BEFORE log_call's
             # contact upsert runs at shutdown.
             await conn.execute(
@@ -676,6 +684,13 @@ async def create_call_row(
     surface live calls without waiting for shutdown.
     """
     pool = await get_pool()
+    if phone_number == 'demo' and livekit_room_name:
+        # Browser allocation may already own this unique room before the
+        # legacy pipeline starts. Reuse its ledger instead of inserting twice.
+        existing = await pool.fetchval('SELECT id FROM calls WHERE "livekitRoomName"=$1 AND "fromNumber"=\'demo-user\'',livekit_room_name)
+        if existing:
+            await pool.execute('UPDATE calls SET status=\'IN_PROGRESS\'::"CallStatus", "answeredAt"=COALESCE("answeredAt",now()) WHERE id=$1',existing)
+            return existing
     call_id = str(uuid.uuid4())
     org_id = os.environ.get("DEFAULT_ORG_ID", "default-org")
     from_num = from_number or os.environ.get("OUTBOUND_CALLER_ID", "") or ""
@@ -918,6 +933,14 @@ async def fail_unconnected_call(
         room, ended_reason, reason[:300], datetime.now(UTC).replace(tzinfo=None),
     )
     return row is not None
+
+
+async def save_call_intelligence(call_id: str, report: dict) -> None:
+    """Merge bounded call evidence without replacing dispatch/provider metadata."""
+    import json
+    pool = await get_pool()
+    await pool.execute('''UPDATE calls SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
+        "updatedAt" = now() WHERE id = $1''', call_id, json.dumps({'callIntelligence': report}))
 
 
 async def update_call_notes(call_id: str, notes: str) -> bool:
@@ -1612,6 +1635,24 @@ async def get_human_transfer_targets(assistant_id: str) -> dict[str, dict]:
             "phone": r["phone_e164"].strip(),
             "priority": int(r["priority"] or 100),
         }
+    extra_meta = await pool.fetchval('SELECT metadata FROM assistants WHERE id=$1', assistant_id)
+    import json
+    if isinstance(extra_meta, str):
+        extra_meta = json.loads(extra_meta)
+    if not isinstance(extra_meta, dict):
+        extra_meta = {}
+    for person in (extra_meta or {}).get('humanTransferPeople', []):
+        ident, role = person.get('id', ''), person.get('category', 'other')
+        if not re.fullmatch(r'person_[a-f0-9-]{36}', ident) or role not in HUMAN_TRANSFER_CATEGORIES:
+            continue
+        phone = person.get('phoneE164') or ''
+        if not person.get('enabled') or not re.fullmatch(r'\+[1-9]\d{7,14}', phone):
+            continue
+        target = {'category': ident, 'intent': role, 'label': str(person.get('label') or role)[:100],
+                  'phone': phone, 'priority': int(person.get('priority', 100))}
+        out[ident] = target
+        if role not in out or target['priority'] < out[role]['priority']:
+            out[role] = target
     return out
 
 

@@ -25,6 +25,7 @@ export default function MessageField({
   defaultValue = "",
   placeholder,
   rows = 4,
+  inline = false,
 }: {
   name: string;
   label: string;
@@ -32,6 +33,7 @@ export default function MessageField({
   defaultValue?: string;
   placeholder?: string;
   rows?: number;
+  inline?: boolean;
 }) {
   const [value, setValue] = useState(defaultValue);
   const [open, setOpen] = useState(false);
@@ -55,7 +57,8 @@ export default function MessageField({
       </span>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => setOpen(previous=>!previous)}
+        aria-expanded={open}
         aria-label={`Edit ${label}`}
         className="group flex min-w-0 flex-1 items-center justify-end gap-1.5 text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 rounded"
       >
@@ -76,19 +79,19 @@ export default function MessageField({
           stays in the form payload either way. */}
       <div
         className={
-          open
+          open && !inline
             ? "fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm"
-            : "hidden"
+            : open ? "w-full" : "hidden"
         }
-        role={open ? "dialog" : undefined}
-        aria-modal={open ? true : undefined}
-        aria-label={open ? label : undefined}
+        role={open && !inline ? "dialog" : undefined}
+        aria-modal={open && !inline ? true : undefined}
+        aria-label={open && !inline ? label : undefined}
         onMouseDown={(e) => {
           if (open && e.target === e.currentTarget) setOpen(false);
         }}
       >
-        <div className="my-16 w-full max-w-xl space-y-3 rounded-2xl border border-white/10 bg-[#0d0f1a] p-5 shadow-2xl">
-          <div className="flex items-center justify-between gap-3">
+        <div className={inline?"w-full space-y-2 pt-2":"my-16 w-full max-w-xl space-y-3 rounded-2xl border border-white/10 bg-[#0d0f1a] p-5 shadow-2xl"}>
+          <div hidden={inline} className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
               {label}
             </h2>
@@ -101,10 +104,11 @@ export default function MessageField({
               <X size={16} />
             </button>
           </div>
-          {tooltip && <p className="text-[11px] leading-snug text-gray-500">{tooltip}</p>}
+          {!inline && tooltip && <p className="text-[11px] leading-snug text-gray-500">{tooltip}</p>}
           <textarea
             ref={areaRef}
             name={name}
+            aria-label={label}
             rows={rows}
             value={value}
             onChange={(e) => setValue(e.target.value)}

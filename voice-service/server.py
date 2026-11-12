@@ -120,6 +120,11 @@ async def _startup_db() -> None:
     # Start the Live Logs drain on the FastAPI loop so server-side structlog
     # events reach the error_logs table / dashboard SSE stream.
     start_log_drain()
+    try:
+        from provider_rates import ensure_gemini_live_rates
+        await ensure_gemini_live_rates()
+    except Exception as exc:
+        logger.warning('gemini_rate_unavailable',error_type=type(exc).__name__,source='API')
     if os.getenv('GPT_LIVE_PHONE_ENABLED', 'false').strip().lower() == 'true':
         try:
             from provider_rates import ensure_gpt_live_rate
@@ -236,6 +241,54 @@ async def knowledge_upload(assistant_id: str, request: Request) -> dict:
     if not accepted and rejected:
         raise HTTPException(400, rejected[0]["error"] or "upload rejected")
     return {"ok": True, "accepted": accepted, "rejected": rejected}
+
+
+@app.get("/api/knowledge/{assistant_id}/recordings", dependencies=[Depends(require_token)])
+async def speech_reference_list(assistant_id: str):
+    import speech_references
+    return {'recordings':await speech_references.list_references(assistant_id)}
+
+
+@app.post("/api/knowledge/{assistant_id}/recordings", dependencies=[Depends(require_token)])
+async def speech_reference_upload(assistant_id: str, request: Request):
+    import speech_references
+    form = await request.form()
+    if form.get('analysisConsent') != 'yes':
+        raise HTTPException(400,'Confirm permission to send this recording to Gemini for style analysis.')
+    file = form.get('file')
+    if file is None or not hasattr(file,'read'):
+        raise HTTPException(400,'Choose an audio recording.')
+    data = await file.read(speech_references.MAX_BYTES+1)
+    try:
+        return await speech_references.upload(assistant_id,file.filename or '',data)
+    except ValueError as exc:
+        raise HTTPException(400,str(exc)) from None
+
+
+@app.patch("/api/knowledge/{assistant_id}/recordings/{ident}", dependencies=[Depends(require_token)])
+async def speech_reference_toggle(assistant_id: str, ident: str, request: Request):
+    import speech_references
+    body = await request.json()
+    rows = await speech_references.list_references(assistant_id)
+    row = next((r for r in rows if r['id']==ident),None)
+    if row is None:
+        raise HTTPException(404,'Recording not found.')
+    if not isinstance(body.get('enabled'),bool) or (body['enabled'] and row.get('status')!='READY'):
+        raise HTTPException(400,'Only a ready style profile can be enabled.')
+    if body['enabled'] and not row.get('enabled') and sum(bool(r.get('enabled')) for r in rows)>=6:
+        raise HTTPException(400,'Disable one reference before enabling more than six styles.')
+    try:
+        await speech_references.change(assistant_id,ident,{'enabled':body['enabled']})
+    except ValueError as exc:
+        raise HTTPException(400,str(exc)) from None
+    return {'ok':True}
+
+
+@app.delete("/api/knowledge/{assistant_id}/recordings/{ident}", dependencies=[Depends(require_token)])
+async def speech_reference_delete(assistant_id: str, ident: str):
+    import speech_references
+    await speech_references.change(assistant_id,ident,None)
+    return {'ok':True}
 
 
 @app.post("/api/knowledge/{assistant_id}/sources/{source_id}/sync",
@@ -585,7 +638,7 @@ async def _dispatch_browser_demo(lk, room_name: str, metadata: dict, experimenta
 
 
 @app.post("/api/demo/token", dependencies=[Depends(require_token)])
-async def demo_token() -> dict:
+async def demo_token(request: Request = None) -> dict:
     """Mint a LiveKit JWT for browser-based demo + dispatch a demo agent into the room."""
     from livekit.api import AccessToken, VideoGrants
     logger.info("demo_token_requested", source="API")
@@ -597,24 +650,46 @@ async def demo_token() -> dict:
         experimental = configured_test()
     except ExperimentRejected as exc:
         raise HTTPException(503, str(exc)) from None
+    # Node/Next may stream JSON using chunked encoding without Content-Length.
+    # Ignoring that body silently dispatches the configured default assistant.
+    body = {}
+    if request is not None:
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400, 'A JSON assistant selection is required.') from None
+        if not isinstance(body, dict):
+            raise HTTPException(400, 'Assistant selection must be a JSON object.')
     profile = None
+    explicit_selection = bool(body.get('assistant_id'))
+    if explicit_selection:
+        profile = await db.get_assistant_as_profile(str(body['assistant_id']))
+        if not profile or not body.get('organization_id') or profile.get('organization_id') != body['organization_id']:
+            raise HTTPException(404, 'Assistant not found.')
+        if experimental is None:
+            raise HTTPException(503, 'Browser test mode is not configured. No call was started.')
+        experimental = TestSelection(experimental.room, profile['id'], experimental.direction)
     selected_assistant = experimental.assistant_id if experimental else None
+    selected_direction = experimental.direction if experimental else 'INBOUND'
     if experimental:
-        profile = await db.get_assistant_as_profile(experimental.assistant_id)
+        profile = profile or await db.get_assistant_as_profile(experimental.assistant_id)
         if not profile or profile.get('id') != experimental.assistant_id:
             raise HTTPException(503, 'Selected demo assistant is unavailable.')
         from native_voice import runtime_settings
         selected_native = runtime_settings(profile)
-        if selected_native is not None and selected_native.engine == 'pipeline':
+        if selected_native is None or selected_native.engine == 'pipeline':
             experimental = None
     if experimental:
         import secrets
         child = TestSelection(experimental.room + '-' + secrets.token_hex(8), experimental.assistant_id, experimental.direction)
         room_name, metadata = child.room, test_metadata(child, room_base=experimental.room)
+        if explicit_selection:
+            metadata.update(browser_assistant_selection=True, organization_id=body['organization_id'])
     else:
         room_name, metadata = f"demo-{random.randint(10000, 99999)}", {"phone_number": "demo", "is_demo": True}
         if selected_assistant:
             metadata['agent_profile_id'] = selected_assistant
+            metadata['test_direction'] = selected_direction
     if experimental:
         # No OpenAI connection is opened here. Fail before dispatch if the
         # selected assistant/credential is missing; normal demos are unchanged.
@@ -641,11 +716,21 @@ async def demo_token() -> dict:
     logger.info("demo_token_created", room=room_name, source="API")
     lk = _lk_client()
     try:
+        if profile:
+            from voice_usage import start_demo_call
+            await start_demo_call(profile, room_name)
         await _dispatch_browser_demo(lk, room_name, metadata, experimental is not None)
         logger.info("agent_dispatch_created", room=room_name, agent="voice-agent", source="LIVEKIT")
+    except Exception:
+        if profile:
+            from voice_usage import finish_demo_call
+            await finish_demo_call(room_name, 'FAILED')
+        raise
     finally:
         await lk.aclose()
-    return {"token": token, "room": room_name, "url": livekit_url}
+    from voice_usage import demo_call_id
+    return {"token": token, "room": room_name, "url": livekit_url, "call_id":demo_call_id(room_name) if profile else None,
+            "assistant_id": profile.get('id') if profile else selected_assistant}
 
 
 @app.get('/api/demo/config', dependencies=[Depends(require_token)])
@@ -661,7 +746,7 @@ async def demo_config() -> dict:
         raise HTTPException(503, 'Selected demo assistant is unavailable.')
     native = runtime_settings(profile)
     engine = native.engine if native else 'gpt-live'
-    return dict(engine=engine, assistant_name=profile.get('name'),
+    return dict(engine=engine, assistant_id=profile.get('id'), assistant_name=profile.get('name'),
                 model=native.model if engine == 'gemini-live' else ('gpt-live-1' if engine == 'gpt-live' else None),
                 voice=native.voice if engine == 'gemini-live' else None, sandbox=engine != 'pipeline')
 
@@ -1258,6 +1343,33 @@ async def campaign_status() -> dict:
 
 
 # ── Self-hosted call recordings ───────────────────────────────────────────────
+@app.post('/api/assistant-voice-previews', dependencies=[Depends(require_token)])
+async def assistant_voice_previews(request: Request):
+    from voice_previews import preview_audio
+    body = await request.json()
+    assistants = body.get('assistants', [])
+    if not isinstance(assistants, list) or len(assistants) > 100:
+        raise HTTPException(400, 'Invalid assistant list')
+    async def available(item):
+        try:
+            audio = await asyncio.to_thread(preview_audio, str(item['id']), str(item['model']), str(item['voice']))
+            return item['id'], bool(audio)
+        except (KeyError, ValueError, OSError):
+            return item.get('id', ''), False
+    return dict(await asyncio.gather(*(available(item) for item in assistants)))
+
+
+@app.get('/api/assistant-voice-previews/{assistant_id}', dependencies=[Depends(require_token)])
+async def assistant_voice_preview(assistant_id: str, model: str, voice: str):
+    from voice_previews import preview_audio
+    try:
+        audio = await asyncio.to_thread(preview_audio, assistant_id, model, voice)
+    except (ValueError, OSError):
+        audio = None
+    if not audio:
+        raise HTTPException(404, 'No preview for this saved model and voice')
+    return Response(audio, media_type='audio/wav', headers={'Cache-Control':'private, no-store'})
+
 # The worker and this API run in the SAME container (supervisord), so recordings
 # written to RECORDINGS_DIR are readable here. The dashboard lives in a separate
 # container and therefore PROXIES these endpoints — the files are never exposed

@@ -79,24 +79,33 @@ function metaStr(e: Evt): string {
 }
 
 export default function CallLogsView({
-  room, hasUser, hasAI, connected,
-}: { room: string | null; hasUser: boolean; hasAI: boolean; connected: boolean }) {
+  room, hasUser, hasAI, connected,nativeAudio=false,
+}: { room: string | null; hasUser: boolean; hasAI: boolean; connected: boolean;nativeAudio?:boolean }) {
   const [rows, setRows] = useState<RawLog[] | null>(null);
   const [err, setErr] = useState("");
+  const [readAt,setReadAt]=useState(0);
+  const [requestedRoom,setRequestedRoom]=useState(room);
+  if(requestedRoom!==room){setRequestedRoom(room);setRows(null);setErr('');}
 
   useEffect(() => {
-    if (!room) { setRows([]); return; }
-    let off = false;
-    setRows(null); setErr("");
-    fetch(`/api/voice/events?room=${encodeURIComponent(room)}`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((j: { events?: RawLog[] }) => { if (!off) setRows(j.events ?? []); })
-      .catch((e) => { if (!off) { setErr(String(e)); setRows([]); } });
-    return () => { off = true; };
+    if (!room) return;
+    const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
+    async function load(){
+      try{
+        const response=await fetch(`/api/voice/events?room=${encodeURIComponent(room||'')}`,{cache:'no-store',signal:controller.signal});
+        if(!response.ok)throw new Error('Could not load this call’s logs. Refresh to retry.');
+        const data=await response.json();
+        if(controller.signal.aborted)return;
+        setRows(data.events??[]);setReadAt(Date.now());setErr('');
+        if(['QUEUED','RINGING','IN_PROGRESS'].includes(data.callStatus))timer=setTimeout(load,3000);
+      }catch(error){if(!controller.signal.aborted){setErr(error instanceof Error?error.message:'Could not load logs.');setRows([]);}}
+    }
+    void load();
+    return()=>{controller.abort();clearTimeout(timer);};
   }, [room]);
 
   const evts = useMemo(() => parseRawLogs(rows ?? [], room), [rows, room]);
-  const d = useMemo(() => derive(evts, Date.now()), [evts]);
+  const d = useMemo(() => derive(evts, readAt), [evts,readAt]);
   const reached = useMemo(() => reachedFromEvents(evts), [evts]);
   const txEv = useMemo(() => ({ hasUser, hasAI, connected }), [hasUser, hasAI, connected]);
 
@@ -143,7 +152,7 @@ export default function CallLogsView({
     }).slice(-6);
   }, [evts, d.breakTs, fallbackBreak]);
 
-  if (rows === null) {
+  if (rows === null && room) {
     return <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-sm text-gray-400">
       <Loader2 size={13} className="mr-2 inline animate-spin" />Loading this call&apos;s events…
     </div>;
@@ -155,6 +164,26 @@ export default function CallLogsView({
   }
 
   const fail = d.fail;
+
+  if(nativeAudio){
+    const failures=evts.filter(e=>['ERROR','CRITICAL'].includes((e.level||'').toUpperCase())||/error|failed|rejected|timeout/i.test(e.name));
+    return <div className="space-y-4">
+      <section className="rounded-xl border border-white/10 p-4"><h2 className="text-sm font-semibold">Realtime audio flow</h2>
+        <p className="mt-2 text-sm text-gray-400">Caller audio → LiveKit → Realtime voice model &amp; business tools → LiveKit → Caller</p>
+        <p className="mt-2 text-xs text-gray-400">{evts.length} recorded events · {failures.length} error events. Separate STT and TTS stages do not apply to this native-audio call.</p></section>
+      {err&&<p role="alert" className="text-sm text-red-300">{err}</p>}
+      <section><h2 className="mb-2 text-sm font-semibold">Errors for this call</h2>
+        {!failures.length?<p className="text-xs text-gray-400">{evts.length?'No error events in the available logs.':'No recorded events available; call health cannot be assessed.'}</p>:
+          <ul className="space-y-2">{failures.map(e=><li key={e.id} className="rounded-lg border border-red-500/30 p-3 text-xs"><strong>{e.name}</strong><p className="mt-1 break-words text-gray-400">{clock(e.ts)} · {metaStr(e)}</p></li>)}</ul>}
+      </section>
+      <section><h2 className="mb-2 text-sm font-semibold">Full event timeline</h2>
+        <div className="max-h-[50svh] space-y-1 overflow-y-auto rounded-xl border border-white/10 p-3">
+          {!evts.length&&<p className="text-xs text-gray-400">No events stored for this room.</p>}
+          {[...evts].reverse().map(e=><details key={e.id} className="rounded-lg border border-white/5 p-2 text-xs"><summary className="cursor-pointer break-words"><span className="mr-2 font-mono text-gray-500">{clock(e.ts)}</span>{e.name}<span className="ml-2 text-gray-500">{e.source}</span></summary><pre className="mt-2 whitespace-pre-wrap break-words text-gray-400">{JSON.stringify(e.meta,null,2)}</pre></details>)}
+        </div>
+      </section>
+    </div>;
+  }
 
   return (
     <div className="space-y-5">

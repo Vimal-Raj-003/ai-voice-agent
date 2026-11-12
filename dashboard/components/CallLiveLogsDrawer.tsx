@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
+import Money from "./Money";
 import {
   X,
   PhoneCall,
@@ -9,13 +10,10 @@ import {
   PhoneOutgoing,
   Clock,
   RotateCw,
-  ChevronRight,
   CalendarCheck,
-  AlertTriangle,
   Loader2,
   ExternalLink,
 } from "lucide-react";
-import { Badge } from "@/components/Badge";
 
 export type CallItem = {
   id: string;
@@ -35,6 +33,9 @@ export type CallItem = {
   createdAt: string | null;
   endedAt: string | null;
   durationSeconds: number | null;
+  channel?:string;
+  costUsd?:number;
+  costStatus?:string;
 };
 
 function fmtDuration(secs: number | null | undefined): string {
@@ -67,7 +68,7 @@ export default function CallLiveLogsDrawer({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [statusTab, setStatusTab] = useState<"ALL" | "ACTIVE" | "BOOKED" | "COMPLETED" | "FAILED">("ALL");
+  const [statusTab, setStatusTab] = useState<"ALL" | "DEMO" | "ACTIVE" | "BOOKED" | "COMPLETED" | "FAILED">("ALL");
 
   const loadCalls = async () => {
     setLoading(true);
@@ -93,8 +94,9 @@ export default function CallLiveLogsDrawer({
   const filteredCalls = useMemo(() => {
     const q = search.trim().toLowerCase();
     return calls.filter((c) => {
+      if(statusTab==='DEMO'&&c.channel!=='Demo')return false;
       if (statusTab === "ACTIVE") {
-        if (c.status !== "IN_PROGRESS" && c.status !== "RINGING") return false;
+        if (!["IN_PROGRESS","RINGING","QUEUED"].includes(c.status)) return false;
       } else if (statusTab === "BOOKED") {
         if (c.outcome !== "BOOKED" && !c.status.includes("BOOKED")) return false;
       } else if (statusTab === "COMPLETED") {
@@ -189,6 +191,7 @@ export default function CallLiveLogsDrawer({
             {(
               [
                 { key: "ALL", label: "All" },
+                { key: "DEMO", label: "Demo" },
                 { key: "ACTIVE", label: "Active" },
                 { key: "BOOKED", label: "Booked" },
                 { key: "COMPLETED", label: "Completed" },
@@ -268,6 +271,9 @@ export default function CallLiveLogsDrawer({
                         </div>
                         <div className="text-[11px] text-gray-400 truncate">
                           {call.assistant || "Voice Agent"}
+                          {call.channel==='Demo'&&<span className="ml-2 text-violet-300">Demo</span>}
+                          {(call.costStatus==='estimated'||(call.costStatus==='incomplete'&&(call.costUsd||0)>0))&&<span className="ml-2"><Money usd={call.costUsd||0} decimals={4}/>{call.costStatus==='incomplete'?' + unmetered':''}</span>}
+                          {call.costStatus==='incomplete'&&<span className="ml-2">Cost incomplete</span>}
                         </div>
                       </div>
                     </div>

@@ -1,0 +1,58 @@
+JillJill demo selection, history and compact editor | 2026-11-10
+
+Operator workflow
+- Open /demo, select an active assistant and press Start call yourself.
+  Selection is disabled while connecting or connected. Existing cancellation,
+  reconnect and microphone cleanup remain. No session starts on page load.
+- Demo call history lists each session, assistant, duration, status and priced
+  cost estimate. Expand Cost breakdown for audio/text input/output meters.
+  Unavailable usage/rates remain marked incomplete; these are not invoices.
+- View logs opens /calls/<id>/logs. Native calls show realtime flow, recorded
+  errors and the room's event timeline, without pretending separate STT/TTS ran.
+- Contacts > Calls > Demo filters browser tests. Live Logs > Call live logs >
+  Demo selects a test's historical and live room events. Regular inbound and
+  outbound tabs exclude demos. Call details also link to the same logs page.
+- Assistant settings use the available desktop viewport (including 1280x720)
+  without page scrolling. Knowledge files and long editors scroll within their
+  own bounded panels; smaller mobile screens stack. Detailed Knowledge counts
+  are in the existing tooltip; Upload / Files labels keep full accessible names.
+
+Implementation boundaries
+- Dashboard checks an active assistant belongs to the signed-in organization;
+  the protected API validates ownership again. Trusted dispatch metadata carries
+  the selection; worker checks the profile organization before provider audio.
+- Existing browser-only gate, unique test rooms, microphone-before-paid-audio
+  check and sandbox tools stay in use. PSTN routing and saved phone voices,
+  prompts and knowledge are unchanged. Pipeline browser demos are read-only.
+- The API creates only a demo Call ledger row before dispatch. The room and
+  deterministic call ID link failures to the same call. Worker errors mark it
+  failed; later usage/completion cannot overwrite failure or create duplicates.
+- Gemini final usage merges existing metadata and records actual modality
+  counters. No contacts, appointments, emails, SMS or real transfers are created.
+  Providers/older calls without complete meters show incomplete cost explicitly.
+  Browser demo estimates exclude carrier-minute charges even if legacy defaults
+  left a telephony provider on the row. Real phone-call carrier pricing is retained.
+  Pipeline browser workers reuse the preallocated room ledger instead of inserting
+  a second row; this reuse never runs for a real phone number.
+- Existing async log bridge persists a small safe set of demo event metadata;
+  recorded transcripts, tool arguments and prompt content are not newly mirrored.
+- Four existing demo rows were linked by exact deterministic room/call ID to
+  their local journals; 231 timestamped events were imported idempotently.
+  Historical usage and monetary values were preserved; none were reconstructed.
+
+Validation
+- 72 existing/focused Python checks passed; the final six-test demo module also
+  passes selection, ownership and pipeline/phone compatibility checks. Fourteen
+  TypeScript regressions pass, including the red/green demo carrier-charge check.
+- A real database transaction verified startup, failed-state preservation,
+  idempotent usage and metadata preservation; all synthetic writes rolled back.
+- Playwright verified six assistant options, selected ID in an intercepted
+  Start request, seven actual demo rows in history/Calls/Live Logs, per-call
+  cost breakdown and native event timeline. No real audio session was started.
+- Desktop editor document height equals viewport at 1808x862, 1440x900 and
+  1280x720 in both themes. Mobile demo has no horizontal document overflow.
+- Zero rooms/calls/campaigns preceded service restarts. WSL worker build
+  2026-11-10-demo-observability-v32b registered AW_Rbk94EKqwDNY in India South;
+  API /health returned 200. Existing WSL runtime/environment reused.
+- These checks do not prove spoken response quality or handset latency. The
+  next user-started demo/phone call is the speech-quality acceptance test.

@@ -295,6 +295,7 @@ def build_prompt(
     call_direction: str | None = None,
     hallucination_guard: bool = True,
     native_audio: bool = False,
+    speech_style: object = None,
 ) -> str:
     """Assemble the prompt for one call.
 
@@ -364,4 +365,6 @@ def build_prompt(
                     template, lead_name=lead_name, business_name=business_name,
                     service_type=service_type)[0]),
         )
+    from speech_references import style_directive
+    body += style_directive(speech_style)
     return body

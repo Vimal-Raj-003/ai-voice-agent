@@ -22,6 +22,7 @@ class PhoneRuntime:
                  vad, carrier_pattern):
         import knowledge
         self.ctx, self.profile, self.state, self.owner, self.log = ctx, profile, state, owner, log
+        state.intelligence.configure(profile)
         self.carrier_pattern = carrier_pattern
         key = keys.get('openai') or os.getenv('OPENAI_API_KEY', '').strip()
         if not key:
@@ -49,15 +50,20 @@ class PhoneRuntime:
             async def on_enter(self):
                 runtime.bridge.duplex = self.duplex_session
                 self.duplex_session.on('delegation_created', runtime.bridge.submit)
-                self.duplex_session.on('input_speech_started', lambda ev: runtime.emit(
-                    'caller_speech_onset', turn_id=state.user_turn_id + 1, sdk_event=str(ev),
-                    boundary='native SDK estimate, not handset'))
-                self.duplex_session.on('input_speech_stopped', lambda ev: runtime.emit(
-                    'caller_speech_end', turn_id=state.user_turn_id, sdk_event=str(ev),
-                    boundary='native SDK estimate, not handset'))
+                def speech_started(ev):
+                    state.intelligence.speech_start()
+                    runtime.emit('caller_speech_onset', turn_id=state.user_turn_id + 1,
+                                 boundary='native SDK estimate, not handset')
+                def speech_stopped(ev):
+                    state.intelligence.speech_end()
+                    runtime.emit('caller_speech_end', turn_id=state.user_turn_id,
+                                 boundary='native SDK estimate, not handset')
+                self.duplex_session.on('input_speech_started', speech_started)
+                self.duplex_session.on('input_speech_stopped', speech_stopped)
 
             async def realtime_audio_output_node(self, audio, model_settings):
                 async for frame in audio:
+                    state.intelligence.recovered()
                     # Same recorder installed by _maybe_start_recording after answer.
                     recorder = getattr(owner, '_recorder', None)
                     if recorder is not None:
@@ -72,7 +78,8 @@ class PhoneRuntime:
         self.agent = PhoneAgent(instructions=phone_instructions(system_prompt, profile['prompt_direction']), tools=[])
         self.voice = GPTLiveModel(model='gpt-live-1', voice=self.voice_name, delegation='client', api_key=key,
             base_url='https://api.openai.com/v1', max_session_duration=int(profile.get('max_duration_seconds') or 1800),
-            conn_options=APIConnectOptions(max_retry=0, timeout=10))
+            conn_options=APIConnectOptions(max_retry=2 if state.intelligence.policy.recovery else 0,
+                                           retry_interval=1, timeout=10))
         # Use the process's existing VAD; do not create a second endpointing implementation.
         self.session = AgentSession(llm=self.voice, tools=[], vad=vad,
                                    user_away_timeout=float(profile.get('silence_timeout_seconds') or 30))
@@ -129,6 +136,9 @@ class PhoneRuntime:
 
     def error(self, ev):
         self.emit('gpt_live_phone_error', error_type=type(ev.error).__name__)
+        if self.state.intelligence.recover(ev.error):
+            self.emit('native_recovery_waiting', attempt=self.state.intelligence.counters['recovery_attempts'])
+            return
         self.owner._closed_outcome = 'FAILED'
         self.owner._closed_reason = 'native voice provider failure'
         # Do not silently switch voice architecture or reopen a paid connection.
@@ -140,6 +150,7 @@ class PhoneRuntime:
             raise RuntimeError('GPT-Live room audio output is missing')
         @output.on('playback_started')
         def started(ev):
+            self.state.intelligence.playback(self.state.user_turn_id)
             self.playback_trace = dict(turn_id=self.state.user_turn_id,
                 speech_id=getattr(self.session.current_speech, 'id', None))
             self.emit('room_playback_started', **self.playback_trace, sdk_event=str(ev),
@@ -150,6 +161,7 @@ class PhoneRuntime:
                       playback_position=ev.playback_position, interrupted=ev.interrupted,
                       handset_timing_verified=False)
             if ev.interrupted:
+                self.state.intelligence.counters['interruptions'] += 1
                 self.owner.interrupt_count = getattr(self.owner, 'interrupt_count', 0) + 1
 
     async def close(self, reason=None):

@@ -15,7 +15,7 @@ import OutcomeDonut from "@/components/charts/OutcomeDonut";
 import BookingGauge from "@/components/charts/BookingGauge";
 import TokensTimeline from "@/components/charts/TokensTimeline";
 import CostStackedBar from "@/components/charts/CostStackedBar";
-import { aggregateCalls, buildRateMap, computeCallCost } from "@/lib/cost";
+import { aggregateCalls, buildRateMap, computeCallCost, channelSpending } from "@/lib/cost";
 import { getUsdInrRate } from "@/lib/currency";
 import OverviewCosts from "@/components/OverviewCosts";
 import RangeSelector from "@/components/RangeSelector";
@@ -35,6 +35,7 @@ export default async function Overview({
   const rangeKey = currentConfig.value;
   const { id: orgId } = await getDefaultOrg();
   const dateFilter = currentConfig.since ? { createdAt: { gte: currentConfig.since } } : {};
+  const phoneOnly = {NOT:{fromNumber:"demo-user",toNumber:"browser-demo"}};
 
   const [
     callCount,
@@ -47,14 +48,14 @@ export default async function Overview({
     costCalls,
     fx,
   ] = await Promise.all([
-    prisma.call.count({ where: { organizationId: orgId } }),
-    prisma.call.count({ where: { organizationId: orgId, wasBooked: true } }),
+    prisma.call.count({ where: { organizationId: orgId, ...phoneOnly } }),
+    prisma.call.count({ where: { organizationId: orgId, wasBooked: true, ...phoneOnly } }),
     prisma.assistant.count({ where: { organizationId: orgId } }),
     prisma.campaign.count({
       where: { organizationId: orgId, status: "RUNNING" },
     }),
     prisma.call.findMany({
-      where: { organizationId: orgId, ...dateFilter },
+      where: { organizationId: orgId, ...dateFilter, ...phoneOnly },
       select: {
         createdAt: true,
         outcome: true,
@@ -93,6 +94,7 @@ export default async function Overview({
         ttsProviderUsed: true,
         ttsSkuUsed: true,
         telephonyProvider: true,
+        metadata: true,
       },
     }),
     getUsdInrRate(),
@@ -106,7 +108,7 @@ export default async function Overview({
 
   if (currentConfig.is24h) {
     for (let i = 23; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 3600 * 1000);
+      const d = new Date(today.getTime() - i * 3600 * 1000);
       const key = `${d.toISOString().slice(0, 13)}:00`.replace("T", " ");
       timeline.push({ date: key, calls: 0, booked: 0 });
       tokenTimeline.push({ date: key, input: 0, output: 0 });
@@ -204,7 +206,7 @@ export default async function Overview({
     null,
   );
   const ratesAgeMinutes = lastVerified
-    ? Math.floor((Date.now() - new Date(lastVerified).getTime()) / 60000)
+    ? Math.floor((today.getTime() - new Date(lastVerified).getTime()) / 60000)
     : null;
 
   // Outcome distribution for the donut.
@@ -253,6 +255,7 @@ export default async function Overview({
         activeProviders: spendingProviders.map((p) => p.provider),
         calls: costCallRows,
       }}
+      channelSpend={channelSpending(costCalls,rateMap)}
       ratesPanel={
         <div className="space-y-4">
       {/* Provider rate table + freshness banner, as on the old Costs page.

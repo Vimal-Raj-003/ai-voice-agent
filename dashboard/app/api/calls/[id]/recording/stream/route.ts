@@ -92,30 +92,3 @@ async function streamVobiz(callId: string, range: string | null): Promise<Respon
   h.set("Cache-Control", "no-store");
   return new Response(upstream.body, { status: upstream.status, headers: h });
 }
-
-/**
- * Parse a single-range `bytes=` header. Returns start=null when unsatisfiable.
- * Exported shape kept simple on purpose: multipart ranges are not something an
- * <audio> element asks for.
- */
-export function parseRange(
-  header: string,
-  size: number,
-): { start: number | null; end: number } {
-  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-  if (!m || size <= 0) return { start: null, end: 0 };
-  const [, rawStart, rawEnd] = m;
-  if (rawStart === "" && rawEnd === "") return { start: null, end: 0 };
-
-  // Suffix form: "bytes=-500" means the last 500 bytes.
-  if (rawStart === "") {
-    const n = Number(rawEnd);
-    if (!Number.isFinite(n) || n <= 0) return { start: null, end: 0 };
-    return { start: Math.max(0, size - n), end: size - 1 };
-  }
-  const start = Number(rawStart);
-  if (!Number.isFinite(start) || start >= size) return { start: null, end: 0 };
-  const end = rawEnd === "" ? size - 1 : Math.min(Number(rawEnd), size - 1);
-  if (!Number.isFinite(end) || end < start) return { start: null, end: 0 };
-  return { start, end };
-}

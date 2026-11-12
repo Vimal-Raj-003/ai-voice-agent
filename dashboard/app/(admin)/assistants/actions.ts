@@ -6,9 +6,11 @@ import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/require-role";
 import { coerceModelForProvider } from "@/lib/llm-models";
 import { coerceVoiceForProvider } from "@/lib/tts-voices";
-import { TRANSFER_CATEGORIES, isE164 } from "@/lib/human-transfer";
+import { TRANSFER_CATEGORIES, isE164, withTransferPeople } from "@/lib/human-transfer";
 import { assistantPrompts, preservePromptLineEndings, withOutboundPrompt } from "@/lib/assistant-prompts";
 import { withVoiceSettings } from "@/lib/native-voice";
+import { withIntelligenceSettings } from "@/lib/call-intelligence";
+import { withBusinessName } from "@/lib/assistant-identity";
 import type { LlmProvider, SpeechSensitivity, SttProvider, TtsProvider } from "@prisma/client";
 
 function _bool(v: FormDataEntryValue | null): boolean {
@@ -211,6 +213,8 @@ export async function saveAssistant(
       const existing = await prisma.assistant.findUniqueOrThrow({ where: { id }, select: { metadata: true, systemPrompt: true } });
       data.systemPrompt = preservePromptLineEndings(existing.systemPrompt || "", data.systemPrompt);
       let metadata = existing.metadata as unknown;
+      metadata = withTransferPeople(metadata, formData);
+      if (formData.has('businessName')) metadata = withBusinessName(metadata, formData);
       if (formData.has("outboundSystemPrompt")) {
         metadata = withOutboundPrompt(metadata, preservePromptLineEndings(
           assistantPrompts(existing.systemPrompt || "", existing.metadata).outbound,
@@ -224,21 +228,26 @@ export async function saveAssistant(
       }
       await prisma.assistant.update({ where: { id }, data: {
         ...data,
-        ...(formData.has("outboundSystemPrompt") || formData.has("voiceEngine")
-          ? {metadata: metadata as ReturnType<typeof withVoiceSettings>} : {}),
+        ...(formData.has("businessName") || formData.has("outboundSystemPrompt") || formData.has("voiceEngine") || formData.has("intelligenceControls") || formData.has("transferExtraIds")
+          ? {metadata: formData.has("intelligenceControls") ? withIntelligenceSettings(metadata, formData)
+            : metadata as ReturnType<typeof withVoiceSettings>} : {}),
       } });
       await syncAssistantTools(id, readToolIds(formData));
       await syncTransferTargets(id, transfer.rows);
     } else {
       const { id: orgId } = await getDefaultOrg();
+      let metadata = withVoiceSettings(withOutboundPrompt(null,
+        String(formData.get("outboundSystemPrompt") ?? data.systemPrompt)), {
+          engine: String(formData.get("voiceEngine") || "inherit"),
+          model: String(formData.get("realtimeModel") || "gemini-3.8-live"),
+          voice: String(formData.get("realtimeVoice") || "Zephyr"),
+        });
+      if (formData.has("intelligenceControls")) metadata = withIntelligenceSettings(metadata, formData);
+      metadata = withTransferPeople(metadata, formData) as typeof metadata;
+      metadata = withBusinessName(metadata, formData) as typeof metadata;
       const created = await prisma.assistant.create({
         data: { organizationId: orgId, ...data,
-          metadata: withVoiceSettings(withOutboundPrompt(null,
-            String(formData.get("outboundSystemPrompt") ?? data.systemPrompt)), {
-              engine: String(formData.get("voiceEngine") || "inherit"),
-              model: String(formData.get("realtimeModel") || "gemini-3.8-live"),
-              voice: String(formData.get("realtimeVoice") || "Zephyr"),
-            }),
+          metadata,
         },
       });
       await syncAssistantTools(created.id, readToolIds(formData));

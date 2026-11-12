@@ -6,7 +6,11 @@ import { test } from "node:test";
 import ts from "typescript";
 import * as jsxRuntime from "react/jsx-runtime";
 import * as cost from "../lib/cost";
-import { assistantPrompts, withOutboundPrompt } from "../lib/assistant-prompts";
+import { assistantPrompts, preservePromptLineEndings, withOutboundPrompt } from "../lib/assistant-prompts";
+import { withBusinessName } from "../lib/assistant-identity";
+import { withVoiceSettings } from "../lib/native-voice";
+import { withIntelligenceSettings } from "../lib/call-intelligence";
+import {withTransferPeople} from "../lib/human-transfer";
 import { overviewRange, overallDaysBack } from "../lib/overview-range";
 
 test("Overall has no lower date bound and includes the earliest calendar day", () => {
@@ -101,7 +105,9 @@ test("Save assistant stores both directions and preserves metadata", async () =>
   let written: Record<string, unknown> | undefined;
   const prisma = {
     assistant: {
-      findUniqueOrThrow: async () => ({ metadata: { keep: "existing-setting" } }),
+      findUniqueOrThrow: async () => ({ metadata: {
+        keep: "existing-setting", intelligence: { memory: false, recovery: true },
+      } }),
       update: async ({ data }: { data: Record<string, unknown> }) => { written = data; },
     },
     assistantTool: { findMany: async () => [] },
@@ -113,14 +119,18 @@ test("Save assistant stores both directions and preserves metadata", async () =>
     "@/lib/require-role": { requireRole: async () => ({}) },
     "@/lib/llm-models": { coerceModelForProvider: () => "synthetic-model" },
     "@/lib/tts-voices": { coerceVoiceForProvider: () => "synthetic-voice" },
-    "@/lib/human-transfer": { TRANSFER_CATEGORIES: [], isE164: () => true },
-    "@/lib/assistant-prompts": { withOutboundPrompt },
+    "@/lib/human-transfer": { TRANSFER_CATEGORIES: [], isE164: () => true, withTransferPeople },
+    "@/lib/assistant-prompts": { assistantPrompts, preservePromptLineEndings, withOutboundPrompt },
+    "@/lib/native-voice": { withVoiceSettings },
+    "@/lib/call-intelligence": { withIntelligenceSettings },
+    "@/lib/assistant-identity": { withBusinessName },
   };
   const exports: Record<string, (state: object, form: FormData) => Promise<unknown>> = {};
   vm.runInNewContext(compiled, { exports, console, Number, String, Set, Object,
     require: (name: string) => { if (!(name in dependencies)) throw new Error(name); return dependencies[name]; } });
   const form = new FormData();
   form.set("assistantId", "synthetic-assistant");
+  form.set("businessName", "Vasan Eye Care");
   form.set("systemPrompt", "Inbound instructions");
   form.set("outboundSystemPrompt", "Outbound instructions");
   form.set("endOfSpeechSensitivity", "HIGH");
@@ -129,22 +139,34 @@ test("Save assistant stores both directions and preserves metadata", async () =>
   form.set("silenceTimeoutSeconds", "44");
   form.set("maxDurationSeconds", "900");
   form.set("confidenceThresholdPct", "65");
+  form.set("backgroundDenoising", "false");
+  form.set("voicemailDetection", "true");
+  form.set("hallucinationGuard", "false");
+  form.set("recordingEnabled", "true");
   await exports.saveAssistant({}, form);
   assert.equal(written?.systemPrompt, "Inbound instructions");
+  assert.equal((written?.metadata as {businessName:string}).businessName, "Vasan Eye Care");
   assert.equal(written?.endOfSpeechSensitivity, "HIGH");
   assert.equal(written?.minPauseMs, 0);
   assert.equal(written?.interruptionThresholdMs, 230);
   assert.equal(written?.silenceTimeoutSeconds, 44);
   assert.equal(written?.maxDurationSeconds, 900);
   assert.equal(written?.confidenceThresholdPct, 65);
+  assert.equal(written?.backgroundDenoising, false);
+  assert.equal(written?.voicemailDetection, true);
+  assert.equal(written?.hallucinationGuard, false);
+  assert.equal(written?.recordingEnabled, true);
   assert.deepEqual(JSON.parse(JSON.stringify(written?.metadata)), {
-    keep: "existing-setting", directionPrompts: { outbound: "Outbound instructions" },
+    keep: "existing-setting", businessName: "Vasan Eye Care", directionPrompts: { outbound: "Outbound instructions" },
+    intelligence: { memory: false, recovery: true },
   });
   form.set("minPauseMs", "99999");
+  form.set("recordingEnabled", "false");
   form.set("interruptionThresholdMs", "");
   form.delete("maxDurationSeconds");
   await exports.saveAssistant({}, form);
   assert.equal(written?.minPauseMs, 3000);
   assert.equal(written?.interruptionThresholdMs, 150);
   assert.equal(written?.maxDurationSeconds, 1800);
+  assert.equal(written?.recordingEnabled, false);
 });

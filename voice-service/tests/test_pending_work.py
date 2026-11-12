@@ -273,6 +273,7 @@ async def test_concurrent_booking_waiters_make_one_database_write(monkeypatch):
     monkeypatch.setattr(tools, 'calcom_enabled', lambda: False)
     monkeypatch.setattr(tools.db, 'find_booked_appointment', AsyncMock(return_value=None))
     monkeypatch.setattr(tools.db, 'find_booked_slot', AsyncMock(return_value=None))
+    monkeypatch.setattr(tools.db, 'check_slot', AsyncMock(return_value=True))
     entered, finish = asyncio.Event(), asyncio.Event()
     async def save(*args, **kwargs):
         entered.set()
@@ -283,7 +284,7 @@ async def test_concurrent_booking_waiters_make_one_database_write(monkeypatch):
     owner = AppointmentTools(MagicMock(), '+910000000000')
     args = ('Synthetic', '2026-12-04', '11:00', 'demo')
     first = asyncio.create_task(owner.book_appointment(*args))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 2)
     second = asyncio.create_task(owner.book_appointment(*args))
     finish.set()
     assert await first == await second

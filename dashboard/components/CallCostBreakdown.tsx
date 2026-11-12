@@ -2,6 +2,7 @@
 // access to the live rate map.
 import { Coins, AlertTriangle } from "lucide-react";
 import type { CostBreakdown } from "@/lib/cost";
+import Money from "./Money";
 
 export default function CallCostBreakdown({
   breakdown,
@@ -21,15 +22,15 @@ export default function CallCostBreakdown({
           </h2>
         </div>
         <div className="text-base font-bold text-gradient">
-          ${breakdown.totalUsd.toFixed(4)}
+          <Money usd={breakdown.totalUsd} decimals={4}/>
         </div>
       </div>
       {breakdown.hasUnknownRates && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.08] p-2 mb-3 text-[11px] text-amber-200">
           <AlertTriangle size={12} className="shrink-0 mt-0.5" />
           <span>
-            Some usage columns have no matching rate row — total below excludes
-            those lines.
+            This is a calculated subtotal. Unclassified provider tokens and
+            unmetered services are excluded; it is not the final invoice total.
           </span>
         </div>
       )}
@@ -55,12 +56,10 @@ export default function CallCostBreakdown({
                     </span>
                   </td>
                   <td className="py-1.5 text-right font-mono tabular-nums text-gray-500">
-                    {/* This page never requests unavailable lines, so the rate
-                        is always present here; the guard is for the type. */}
-                    {l.rateUsd == null ? "—" : `$${l.rateUsd.toFixed(4)}`}
+                    {l.rateUsd == null ? "—" : <Money usd={l.rateUsd} decimals={4}/>}
                   </td>
                   <td className="py-1.5 text-right font-mono tabular-nums">
-                    ${l.costUsd.toFixed(6)}
+                    {l.unavailable?'Unavailable':<Money usd={l.costUsd} decimals={6}/>}
                   </td>
                 </tr>
               ))}
@@ -69,15 +68,9 @@ export default function CallCostBreakdown({
         </div>
       )}
       <p className="mt-3 text-[10px] text-gray-600 leading-relaxed">
-        Cost computed live from current ProviderRate × call usage.
-        <br />
-        <span className="text-amber-300/70">Estimator caveats:</span> token
-        counts are derived at ~4 chars / token from the surviving chat
-        context. For calls long enough to trigger context-window
-        compression, older messages may be dropped before this snapshot —
-        actual input tokens billed by the provider can be higher. STT
-        seconds = total call duration; TTS chars = assistant transcript
-        length only.
+        Calculated from recorded usage and {breakdown.rateBasis==='call_snapshot'?'the rates saved when this call finished':'current configured rates (no historical rate receipt)'}.
+        Missing usage or rates remain unavailable. Provider invoices, credits,
+        carrier and storage charges may differ.
       </p>
     </section>
   );

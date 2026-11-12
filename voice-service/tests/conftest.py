@@ -25,3 +25,5 @@ async def isolate_db(monkeypatch, request):
     if request.node.get_closest_marker("integration"):
         return
     monkeypatch.setattr(db, "_pool", None)
+    monkeypatch.setattr(db.asyncpg, 'create_pool', AsyncMock(side_effect=AssertionError(
+        'Offline test attempted a real database connection; mock its DB seam.')))

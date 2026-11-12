@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {getDefaultOrg} from '@/lib/org';
 
 // Persisted pipeline events for ONE call, by LiveKit room name. The worker's
 // structlog events are mirrored into error_logs (observability bridge); their
@@ -13,6 +14,9 @@ export async function GET(request: Request) {
 
   const room = new URL(request.url).searchParams.get("room")?.trim();
   if (!room) return Response.json({ events: [] });
+  const org=await getDefaultOrg();
+  const call=await prisma.call.findFirst({where:{organizationId:org.id,livekitRoomName:room},select:{status:true}});
+  if(!call)return Response.json({error:'Call not found'},{status:404});
 
   // error_logs.detail is a JSON string that includes the room name for pipeline
   // events. A substring match pulls exactly this call's events. Bounded + newest
@@ -25,6 +29,7 @@ export async function GET(request: Request) {
   });
 
   return Response.json({
+    callStatus:call.status,
     events: rows.reverse().map((r) => ({
       id: r.id,
       source: r.source,

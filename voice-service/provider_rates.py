@@ -47,6 +47,21 @@ async def ensure_gpt_live_rate() -> None:
         'Full-duplex session minute; existing audio-duration meter, not separate STT/TTS. '
         'https://developers.openai.com/api/docs/models/gpt-live-1')
 
+
+async def ensure_gemini_live_rates() -> None:
+    """Published modality rates; never replace operator-managed rows."""
+    import db
+    pool = await db.get_pool()
+    for model in ('gemini-3.8-live','gemini-3.1-flash-live-preview'):
+        for modality,kind,rate in [('text','LLM_INPUT_MTOK',.75),('text','LLM_OUTPUT_MTOK',4.5),
+                                   ('audio','LLM_INPUT_MTOK',3.),('audio','LLM_OUTPUT_MTOK',12.)]:
+            await pool.execute('''INSERT INTO provider_rates
+                (id,provider,sku,kind,"rateUsd",source,last_verified_at,notes,created_at,updated_at)
+                VALUES ($1,'google',$2,$3::"RateKind",$4,'DEFAULT',now(),$5,now(),now())
+                ON CONFLICT (provider,sku,kind) DO NOTHING''',f'google-{model}-{modality}-{kind}',
+                model+'/'+modality,kind,rate,'Gemini Developer API Standard paid list rate, verified 2026-11-10. '
+                'https://ai.google.dev/gemini-api/docs/pricing#gemini-3.8-live')
+
 # Map our (provider, sku) tuple to the corresponding openrouter.ai model id.
 # Add a row here when you start using a new model so the cron picks it up.
 OPENROUTER_LOOKUP: dict[tuple[str, str], str] = {
@@ -57,7 +72,8 @@ OPENROUTER_LOOKUP: dict[tuple[str, str], str] = {
     # OpenRouter mirrors Groq's prices.
     ("groq", "llama-3.3-70b-versatile"): "meta-llama/llama-3.3-70b-instruct",
     ("anthropic", "claude-haiku-3-5"): "anthropic/claude-3.5-haiku",
-    ("google", "gemini-3.1-flash-live-preview"): "google/gemini-2.0-flash-001",
+    # Direct Gemini Live is billed by its own audio/text modality rows above,
+    # never by an unrelated OpenRouter text model's rate.
 }
 
 

@@ -631,6 +631,9 @@ class AppointmentTools(llm.ToolContext):
         logger.info("CALENDAR_BOOKING_STARTED", date=date, time=time, call_id=call_id)
         try:
             calcom_uid: str | None = None
+            if not calcom_enabled() and not await db.check_slot(date, time):
+                nxt = await db.get_next_available(date, time)
+                return f'That slot was just taken. The next available is {nxt}.'
             if calcom_enabled():
                 # 2. Re-check availability in BOTH systems right before booking.
                 cal_free = await calcom_slot_free(date, time, call_id)
@@ -832,8 +835,20 @@ class AppointmentTools(llm.ToolContext):
     async def end_call(self, outcome: str, reason: str = "") -> str:
         """End the call and tag the outcome.
         outcome ∈ {booked, not_interested, wrong_number, voicemail, no_answer, callback_requested}."""
+        if (outcome.lower() == 'booked' and self.call_state is not None
+                and not str(self.call_state.tool_state.get('booking', '')).startswith('confirmed:')):
+            self.call_state.intelligence.counters['unverified_booking_claims'] += 1
+            return 'Booking not verified. Do not end as booked; use the existing booking tool result or explain the actual status.'
+        if self.call_state is not None:
+            from caller_consent import caller_requested_end
+            if not caller_requested_end(self.call_state._last_observed_user):
+                return 'Call remains open. The caller has not clearly finished; answer their latest request and wait. Thanks, okay, refusal or booking success alone do not permit disconnecting.'
         self._closed_outcome = outcome
         self._closed_reason  = reason
+        session=getattr(self,'_session',None)
+        if session is not None:
+            session.shutdown(drain=True)
+            return 'Call closing after remaining audio finishes. No further intake or action is needed.'
         try:
             await self.ctx.room.disconnect()
         except Exception as exc:
@@ -857,7 +872,7 @@ class AppointmentTools(llm.ToolContext):
         pretending a transfer is possible.
         """
         cat = (category or "").strip().lower()
-        if cat not in db.HUMAN_TRANSFER_CATEGORIES:
+        if cat not in db.HUMAN_TRANSFER_CATEGORIES and cat not in self.transfer_targets:
             cat = "other"
         target = self.transfer_targets.get(cat)
         if target:
@@ -874,7 +889,8 @@ class AppointmentTools(llm.ToolContext):
     async def transfer_to_human(self, category: str, reason: str = "") -> str:
         """Hand the live call to a human team.
 
-        `category` must be one of: software, marketing, content, other.
+        `category` is software, marketing, content, other, or a configured
+        person ID supplied in this call's forwarding directory.
         Never pass a phone number — the correct number is configured per
         assistant and resolved here. Only call this once the category is known;
         if the caller has not said what it is about, ask them first.

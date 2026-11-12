@@ -5,11 +5,108 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from native_voice import runtime_settings, phone_engine
+from livekit.agents.llm.utils import prepare_function_arguments
+
+
+async def invoke_from_model(tool, **arguments):
+    args, kwargs = prepare_function_arguments(fnc=tool, json_arguments=arguments)
+    return await tool(*args, **kwargs)
 
 
 def profile(engine='gemini-live', **settings):
     return {'id': 'selected', 'metadata': {'unrelated': 'preserved', 'voiceRuntime': {
         'engine': engine, **settings}}}
+
+
+async def test_memory_updates_never_append_the_full_system_prompt_again():
+    from gemini_live_runtime import GeminiRuntime
+    from callstate import CallState
+    from call_tasks import CallTasks
+    from livekit.agents import llm
+    state = CallState(language='ta')
+    runtime = GeminiRuntime(ctx=NS(room=NS(name='offline'), add_shutdown_callback=Mock()),
+        profile=profile(), system_prompt='PRIVATE_BUSINESS_INSTRUCTIONS ' * 400,
+        state=state, owner=NS(work=CallTasks(state)), tools=[], keys={'google':'synthetic'},
+        language_state=None, route=None, log=Mock(), vad=None, carrier_pattern=None)
+    original_instructions = runtime.agent.instructions
+    compression = runtime.voice._opts.context_window_compression
+    assert compression.trigger_tokens == 8192
+    assert compression.sliding_window.target_tokens == 4096
+    agent = NS(chat_ctx=llm.ChatContext.empty(), update_instructions=AsyncMock())
+    async def adopt(context): agent.chat_ctx = context
+    agent.update_chat_ctx = AsyncMock(side_effect=adopt)
+    runtime.agent = agent
+    for turn in range(18):
+        state.observe_user('Hello', message_id=f'cost-turn-{turn}')
+        await runtime._sync_instructions()
+    agent.update_instructions.assert_not_awaited()
+    assert 3 <= agent.update_chat_ctx.await_count <= 4
+    messages = list(agent.chat_ctx.messages())
+    assert all('PRIVATE_BUSINESS_INSTRUCTIONS' not in m.text_content for m in messages)
+    assert len(messages[-1].text_content) < len(original_instructions) / 2
+    before = agent.update_chat_ctx.await_count
+    await runtime._sync_instructions()
+    assert agent.update_chat_ctx.await_count == before
+    await runtime.close()
+
+
+def test_compact_memory_retains_constraints_corrections_and_verified_results():
+    import json
+    from gemini_live_runtime import memory_snapshot
+    from callstate import CallState
+    state=CallState(language='ta')
+    state.entities.update(name='Synthetic',email='synthetic@example.invalid')
+    state.tool_state.update(booking='confirmed:synthetic-id',email_delivery='queued')
+    state.booking_hold=True
+    state.cancel_requested=True
+    state.pending_slug='email_confirmation'
+    state.spelling_field='email'
+    state.known_facts=['Existing site maintenance only; no new website.']
+    memory=json.loads(memory_snapshot(state))
+    assert memory['entities']==state.entities and memory['tool_state']==state.tool_state
+    assert memory['booking_hold'] and memory['cancel_requested']
+    assert memory['spelling_field']=='email' and memory['pending_slug']=='email_confirmation'
+    assert memory['caller_evidence']==state.known_facts
+
+
+async def test_memory_sync_does_not_send_context_updates_over_playing_audio():
+    from gemini_live_runtime import GeminiRuntime
+    from callstate import CallState
+    from call_tasks import CallTasks
+    from livekit.agents import llm
+    state=CallState(language='ta')
+    runtime=GeminiRuntime(ctx=NS(room=NS(name='offline'),add_shutdown_callback=Mock()),
+        profile=profile(),system_prompt='SAVED',state=state,owner=NS(work=CallTasks(state)),
+        tools=[],keys={'google':'synthetic'},language_state=None,route=None,log=Mock(),vad=None,carrier_pattern=None)
+    runtime.agent=NS(chat_ctx=llm.ChatContext.empty(),update_chat_ctx=AsyncMock())
+    runtime._audio_playing=True
+    state.booking_hold=True
+    await runtime._sync_instructions()
+    runtime.agent.update_chat_ctx.assert_not_awaited()
+    runtime._audio_playing=False
+    await runtime._sync_instructions()
+    runtime.agent.update_chat_ctx.assert_awaited_once()
+    assert '"booking_hold":true' in list(runtime.agent.update_chat_ctx.await_args.args[0].messages())[-1].text_content
+    await runtime.close()
+
+
+async def test_committed_demo_messages_are_collected_once_without_internal_memory():
+    from gemini_live_runtime import GeminiRuntime
+    from callstate import CallState
+    from call_tasks import CallTasks
+    from livekit.agents import llm
+    state=CallState(language='ta')
+    runtime=GeminiRuntime(ctx=NS(room=NS(name='offline'),add_shutdown_callback=Mock()),
+        profile=profile(),system_prompt='SAVED',state=state,owner=NS(work=CallTasks(state)),
+        tools=[],keys={'google':'synthetic'},language_state=None,route=None,log=Mock(),vad=None,carrier_pattern=None)
+    item=llm.ChatMessage(id='one',role='assistant',content=['A synthetic answer.'])
+    runtime.item(NS(item=item));runtime.item(NS(item=item))
+    runtime.item(NS(item=llm.ChatMessage(id='one',role='assistant',content=['A synthetic answer.[APPLICATION CALL MEMORY; turn=1]\n{"pending_question":"Internal"}'])))
+    runtime.item(NS(item=llm.ChatMessage(id='internal',role='assistant',content=['[APPLICATION CALL MEMORY; turn=1] private'])))
+    assert len(runtime.transcript_items)==1
+    assert runtime.transcript_items['one']['content']=='A synthetic answer.'
+    assert state.pending_question != 'Internal'
+    await runtime.close()
 
 
 def test_engine_is_assistant_scoped_and_legacy_selection_survives():
@@ -36,7 +133,8 @@ def test_zephyr_and_supported_current_model_defaults():
         runtime_settings(profile('untrusted-provider'))
 
 
-async def test_direct_tools_use_existing_state_and_preserve_complete_results():
+@pytest.mark.parametrize('sandbox', [False, True], ids=['phone', 'browser-sandbox'])
+async def test_direct_tools_use_existing_state_and_preserve_complete_results(sandbox):
     from gemini_live_runtime import GeminiRuntime
     from callstate import CallState
     from call_tasks import CallTasks
@@ -54,12 +152,12 @@ async def test_direct_tools_use_existing_state_and_preserve_complete_results():
     runtime = GeminiRuntime(ctx=NS(room=NS(name='offline'), add_shutdown_callback=Mock()),
         profile={**profile(), 'prompt_direction': 'INBOUND'}, system_prompt='SAVED POLICY',
         state=state, owner=owner, tools=[update_call_details], keys={'google': 'synthetic'},
-        language_state=None, route=NS(), log=Mock(), vad=None, carrier_pattern=None)
+        language_state=None, route=NS(), log=Mock(), vad=None, carrier_pattern=None, sandbox=sandbox)
     runtime.ready.set()
     runtime.observe_user('Keep Friday; change only the time to noon.', 'message-1')
     runtime.observe_user('Keep Friday; change only the time to noon.', 'message-1')
     assert state.user_turn_id == 1
-    result = await runtime.tools[0](turn_id=999, field='time', value='12:00')
+    result = await invoke_from_model(runtime.tools[0], turn_id=999, field='time', value='12:00')
     assert observed == [1]
     assert len(result.encode()) > 400
     assert 'SAVED POLICY' in runtime.agent.instructions
@@ -108,7 +206,7 @@ async def test_waiting_action_rejects_new_caller_transcript_before_submission():
         route=None, log=Mock(), vad=None, carrier_pattern=None)
     runtime.ready.set()
     await runtime._serial.acquire()
-    pending = asyncio.create_task(runtime.tools[0]())
+    pending = asyncio.create_task(invoke_from_model(runtime.tools[0]))
     await asyncio.sleep(0)
     runtime.transcript(NS(transcript='Wait, do not do that.', is_final=True))
     runtime._serial.release()
@@ -161,6 +259,12 @@ async def test_existing_core_tool_schemas_convert_to_google_without_network():
         tool_behavior=types.Behavior.BLOCKING, use_parameters_json_schema=False)
     names = {f.name for tool in config for f in (tool.function_declarations or [])}
     assert {'book_appointment', 'update_call_details', 'search_business_knowledge'} <= names
+    assert 'end_call' in names
+    # Export alone passed before the fix. Exercise the actual SDK binding seam
+    # for every wrapped tool, including end_call, without executing any action.
+    for tool in runtime.tools:
+        args, kwargs = prepare_function_arguments(fnc=tool, json_arguments={'synthetic_probe': True})
+        assert args == ({'synthetic_probe': True},) and kwargs == {}
     await runtime.close()
 
 
@@ -186,7 +290,7 @@ async def test_cancelled_speech_does_not_cancel_committed_existing_integration()
         tools=[synthetic_action], keys={'google': 'synthetic'}, language_state=None,
         route=None, log=Mock(), vad=None, carrier_pattern=None)
     runtime.ready.set()
-    waiter = asyncio.create_task(runtime.tools[0]())
+    waiter = asyncio.create_task(invoke_from_model(runtime.tools[0]))
     await asyncio.wait_for(committed.wait(), 2)
     waiter.cancel()
     await asyncio.gather(waiter, return_exceptions=True)
@@ -197,6 +301,8 @@ async def test_cancelled_speech_does_not_cancel_committed_existing_integration()
 
 
 async def test_saved_gemini_demo_uses_google_key_and_config_read_never_dispatches(monkeypatch):
+    import voice_usage
+    monkeypatch.setattr(voice_usage,'start_demo_call',AsyncMock())
     import asyncio
     import server
     import provider_credentials

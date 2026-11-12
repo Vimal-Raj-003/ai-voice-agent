@@ -1,0 +1,147 @@
+JillJill recording styles, forwarding and call-type spend | 2026-11-10
+
+Current UI note (v31): Knowledge recording upload/review and Uploaded Files
+are available. Only the call-audio Recording switch in Call accuracy & speech
+is hidden; its existing saved true/false value is preserved on assistant Save.
+No recordings, analysis profiles, endpoints or voice behavior were removed.
+System Prompt stays inside Identity with a taller preview. Native-audio desktop
+columns group Identity/prompt, Voice/Knowledge/Forwarding, and Speech/Privacy.
+Voice fields use 12px gaps rather than distributing unused column height.
+Advanced speech fields are directly visible. Knowledge defaults to Uploaded
+Files; its tabs, indexed data and message editors open inline. Selects use
+dropdowns. Only System Prompt and Human call forwarding use full dialogs;
+forwarding people use two editor columns on desktop. Small screens stack.
+Assistant edits remain in the form until Save. Knowledge upload/review actions
+retain their existing separate persistence and recording-analysis consent.
+
+Recording analysis recovery (v31)
+- AAC and other accepted formats are decoded locally to mono 16 kHz FLAC using
+  the already-installed PyAV. Actual decoded sample duration enforces 10 minutes;
+  malformed media is rejected before metadata writes or provider requests.
+- Decoding runs off the API event loop. No original or normalized audio is
+  retained after analysis. The live audio path is unchanged.
+- Analysis defaults to gemini-3.1-flash-lite, verified with the user's AAC.
+  SPEECH_REFERENCE_MODEL can override it; SPEECH_REFERENCE_FALLBACK_MODEL
+  defaults to gemini-3.8-flash. At most TWO generation requests total for a
+  normal upload. Only temporary 5xx/timeout errors allow the second model;
+  quota, permission and invalid-input errors are never retried automatically.
+- Gemini 3 analysis requests omit deprecated sampling parameters and use a
+  low thinking level (minimal on Flash Lite). Live-call settings are unaffected.
+- The user's AAC decoded as 237.6s. The first approved two-request probe failed
+  (the previous 2.5 fallback returned 404). A separately approved single request
+  to 3.1 Flash Lite succeeded with eight style rules. Its existing reference
+  is READY and enabled. Saved prompts/greeting and other metadata were compared
+  before/after and stayed unchanged. Three total requests, no further attempts.
+- Error states remain truthful. A busy provider, timeout, missing access or
+  quota limit cannot be guaranteed away. FAILED entries display actionable
+  needs-attention or retry-later status; READY is shown only after real analysis.
+- AAC support: https://ai.google.dev/gemini-api/docs/audio
+  Error codes: https://ai.google.dev/gemini-api/docs/generate-content/api-errors
+  Model parameters: https://ai.google.dev/gemini-api/docs/latest-model
+
+Operator workflow
+1. Open the existing assistant, then Knowledge > Recording.
+2. Choose a clear human service conversation, confirm permission to send its
+   audio to the configured Gemini provider, then Upload & analyze recording.
+3. Uploaded Files lists recordings alongside documents, including processing
+   and failed entries. Open Review speaking style for summary and examples.
+   Enable style to use it on NEW demo and phone calls. Disable/Delete stops
+   its use on future calls. Existing document/URL upload remains available.
+4. Human call forwarding opens a compact destination list. Add person adds
+   destinations beyond the four legacy slots and opens the editor.
+   Enter the name, team and E.164 phone, enable if wanted, then Save.
+   Team requests use priority; a named person can be selected by configured ID.
+5. Overview > Spend by call type separates Demo, Inbound and Outbound usage.
+   The existing date range and USD/INR controls apply to these totals.
+
+Recording behavior
+- This supplies style examples to the saved prompt; it is not fine-tuning or
+  voice cloning. The selected voice/engine and business/tool rules still apply.
+- Common conversational Tamil/Tanglish wording is preferred when appropriate;
+  an explicit caller request for pure Tamil or another language takes priority.
+- Formats: WAV, MP3, M4A, AAC, OGG, FLAC. Maximum 8 MB / 10 minutes per upload.
+  Up to 20 saved profiles, six enabled references, bounded prompt context.
+- Duration is validated locally with mutagen before provider access. Recording
+  analysis uses the existing Google/BYOK credential and gemini-3.8-flash by
+  default; SPEECH_REFERENCE_MODEL may override the analysis model. This does
+  not change the live-call model. Analysis may incur Gemini API charges.
+- The original upload is held temporarily in memory for one analysis; the
+  stored profile contains style data rather than a business-knowledge document.
+  Phone/email patterns are redacted. Review the profile before enabling it.
+- Analysis has a 140-second overall deadline and at most two requests, with
+  a two-second retry only for temporary 500/502/503/504 errors. SDK retries
+  are disabled. Quota/permission/format errors are not retried. Errors retain
+  safe actionable status codes without private provider diagnostics.
+  Expired processing entries show
+  a recoverable error. A deleted reference cannot be restored by late analysis.
+- New references are disabled until the operator approves them. No recording
+  is automatically sent to a provider just by opening the page.
+- Occasional acknowledgements and lightly smiling delivery follow context;
+  never use constant fillers, stage directions or laughter around distress,
+  complaints, confusion or booking/contact details. These are instructions,
+  not proof of a particular emotional interpretation or exact voice matching.
+
+Storage and architecture
+- Existing assistants.metadata.speechReferences stores reference profiles.
+- Additional people use assistants.metadata.humanTransferPeople. Existing
+  human_transfer_targets rows, category constraints and SIP trunks are retained.
+- Existing Vobiz / LiveKit / Gemini-native audio flow is retained. No extra
+  model analysis is added to the live turn path. Existing local changes kept.
+- The legacy four destinations keep their priority and phone numbers; adding
+  more people does not edit carrier numbers or enable real demo transfers.
+
+Cost accounting
+- Native Gemini usage is split into input audio, input text, output audio and
+  output text. Updated metrics for the same request replace earlier values
+  rather than charging that request twice.
+- Phone usage merges calls.metadata.voiceUsage alongside existing metadata.
+- Browser demos now write an idempotent usage-only Call ledger entry. This
+  creates no contact, booking, email, SMS or transfer. Business overview call
+  and booking KPIs exclude these demo ledger entries.
+- Google Standard paid list rates per million tokens, verified 2026-11-10:
+  text input $0.75; text output $4.50; audio input $3.00; audio output $12.00.
+  Source: https://ai.google.dev/gemini-api/docs/pricing
+  New modality-specific ProviderRate rows do not replace operator-managed rows.
+- These are estimates from recorded usage and configured rates, not provider
+  invoices. Free credits, plan allowances, media/storage and carrier billing
+  may differ. Unavailable rates and incomplete modality details stay visible.
+- Historical audio/text splits and past browser demos cannot be reconstructed
+  from totals alone. Missing data is marked incomplete; it is never invented.
+  Browser demo ledger coverage starts with this update. Recording-analysis
+  requests are separate from the demo/phone call ledger.
+
+Previous validation (v25)
+- 947 Python regressions passed, one integration module skipped. The final
+  recording refinements also passed their five focused checks.
+- 15 focused TypeScript checks passed; type checking and scoped ESLint passed.
+- Playwright CLI exercised Recording UI review/enable/delete against a mock,
+  actual local invalid-audio rejection (before provider access), 11 unsaved
+  forwarding people with Add still enabled, voice tooltip, and responsive
+  advanced settings at 1440/834/390 pixels. No horizontal document overflow.
+- Form fields were compared after provider controls finished loading. Test
+  additions discarded on reload; all values restored and recording list empty.
+- Demo ledger SQL was tested against the configured database inside a rolled-
+  back transaction. All synthetic test writes were rolled back. Four modality
+  rate rows for the current model were confirmed.
+- Impeccable detector returned no findings. UI review PASS: incumbent palette,
+  readable labels, responsive groups, keyboard controls and real error/loading/
+  empty states retained. No new marketing claims or decorative assets.
+- Worker v25 registered in India South as AW_ZmKxEiroRafE (PID 6122).
+  API and worker reloads were preceded by zero-room/call/campaign checks.
+- No real audio analysis, paid voice session or business action was initiated.
+  Real recording/model account access and spoken style need an operator upload
+  and subsequent user-started call. No credentials, main branch or git push changed.
+
+V26 update validation
+- 35 focused Python and 10 TypeScript checks passed; type checking and scoped
+  ESLint passed. Mocked upload/review/enable/delete, combined Uploaded Files,
+  compact forwarding and unchanged form payload were checked with Playwright.
+- Final 1440x1000 default overview includes the forwarding summary at y=995.
+  Mobile/tablet stay on one continuous scroll page without horizontal overflow.
+- Idle checks were zero before API and WSL worker restarts. Worker build
+  2026-11-10-reference-style-v26 registered as AW_9sFeXP3HfPsx; API health 200.
+- The user's named conversation was sent for analysis with explicit consent:
+  initial request plus two explicitly approved retry requests all returned
+  Gemini 503 high demand. Its profile remains FAILED, not enabled. No more
+  requests or paid voice sessions were started. General situational voice
+  guidance is deployed; recording-specific style remains pending analysis.

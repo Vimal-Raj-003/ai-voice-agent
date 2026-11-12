@@ -3,7 +3,7 @@ the persistent poller. Cal.com and the DB/notify layers are stubbed so the
 orchestration (what must not regress) is tested without live providers."""
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -14,6 +14,9 @@ from tools import AppointmentTools, reminder_at_utc
 def _no_calcom(monkeypatch):
     monkeypatch.delenv("CALCOM_API_KEY", raising=False)
     monkeypatch.delenv("CALCOM_EVENT_TYPE_ID", raising=False)
+    monkeypatch.setattr('tools.db.find_booked_appointment',AsyncMock(return_value=None))
+    monkeypatch.setattr('tools.db.find_booked_slot',AsyncMock(return_value=None))
+    monkeypatch.setattr('tools.db.check_slot',AsyncMock(return_value=True))
 
 
 def _future_slot():

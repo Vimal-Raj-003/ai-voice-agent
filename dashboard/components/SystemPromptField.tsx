@@ -21,10 +21,14 @@ export default function SystemPromptField({
   defaultValue = "",
   defaultOutboundValue = defaultValue,
   rows = 14,
+  compact = false,
+  fillPreview = false,
 }: {
   defaultValue?: string;
   defaultOutboundValue?: string;
   rows?: number;
+  compact?: boolean;
+  fillPreview?: boolean;
 }) {
   const [direction, setDirection] = useState<PromptDirection>("INBOUND");
   const [values, setValues] = useState({ INBOUND: defaultValue, OUTBOUND: defaultOutboundValue });
@@ -135,10 +139,10 @@ export default function SystemPromptField({
   );
 
   return (
-    <div>
+    <div className={fillPreview ? "flex min-h-0 min-w-0 flex-1 flex-col" : undefined}>
       <input type="hidden" name="systemPrompt" value={values.INBOUND} />
       <input type="hidden" name="outboundSystemPrompt" value={values.OUTBOUND} />
-      <div className="mb-1 flex items-center justify-between gap-2">
+      <div className="mb-1 flex shrink-0 items-center justify-between gap-2">
         <span className="flex items-center text-[10px] uppercase tracking-widest text-gray-400">
           System prompt
           <InfoTooltip>
@@ -161,15 +165,16 @@ export default function SystemPromptField({
       {/* Preview: enough to recognise the prompt, not enough to dominate. */}
       <button
         type="button"
+        aria-label="Open system prompt editor"
         onClick={() => setOpen(true)}
-        className="block w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-left transition hover:border-violet-400/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40"
+        className={`${fillPreview ? "flex h-44 flex-col xl:h-0 xl:min-h-20 xl:flex-1" : "block"} w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-left transition hover:border-violet-400/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40`}
       >
         {value.trim() ? (
           <>
-            <span className="line-clamp-3 whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-gray-400">
+            <span className={`${fillPreview ? "min-h-0 flex-1 overflow-hidden text-xs" : compact ? "line-clamp-1 text-[11px]" : "line-clamp-3 text-[11px]"} whitespace-pre-wrap font-mono leading-relaxed text-gray-400`}>
               {value}
             </span>
-            <span className="mt-1 block text-[10px] text-gray-600">
+            <span className="mt-1 block shrink-0 text-[10px] text-gray-600">
               {directionLabel} · {words.toLocaleString()} words · click to edit
             </span>
           </>

@@ -40,14 +40,17 @@ def select_test(room: str, job_metadata: dict, env: Mapping[str, str] | None = N
     room_allowed = selected is not None and (room == selected.room or (
         job_metadata.get('test_room_base') == selected.room
         and re.fullmatch(re.escape(selected.room) + r'-[0-9a-f]{16}', room) is not None))
+    verified_selection = (job_metadata.get('browser_assistant_selection') is True
+                          and bool(job_metadata.get('organization_id'))
+                          and bool(job_metadata.get('agent_profile_id')))
     if (selected is None or not room_allowed
-            or job_metadata.get('agent_profile_id') != selected.assistant_id
+            or (job_metadata.get('agent_profile_id') != selected.assistant_id and not verified_selection)
             or job_metadata.get('phone_number') != 'demo'
             or job_metadata.get('is_demo') is not True
             or job_metadata.get('campaign_id') or job_metadata.get('target_id')
             or job_metadata.get('test_direction') != selected.direction):
         raise ExperimentRejected('GPT-Live dispatch is not the server-selected browser test session.')
-    return TestSelection(room, selected.assistant_id, selected.direction)
+    return TestSelection(room, job_metadata['agent_profile_id'], selected.direction)
 
 
 def test_metadata(selected: TestSelection, room_base: str | None = None) -> dict:

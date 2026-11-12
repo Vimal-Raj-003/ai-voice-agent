@@ -16,6 +16,13 @@ ENV = dict(GPT_LIVE_EXPERIMENT_ENABLED='true', GPT_LIVE_TEST_ROOM='demo-gpt-live
            GPT_LIVE_TEST_ASSISTANT_ID='synthetic-assistant')
 
 
+@pytest.fixture(autouse=True)
+def isolate_demo_ledger(monkeypatch):
+    import voice_usage
+    monkeypatch.setattr(voice_usage,'start_demo_call',AsyncMock())
+    monkeypatch.setattr(voice_usage,'finish_demo_call',AsyncMock())
+
+
 def test_default_off_does_not_require_credentials():
     assert configured_test({}) is None
     assert select_test('phone-room', {}, {}) is None
@@ -288,7 +295,8 @@ async def test_existing_demo_endpoint_off_and_missing_key(monkeypatch):
     import provider_credentials
     monkeypatch.setattr(provider_credentials, 'load_for_org', AsyncMock(return_value={}))
     monkeypatch.setattr(server.db, 'get_assistant_as_profile', AsyncMock(return_value={
-        'id': 'synthetic-assistant', 'organization_id': 'synthetic'}))
+        'id': 'synthetic-assistant', 'organization_id': 'synthetic',
+        'metadata': {'voiceRuntime': {'engine': 'gpt-live'}}}))
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as exc:
         await server.demo_token()
@@ -323,7 +331,8 @@ async def test_finished_demo_can_start_again_with_new_trusted_room(monkeypatch):
     client = NS(room=NS(list_rooms=AsyncMock(return_value=NS(rooms=[]))),
                 agent_dispatch=NS(create_dispatch=AsyncMock()), aclose=AsyncMock())
     monkeypatch.setattr(server, '_lk_client', lambda: client)
-    monkeypatch.setattr(server.db, 'get_assistant_as_profile', AsyncMock(return_value={'id':'synthetic-assistant'}))
+    monkeypatch.setattr(server.db, 'get_assistant_as_profile', AsyncMock(return_value={
+        'id':'synthetic-assistant','metadata':{'voiceRuntime':{'engine':'gpt-live'}}}))
     monkeypatch.setattr(provider_credentials, 'load_for_org', AsyncMock(return_value={}))
     first, second = await server.demo_token(), await server.demo_token()
     assert first['room'] != second['room']

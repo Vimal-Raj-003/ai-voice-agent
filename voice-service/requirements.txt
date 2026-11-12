@@ -62,3 +62,4 @@ rapidocr-onnxruntime
 # Playwright is needed for JavaScript (SPA) sites; the browser itself is
 # installed separately with `playwright install chromium`.
 playwright
+mutagen>=1.47,<2

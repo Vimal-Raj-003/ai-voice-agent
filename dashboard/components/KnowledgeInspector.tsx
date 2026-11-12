@@ -148,10 +148,12 @@ export default function KnowledgeInspector({
   assistantId,
   source,
   onClose,
+  inline = false,
 }: {
   assistantId: string;
   source: { id: string; type: string; url: string; title: string | null; fileName: string | null };
   onClose: () => void;
+  inline?: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("overview");
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -192,18 +194,20 @@ export default function KnowledgeInspector({
   // opening and closing never jumps the background. The offset is restored
   // anyway, because a browser that drops it would otherwise scroll to top.
   useEffect(() => {
+    if (inline) return;
     const y = window.scrollY;
     document.body.classList.add("modal-open");
     return () => {
       document.body.classList.remove("modal-open");
       window.scrollTo(0, y);
     };
-  }, []);
+  }, [inline]);
 
   // ── Navigation: Escape, and the browser Back button ───────────────────────
   // Opening pushes one history entry so Back closes the modal instead of
   // leaving the assistant page. Closing any other way pops it again.
   useEffect(() => {
+    if (inline) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
@@ -212,7 +216,7 @@ export default function KnowledgeInspector({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [detailChunk]);
+  }, [detailChunk, inline]);
 
   // One history entry is pushed so the browser Back button closes the modal
   // instead of leaving the assistant page.
@@ -224,6 +228,7 @@ export default function KnowledgeInspector({
   // itself, so the entry is unwound exactly once by whoever closes.
   const pushed = useRef(false);
   useEffect(() => {
+    if (inline) return;
     if (!pushed.current) {
       window.history.pushState({ jjInspector: true }, "");
       pushed.current = true;
@@ -231,16 +236,16 @@ export default function KnowledgeInspector({
     const onPop = () => { pushed.current = false; onClose(); };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [onClose]);
+  }, [onClose, inline]);
 
   /** Close from the UI: unwind our history entry, which then calls onClose. */
   const requestClose = useCallback<() => void>(() => {
-    if (pushed.current && window.history.state?.jjInspector) {
+    if (!inline && pushed.current && window.history.state?.jjInspector) {
       window.history.back();      // -> popstate -> onClose
     } else {
       onClose();
     }
-  }, [onClose]);
+  }, [onClose, inline]);
   requestCloseRef.current = requestClose;
 
   // ── Data ──────────────────────────────────────────────────────────────────
@@ -381,14 +386,14 @@ export default function KnowledgeInspector({
 
   return (
     <div
-      className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6"
-      onClick={requestClose}
-      role="dialog"
-      aria-modal="true"
+      className={inline?"mt-3 min-w-0":"modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6"}
+      onClick={inline?undefined:requestClose}
+      role={inline?"region":"dialog"}
+      aria-modal={inline?undefined:true}
       aria-label={`Indexed data for ${name}`}
     >
       <div
-        className="modal-surface flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl"
+        className={`modal-surface flex w-full flex-col rounded-2xl ${inline?"border border-white/10":"max-h-[92vh] max-w-4xl overflow-hidden"}`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* HEADER — outside the scroll area, so it never scrolls away */}
@@ -437,7 +442,7 @@ export default function KnowledgeInspector({
             relying on a custom .modal-scroll rule meant one stale CSS build left
             the panel unscrollable with no error anywhere. */}
         <div ref={scrollRef}
-             className="modal-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 sm:p-4">
+             className={inline?"min-w-0 p-3 sm:p-4":"modal-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 sm:p-4"}>
           {loading && (
             <p className="flex items-center gap-2 py-8 text-xs text-gray-500">
               <Loader2 size={13} className="animate-spin" /> Loading indexed data…

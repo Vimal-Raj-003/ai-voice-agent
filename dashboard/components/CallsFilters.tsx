@@ -14,7 +14,8 @@ type Option = { value: string; label: string };
 const DIRECTIONS: Option[] = [
   { value: "INBOUND", label: "Inbound" },
   { value: "OUTBOUND", label: "Outbound" },
-  { value: "", label: "All Directions" },
+  { value: "DEMO", label: "Demo" },
+  { value: "", label: "All calls" },
 ];
 
 // Params whose UI controls were removed (status / outcome / date). They are
@@ -39,12 +40,14 @@ export default function CallsFilters({
 } = {}) {
   const router = useRouter();
   const sp = useSearchParams();
-  const [q, setQ] = useState(sp.get("q") ?? "");
+  const rawQuery=sp.get('q')??'';
+  const [query,setQuery]=useState({source:rawQuery,value:rawQuery});
+  if(query.source!==rawQuery)setQuery({source:rawQuery,value:rawQuery});
+  const q=query.value;
+  const setQ=(value:string)=>setQuery({source:rawQuery,value});
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    setQ(sp.get("q") ?? "");
-  }, [sp]);
+  useEffect(()=>()=>{if(debounce.current)clearTimeout(debounce.current);},[]);
 
   const setParam = (key: string, value: string) => {
     const params = new URLSearchParams(sp.toString());

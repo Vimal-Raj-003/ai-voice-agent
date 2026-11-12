@@ -5,6 +5,9 @@ import { prisma } from "@/lib/prisma";
 import { Badge, statusTone, directionTone } from "@/components/Badge";
 import CallRecording from "@/components/CallRecording";
 import CallLogsView from "@/components/CallLogsView";
+import CallCostBreakdown from "@/components/CallCostBreakdown";
+import {buildRateMap,callChannel,computeCallCost} from "@/lib/cost";
+import {getDefaultOrg} from "@/lib/org";
 
 export const dynamic = "force-dynamic";
 
@@ -22,11 +25,14 @@ export default async function CallLogsPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [c, transcript] = await Promise.all([
-    prisma.call.findUnique({ where: { id } }),
-    prisma.transcriptMessage.findMany({ where: { callId: id }, orderBy: { timestamp: "asc" } }),
+  const org=await getDefaultOrg();
+  const [c, transcript, rates] = await Promise.all([
+    prisma.call.findFirst({ where: { id,organizationId:org.id } }),
+    prisma.transcriptMessage.findMany({ where: { callId: id,call:{organizationId:org.id} }, orderBy: { timestamp: "asc" } }),
+    prisma.providerRate.findMany(),
   ]);
   if (!c) notFound();
+  const channel=callChannel(c);
 
   // Corroborating evidence for stage scoring (same signals the live panel uses).
   const hasUser = transcript.some((m) => m.role === "USER");
@@ -34,7 +40,8 @@ export default async function CallLogsPage({
   const connected = c.answeredAt != null || c.status === "COMPLETED" || c.status === "IN_PROGRESS";
 
   const summary: [string, string][] = [
-    ["Phone number", c.toNumber ?? "—"],
+    ["Channel",channel],
+    ["Phone number", channel==='Demo'?'Browser microphone':c.toNumber ?? "—"],
     ["From", c.fromNumber ?? "—"],
     ["Call ID", c.id],
     ["Room ID", c.livekitRoomName ?? "—"],
@@ -54,8 +61,8 @@ export default async function CallLogsPage({
         <Link href="/calls" className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-gray-200">
           <ArrowLeft size={14} /> Calls
         </Link>
-        <h1 className="text-2xl font-bold">{c.toNumber}</h1>
-        <Badge tone={directionTone(c.direction)}>{c.direction.toLowerCase()}</Badge>
+        <h1 className="text-2xl font-bold">{channel==='Demo'?'Browser demo':c.toNumber}</h1>
+        <Badge tone={directionTone(c.direction)}>{channel}</Badge>
         <Badge tone={statusTone(c.status)}>{c.status}</Badge>
         <Link href={`/calls/${c.id}`} className="ml-auto text-xs text-purple-300 hover:underline">
           Full call detail →
@@ -81,8 +88,10 @@ export default async function CallLogsPage({
         </dl>
       </section>
 
+      <CallCostBreakdown breakdown={computeCallCost(c,buildRateMap(rates),{includeUnavailable:true})}/>
       {/* ── 3 / 4 / 6. FLOW, BREAKPOINT, TIMELINE (this call only) ────── */}
       <CallLogsView
+        nativeAudio={/^gemini-.*live|^gpt-live/.test(c.llmSkuUsed||'')||['gemini-live','gpt-live'].includes(String((c.metadata as Record<string,unknown>|null)?.demoEngine||''))}
         room={c.livekitRoomName}
         hasUser={hasUser}
         hasAI={hasAI}

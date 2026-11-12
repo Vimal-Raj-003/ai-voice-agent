@@ -24,7 +24,7 @@ async function call<T>(path: string, opts: FetchOpts = {}): Promise<T> {
 
 export const voiceService = {
   health: () => call<{ status: string }>(`/health`),
-  demoConfig: () => call<{engine: string; assistant_name: string | null; model: string | null; voice: string | null; sandbox: boolean}>(`/api/demo/config`),
+  demoConfig: () => call<{engine: string; assistant_id?: string; assistant_name: string | null; model: string | null; voice: string | null; sandbox: boolean}>(`/api/demo/config`),
   dispatchSingle: (body: {
     phone: string;
     agent_profile_id?: string;
@@ -48,7 +48,8 @@ export const voiceService = {
   ),
   // Room allocation and dispatch can exceed the ordinary read-request budget.
   // Aborting early leaves a worker without the browser that needs its token.
-  demoToken: () => call<{ token: string; room: string; url: string }>(`/api/demo/token`, { method: "POST", timeoutMs: 15_000 }),
+  demoToken: (assistantId?:string, organizationId?:string) => call<{ token: string; room: string; url: string;call_id?:string;assistant_id?:string }>(`/api/demo/token`, {
+    method: "POST", timeoutMs: 15_000, body:assistantId?{assistant_id:assistantId,organization_id:organizationId}:undefined }),
   monitorToken: (room: string) =>
     call<{ token: string; room: string; url: string }>(`/api/calls/monitor-token`, {
       method: "POST",

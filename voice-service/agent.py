@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import ssl
+import faulthandler
 from typing import Any
 
 import certifi
@@ -93,7 +94,7 @@ PROVIDER_HEALTH = _ph.ProviderHealth(log=lambda ev, **kw: logger.warning(ev, **k
 # Build marker logged at worker boot (_prewarm) and per job (entrypoint). Bump
 # this string whenever agent.py changes so the live logs prove which code the
 # running worker actually loaded. Absent from logs ⇒ worker not restarted.
-AGENT_BUILD = "2026-11-10-gemini-live-zephyr-v22"
+AGENT_BUILD = "2026-11-11-phone-text-protocol-v43"
 
 
 def _warm_linecache() -> None:
@@ -2620,7 +2621,7 @@ async def _load_caller_history(phone: str) -> str:
 
 
 async def _resolve_profile(profile_id: str | None) -> dict:
-    """Look up by id in agent_profiles, then assistants, then default."""
+    """Resolve the requested profile exactly; only unassigned calls use default."""
     if profile_id:
         prof = await db.get_agent_profile(profile_id)
         if prof:
@@ -2629,6 +2630,7 @@ async def _resolve_profile(profile_id: str | None) -> dict:
         assistant = await db.get_assistant_as_profile(profile_id)
         if assistant:
             return assistant
+        raise LookupError('Selected assistant is missing or inactive; no default substitution allowed.')
     prof = await db.get_default_agent_profile()
     return prof or {}
 
@@ -3005,7 +3007,17 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception as exc:
             logger.error('gpt_live_test_failed', error_type=type(exc).__name__, room=_job_room,
                          impact='test stopped; no legacy fallback or business action')
+            try:
+                from voice_usage import finish_demo_call
+                await finish_demo_call(_job_room,'FAILED')
+            except Exception:
+                logger.warning('demo_status_save_failed',room=_job_room)
         finally:
+            try:
+                from voice_usage import finish_demo_call
+                await finish_demo_call(_job_room,'COMPLETED')
+            except Exception:
+                logger.warning('demo_status_save_failed',room=_job_room)
             # Do not use legacy _release_job: it settles call/customer rows.
             ctx.shutdown(reason='gpt_live_test_finished')
             await db.close_pool()
@@ -3197,9 +3209,18 @@ async def entrypoint(ctx: JobContext) -> None:
                 )
 
     profile_lookup_id = inbound_assistant_id or meta.get("agent_profile_id")
-    profile = await _resolve_profile(profile_lookup_id)
+    try:
+        profile = await _resolve_profile(profile_lookup_id)
+    except LookupError:
+        logger.error('selected_assistant_unavailable', assistant_id=profile_lookup_id,
+                     room=ctx.room.name, source='WORKER')
+        await _release_job(ctx, 'selected_assistant_unavailable')
+        return
     from assistant_prompts import profile_for_direction
-    profile = profile_for_direction(profile, 'INBOUND' if inbound_user_in_room else 'OUTBOUND')
+    direction = ('INBOUND' if inbound_user_in_room else 'OUTBOUND')
+    if phone == 'demo':
+        direction = meta.get('test_direction') if meta.get('test_direction') in ('INBOUND','OUTBOUND') else 'INBOUND'
+    profile = profile_for_direction(profile, direction)
     from native_voice import phone_engine
     _native_engine = phone_engine(profile, phone)
     _gpt_live_phone = _native_engine is not None  # Shared native lifecycle, including Gemini.
@@ -3244,9 +3265,8 @@ async def entrypoint(ctx: JobContext) -> None:
     # spoken greeting agree (they used to diverge: greeting used config.BUSINESS_NAME
     # while the prompt body defaulted to "our company"). customer_name is the
     # cleaned lead name or "" — never a monitor/placeholder.
-    business_name = str(
-        meta.get("business_name") or config.BUSINESS_NAME or "our company"
-    ).strip()
+    from assistant_identity import business_name_for_profile
+    business_name = business_name_for_profile(profile, str(meta.get("business_name") or config.BUSINESS_NAME or ''))
     customer_name = _clean_customer_name(meta.get("lead_name") or name)
 
     # `_prompt_diag` carries hash + substitution counts only, never the prompt
@@ -3264,6 +3284,7 @@ async def entrypoint(ctx: JobContext) -> None:
         call_direction=profile.get('prompt_direction'),
         hallucination_guard=profile.get('hallucination_guard', True),
         native_audio=_gpt_live_phone,
+        speech_style=profile.get('metadata'),
     )
     logger.info("prompt_loaded", assistant_id=profile.get("id"),
                 assistant_name=profile.get("name"),
@@ -3317,11 +3338,12 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception:
             pass
     _call_state = _cs.CallState(role=_role, direction=profile.get('prompt_direction'), log=_cs_log)
+    _call_state.intelligence.configure(profile)
 
     # Build tools placeholder — Phase 3 will wire AppointmentTools.
     from tools import AppointmentTools  # local import to avoid cycle at module load
     agent_tools = AppointmentTools(ctx, phone, name, call_state=_call_state)
-    _test_read_only = os.getenv('VOICE_TEST_READ_ONLY', 'false').lower() == 'true'
+    _test_read_only = phone == 'demo' or os.getenv('VOICE_TEST_READ_ONLY', 'false').lower() == 'true'
     agent_tools._test_read_only = _test_read_only
 
     # Human call forwarding destinations for THIS assistant. Loaded once here so
@@ -3332,6 +3354,8 @@ async def entrypoint(ctx: JobContext) -> None:
         agent_tools.transfer_targets = await db.get_human_transfer_targets(
             profile.get("id") or "")
         if agent_tools.transfer_targets:
+            system_prompt += '\n[CONFIGURED HUMAN FORWARDING DIRECTORY]\n' + '\n'.join(
+                f"{key}: {target['label']} ({target.get('intent', key)})." for key, target in agent_tools.transfer_targets.items())
             logger.info("transfer_targets_loaded",
                         categories=sorted(agent_tools.transfer_targets),
                         count=len(agent_tools.transfer_targets),
@@ -3427,6 +3451,9 @@ async def entrypoint(ctx: JobContext) -> None:
     # the STT→language router (which updates it) and the LLM node (which reads it
     # to force the reply language every turn — incl. fallback/retry/tool turns).
     _initial_call_lang = lang.normalize_lang(profile.get("stt_language") or config.STT_LANGUAGE or "ta") or "ta"
+    if _native_engine == 'gemini-live':
+        from native_voice import initial_native_language
+        _initial_call_lang = initial_native_language(profile, config.STT_LANGUAGE)
     _lang_state = lang.LanguageState(initial=_initial_call_lang)
     _lang_state.strict_lock = os.getenv('VOICE_STRICT_LANGUAGE_LOCK', 'true').lower() == 'true'
     _call_state.set_language(_lang_state.active)
@@ -3515,29 +3542,9 @@ async def entrypoint(ctx: JobContext) -> None:
     # (browser) calls keep the default — there the browser IS the input.
     _sip_kinds = [rtc.ParticipantKind.PARTICIPANT_KIND_SIP]
     room_input = RoomInputOptions(close_on_disconnect=is_demo)
-    # Real (telephony) calls: stay open across brief disconnects. Noise
-    # cancellation (BVCTelephony) is OPT-IN via ENABLE_BVC_TELEPHONY because the
-    # demo path proved BVC can suppress caller speech so Deepgram produces ZERO
-    # transcripts — the exact "no STT" symptom on outbound. Default OFF aligns
-    # real calls with the known-working (no-BVC) demo STT path; set the env var
-    # to re-enable once confirmed safe on your trunk.
-    # The ASSISTANT's saved setting decides this. ENABLE_BVC_TELEPHONY is an
-    # explicit kill-switch, not a required opt-in.
-    #
-    # It used to be required: `... and use_bvc`, defaulting to false. Since the
-    # variable was never set, noise cancellation was silently OFF on every call
-    # while the Assistant page showed it ON — measured across the whole log
-    # table: noise_cancellation_enabled 0, noise_cancellation_disabled 96,
-    # init_failed 0, with all five assistants having backgroundDenoising=true.
-    #
-    # On a telephony leg with no cancellation, line noise and the agent's own
-    # audio reach the VAD. That shows up as VAD flapping (3,431 speaking-state
-    # transitions against 607 completed replies) and as spurious barge-in
-    # cancelling the agent mid-sentence (1,120 reply-speeches created, 607
-    # completed — ~35% cut off). The caller hears the agent stop talking
-    # part-way through an answer and says "Hello?" — logged 80 times.
-    #
-    # Setting ENABLE_BVC_TELEPHONY=false still forces it off for debugging.
+    # Telephony uses the assistant's denoising preference and the SIP-tuned
+    # filter. An explicit false env override remains a debugging kill-switch.
+    # Browsers keep their own input processing and receive no server BVC.
     _bvc_env = os.getenv("ENABLE_BVC_TELEPHONY")
     _bvc_forced_off = (_bvc_env is not None
                        and _bvc_env.strip().lower() in ("0", "false", "no", "off"))
@@ -3561,12 +3568,16 @@ async def entrypoint(ctx: JobContext) -> None:
                             else "the assistant has backgroundDenoising switched off"),
                     assistant_setting=bool(profile.get("background_denoising", True)),
                     env_override=_bvc_env,
+                    scope="agent_input_only", upstream_filtering="not_measured_here",
                     call_id=ctx.room.name)
     if not is_demo:
         logger.info("agent_input_restricted_to_sip", kinds="SIP",
                     call_id=ctx.room.name, room=ctx.room.name, source="LIVEKIT")
 
-    await session.start(room=ctx.room, agent=agent, room_input_options=room_input)
+    if _gpt_live_phone and _native_engine == 'gemini-live':
+        await _native_runtime.start(room_input_options=room_input)
+    else:
+        await session.start(room=ctx.room, agent=agent, room_input_options=room_input)
     if _gpt_live_phone:
         _native_runtime.started_at = time.monotonic()
         _native_runtime.attach_playback()
@@ -3704,6 +3715,7 @@ async def entrypoint(ctx: JobContext) -> None:
             agent._voice_stage('caller_speech_onset', turn_id=_call_state.user_turn_id + 1,
                                interrupted_speech_id=getattr(session.current_speech, 'id', None))
             agent._response_timing.speech_started()
+            _call_state.intelligence.speech_start()
             logger.info("audio_frames_started", call_id=_dbg_rid, room=_dbg_rid, source="STT")
             _reengage["done"] = False  # caller is back; allow a future re-engage
             # New caller utterance → start a fresh turn-timing record.
@@ -3712,6 +3724,7 @@ async def entrypoint(ctx: JobContext) -> None:
             _turn_watch["t"]["speech_start"] = time.monotonic()
         # User stopped speaking -> end-of-turn committed to the pipeline.
         if old == "speaking" and new != "speaking":
+            _call_state.intelligence.speech_end()
             agent._voice_stage('caller_speech_end', turn_id=_call_state.user_turn_id + 1)
             agent._response_timing.speech_stopped()
             logger.info("caller_speech_stopped", call_id=_dbg_rid, room=_dbg_rid, source="TURN_DETECTION")
@@ -3753,6 +3766,7 @@ async def entrypoint(ctx: JobContext) -> None:
     def _dbg_session_error(ev: Any) -> None:  # noqa: ANN401
         try:
             err = getattr(ev, "error", ev)
+            _call_state.intelligence.counters['provider_errors'] += 1
             src = getattr(ev, "source", None)
             # Which component raised? LiveKit plugin modules are organised as
             # …/<provider>/{tts,stt,llm}.py, so the source's module path is a
@@ -3984,6 +3998,7 @@ async def entrypoint(ctx: JobContext) -> None:
             _playback_trace.update(turn_id=_call_state.user_turn_id,
                                    speech_id=getattr(current_speech, 'id', None),
                                    last_room_audio_wall=None)
+            _call_state.intelligence.playback(_call_state.user_turn_id)
             agent._voice_stage('room_playback_started', **_playback_trace,
                                measurement='room_output_event_not_handset')
             is_ack = ack and current_speech and current_speech.id == ack.get('speech_id')
@@ -4174,7 +4189,8 @@ async def entrypoint(ctx: JobContext) -> None:
     _conn_model = ((profile.get("stt_model") or "").strip()
                    or provider_registry.default_model_for("STT", _conn_prov)
                    or "(plugin default)")
-    session._jj_stt_model = _conn_model
+    session._jj_stt_model = ((getattr(_native_runtime.input_stt, 'model', '') if _gpt_live_phone and _native_engine == 'gemini-live' else '')
+                             or _conn_model)
     if _gpt_live_phone:
         logger.info('native_audio_selected', provider=('google' if _native_engine == 'gemini-live' else 'openai'),
                     model=(_native_runtime.model if _native_engine == 'gemini-live' else 'gpt-live-1'),
@@ -4351,6 +4367,9 @@ async def entrypoint(ctx: JobContext) -> None:
         if isinstance(content, list):
             content = " ".join(str(c) for c in content if isinstance(c, str))
         text = str(content or "").strip()
+        if _native_engine == 'gemini-live':
+            from native_voice import spoken_native_text
+            text = spoken_native_text(str(role), text, _RE_CARRIER_ANNOUNCEMENT)
         if not text:
             return
         # Diagnostic: shows user turns reaching the agent and assistant replies.
@@ -5204,6 +5223,21 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
     outcome = (agent_tools._closed_outcome or "COMPLETED").upper()
     reason = agent_tools._closed_reason or "session ended"
     was_booked = outcome == "BOOKED"
+    _intelligence_state = getattr(agent_tools, 'call_state', None)
+    from callstate import CallState
+    if not isinstance(_intelligence_state, CallState):
+        _intelligence_state = None
+    if _intelligence_state is not None and _intelligence_state.intelligence.policy.outcomes:
+        from call_intelligence import business_outcome
+        _verified = business_outcome(_intelligence_state, agent_tools)
+        was_booked = _verified['booking'] == 'confirmed'
+        if outcome == 'BOOKED' and not was_booked:
+            outcome, reason = 'COMPLETED', 'Booking outcome unverified; no tool receipt.'
+            _intelligence_state.intelligence.counters['unverified_booking_claims'] += 1
+        elif outcome == 'COMPLETED' and _verified['transfer'] == 'connected':
+            outcome = 'TRANSFERRED'
+        elif outcome == 'COMPLETED' and was_booked:
+            outcome = 'BOOKED'
 
     # ── Usage breakdown for cost dashboard ───────────────────────────────────
     # The dashboard recomputes cost as usage × current ProviderRate so we
@@ -5219,6 +5253,8 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
         # Retain the existing duration meter columns without a schema migration.
         # Cost rendering recognizes this exact pair as full-duplex audio, not STT.
         stt_provider_used, stt_sku_used = (None, None) if _gemini_native else ('openai', 'gpt-live-1')
+        if _gemini_native and _native_runtime.input_stt is not None:
+            stt_provider_used, stt_sku_used = 'sarvam', _native_runtime.input_stt.model
         tts_provider_used, tts_sku_used = None, None
     elif use_realtime:
         llm_provider_used = "google"
@@ -5298,6 +5334,8 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
         import math
         _native_estimate = max(0.0, (getattr(ctx, '_jj_hangup_mono', None) or time.monotonic()) - (_native_runtime.started_at or time.monotonic()))
         stt_seconds = 0 if _gemini_native else math.ceil(_native_runtime.provider_seconds or _native_estimate)
+        if _gemini_native and _native_runtime.input_stt is not None:
+            stt_seconds = math.ceil(_native_runtime.stt_audio_seconds)
         tts_chars = 0
         # Voice-only snapshot; dashboard adds exact backend and carrier meters.
         cost_usd = None if _gemini_native else round(stt_seconds / 60 * 0.05, 6)
@@ -5353,6 +5391,21 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
                 was_booked=was_booked, transcript=transcript,
             )
         log_call_ok = True
+        if _native_runtime is not None and getattr(_native_runtime,'engine',None)=='gemini-live':
+            try:
+                from voice_usage import save_voice_usage
+                async with asyncio.timeout(3):
+                    await save_voice_usage(call_id,_native_runtime.usage_snapshot())
+            except Exception:
+                logger.warning('voice_usage_save_failed',call_id=call_id,source='SESSION')
+        if _intelligence_state is not None:
+            try:
+                report = _intelligence_state.intelligence.report(_intelligence_state, agent_tools)
+                report['mode'] = 'read_only' if getattr(agent_tools, '_test_read_only', False) else 'live'
+                async with asyncio.timeout(3):
+                    await db.save_call_intelligence(call_id, report)
+            except Exception as exc:
+                logger.warning('call_intelligence_persist_failed', call_id=call_id, error_type=type(exc).__name__)
         logger.info("call_logged", call_id=call_id, duration=duration,
                     duration_basis=duration_basis, room_seconds=room_seconds,
                     ringing_seconds=getattr(agent_tools, "_ringing_seconds", None),
@@ -5439,6 +5492,12 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
         # Call rows, transcripts and recordings above remain operational.
         # No campaign mutation, email, SMS or outgoing webhook follows a test.
         logger.info('test_business_callbacks_skipped', call_id=ctx.room.name, source='WORKER')
+        if phone == 'demo':
+            try:
+                from voice_usage import finish_demo_call
+                await finish_demo_call(ctx.room.name,'COMPLETED')
+            except Exception:
+                logger.warning('demo_status_save_failed',room=ctx.room.name)
         await _close_job_db('read_only_test_shutdown')
         return
 
@@ -5575,6 +5634,9 @@ def _prewarm(proc: Any) -> None:  # noqa: ANN401 — livekit JobProcess
     DOWNLOAD hangs on a host that can't reach the tiktoken blob store, which hung
     process-init and killed every child (-10). count_tokens is now self-guarded
     (time-bounded, falls back to an estimate), so it is left to warm lazily."""
+    # Preserve the Python call site if a native media library terminates a job.
+    # A bare exit -11 otherwise leaves no actionable processing stack.
+    faulthandler.enable(all_threads=True)
     logger.info("VOICE_WORKER_BUILD", build=AGENT_BUILD, phase="prewarm", source="WORKER")
     try:
         _warm_linecache()

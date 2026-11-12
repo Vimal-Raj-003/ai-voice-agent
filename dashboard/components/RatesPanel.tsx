@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Money from "./Money";
+import {useCurrency} from "@/lib/currency-context";
 import { RefreshCw, Loader2, Check, AlertCircle } from "lucide-react";
 import type { ProviderRate, RateKind } from "@prisma/client";
 import { Badge } from "./Badge";
@@ -11,11 +13,11 @@ import { refreshRatesAction } from "@/app/(admin)/costs/actions";
 type RateRow = Omit<ProviderRate, "rateUsd"> & { rateUsd: string };
 
 const KIND_LABEL: Record<RateKind, string> = {
-  LLM_INPUT_MTOK: "LLM input ($/Mtok)",
-  LLM_OUTPUT_MTOK: "LLM output ($/Mtok)",
-  STT_MINUTE: "STT ($/min)",
-  TTS_KCHARS: "TTS ($/kchars)",
-  TELEPHONY_MINUTE: "Telephony ($/min)",
+  LLM_INPUT_MTOK: "LLM input / Mtok",
+  LLM_OUTPUT_MTOK: "LLM output / Mtok",
+  STT_MINUTE: "STT / min",
+  TTS_KCHARS: "TTS / kchars",
+  TELEPHONY_MINUTE: "Telephony / min",
 };
 
 const SOURCE_TONE: Record<string, "success" | "info" | "muted"> = {
@@ -33,6 +35,8 @@ function formatAge(when: Date): string {
   const days = Math.floor(hours / 24);
   return `${days}d ${hours % 24}h ago`;
 }
+
+function RateCurrency() { return <>{useCurrency().currency}</>; }
 
 export default function RatesPanel({ rates }: { rates: RateRow[] }) {
   const [pending, start] = useTransition();
@@ -123,7 +127,7 @@ export default function RatesPanel({ rates }: { rates: RateRow[] }) {
               <th className="text-left py-2 font-medium">Provider</th>
               <th className="text-left py-2 font-medium">SKU</th>
               <th className="text-left py-2 font-medium">Kind</th>
-              <th className="text-right py-2 font-medium">Rate (USD)</th>
+              <th className="text-right py-2 font-medium">Rate (<RateCurrency/>)</th>
               <th className="text-left py-2 font-medium pl-2">Source</th>
               <th className="text-left py-2 font-medium">Verified</th>
             </tr>
@@ -140,7 +144,7 @@ export default function RatesPanel({ rates }: { rates: RateRow[] }) {
                   {KIND_LABEL[r.kind]}
                 </td>
                 <td className="py-1.5 text-right font-mono tabular-nums">
-                  ${Number(r.rateUsd).toFixed(4)}
+                  <Money usd={Number(r.rateUsd)} decimals={4}/>
                 </td>
                 <td className="py-1.5 pl-2">
                   <Badge tone={SOURCE_TONE[r.source] ?? "muted"}>

@@ -357,7 +357,9 @@ class DelegationBridge:
                     else:
                         result = await target(**kwargs)
                     failed = False
+                    self.state.intelligence.counters['tool_results'] += 1
                 except Exception as exc:
+                    self.state.intelligence.counters['tool_errors'] += 1
                     result, failed = f'Tool request failed ({type(exc).__name__}). Do not claim success or automatically retry; check any submitted operation before reporting its outcome.', True
                 self.emit('sandbox_tool_result' if self.sandbox else 'gpt_live_tool_result',
                           turn_id=request_turn_id, tool=call.name,
@@ -395,6 +397,9 @@ async def run_test_session(ctx, selected: TestSelection, *, resolve_profile, log
     profile = await resolve_profile(selected.assistant_id)
     if profile.get('id') != selected.assistant_id:
         raise ExperimentRejected('Selected test assistant could not be loaded; no fallback allowed.')
+    dispatch = json.loads(getattr(getattr(ctx,'job',None),'metadata','{}') or '{}')
+    if dispatch.get('browser_assistant_selection') and profile.get('organization_id') != dispatch.get('organization_id'):
+        raise ExperimentRejected('Selected browser assistant organization does not match.')
     profile = profile_for_direction(profile, selected.direction)
     from native_voice import runtime_settings
     native = runtime_settings(profile)
@@ -411,6 +416,11 @@ async def run_test_session(ctx, selected: TestSelection, *, resolve_profile, log
     evidence_failed = False
     def emit(event, **fields):
         nonlocal evidence_failed
+        try:
+            log(event, call_id=selected.room, source='SESSION', **{k:v for k,v in fields.items() if k in {
+                'turn_id','speech_id','model','voice','tool','status','elapsed_ms','error_type','code','seconds'}})
+        except Exception:
+            pass
         if evidence_failed:
             return
         try:
@@ -456,13 +466,15 @@ async def run_test_session(ctx, selected: TestSelection, *, resolve_profile, log
         await wait_for_microphone(ctx.room, emit)
         backend, provider, model = build_backend(profile, keys)
         state = CallState(role=profile.get('role') or 'assistant', direction=selected.direction, language='en')
+        state.intelligence.configure(profile)
         import lang
         language_state = lang.LanguageState(initial='en')
         language_state.strict_lock = True
         owner, tools = sandbox_tools(ctx, state, emit)
-        business = config.BUSINESS_NAME or 'the selected business'
+        from assistant_identity import business_name_for_profile
+        business = business_name_for_profile(profile, config.BUSINESS_NAME)
         backend_prompt = build_prompt(custom_prompt=profile.get('system_prompt'), business_name=business,
-                                      call_direction=selected.direction, native_audio=True)
+                                      call_direction=selected.direction, native_audio=True, speech_style=profile.get('metadata'))
         backend_prompt += ('\n[EXPERIMENT OVERRIDE] All tools here are sandbox-only. Never claim real booking, email or transfer. '
                            'Answer the current question before intake. Use update_call_details for understood corrections. '
                            'Preserve other confirmed fields. Confirm a readback once, not repeatedly. '

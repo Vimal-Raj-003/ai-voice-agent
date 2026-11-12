@@ -613,3 +613,26 @@ body.modal-open {
     grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
   }
 }
+
+/* Assistant controls share one readable scale across all settings sections. */
+.assistant-settings h3 {
+  font-size: 0.9375rem;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.assistant-settings label > span:first-child {
+  font-size: 0.8125rem;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+}
+.assistant-settings input:not([type="hidden"]):not([type="checkbox"]),
+.assistant-settings button[aria-haspopup="listbox"] {
+  min-height: 2.75rem;
+}
+.assistant-settings [hidden] { display: none !important; }
+/* Fixed dialogs stay in the form for submission, and anchor to the viewport. */
+.assistant-settings .glass {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}

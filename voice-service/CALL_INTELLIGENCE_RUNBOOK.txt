@@ -1,0 +1,100 @@
+JillJill conversation intelligence, 10 November 2026
+
+Implemented as extensions to existing call state, SDK events, business tools
+and Call.metadata. No new voice architecture, provider, application, database
+table, schema migration, assistant, SIP trunk or phone number.
+
+ACTIVE ASSISTANT
+Appointment Booker: cmuv65lxx0013v7f4thzf2qtv
+Gemini 3.8 Live / Zephyr remain unchanged. Existing inbound/outbound prompts,
+first message, tools and all other assistant fields were compared before/after
+the UI save: only metadata.intelligence and updatedAt changed.
+Six switches are enabled under Assistant -> Conversation intelligence.
+The settings are saved per assistant and apply on new calls. Unconfigured
+assistants use enabled defaults. Disabling optional enhancements preserves
+the existing core state, caller-consent and business safety checks.
+
+CAPABILITIES AND ACTUAL BOUNDARIES
+1. Context-aware emotion: local, tentative text cues guide calmer or warmer
+   responses. Existing serious-context guidance survives scheduling follow-ups;
+   explicit resolution/positive news can change delivery. No diagnostic emotion
+   inference, acoustic emotion classifier or guaranteed vocal performance.
+2. Smart conversation memory: existing structured/confirmed state plus at most
+   six caller context anchors and four recent excerpts outside rolling history.
+   This is current-call memory. Existing explicit memory tools/history continue
+   to govern cross-call storage; no automatic customer profile scraping.
+3. Intelligent call recovery: native provider SDK retries/resumption during the
+   same call, with at most two recoverable-error allowances. Permanent or
+   exhausted failures close safely. No automatic redial, provider switching,
+   recovery of a terminated SIP call, or guaranteed worker-crash restoration.
+   Existing CallTasks continue settling submitted writes without replay.
+4. Quality intelligence: counts of observed repair/repetition/tool/provider
+   issues and up to 64 transcript-associated SDK speech-end -> room-playback
+   samples. Reports label p95, sample coverage and measurement boundaries.
+   No fabricated quality score, semantic accuracy score or handset timing.
+5. Self-correction: challenged replies trigger focused repair guidance without
+   discarding confirmed details. Invalid native tool arguments return an
+   explicit no-submission result so the model can correct its arguments rather
+   than asking the caller again. Unsupported booking claims are flagged;
+   end_call(booked) cannot succeed without a booking receipt. This does not
+   retroactively retract speech already heard or guarantee no hallucinations.
+6. Business outcomes: booking, current-recipient email and human transfer use
+   existing tool receipts. Queued/sending/sent/failed are distinct. Spoken claims
+   alone cannot make a real call booked; verified results inform existing call
+   outcome/was_booked fields. Existing booking/email/transfer implementations
+   and campaign analytics remain in place. A confirmed existing booking is not
+   proof that a NEW appointment was created in this call.
+
+REPORTS
+Calls -> open a completed new call -> Conversation intelligence.
+Existing calls without a collected report show a clear not-recorded state;
+they are not retrospectively assigned fictional metrics.
+Reports merge into Call.metadata.callIntelligence, preserving dispatch/provider
+metadata. They contain bounded counts/statuses, not names, email addresses,
+caller excerpts, booking IDs or provider session handles.
+Persistence is best effort after the call, with a three-second timeout; failure
+does not break the completed call. The existing protected call page displays it.
+Browser demo remains sandbox-only and writes its report to its local journal;
+it does not create a real booking, email or transfer to populate the UI.
+
+LATENCY AND COST
+No new classifier LLM requests, external emotion API, model download, extra
+STT/TTS stage, or synchronous database writes were added to the turn hot path.
+Bounded memory guidance adds prompt tokens; recovery may add billable provider
+time. This feature does not guarantee a one-second answer or zero added cost.
+Unrelated existing post-call processing remains unchanged.
+
+VERIFICATION
+- Full offline Python regression suite: 941 passed, one integration module
+  skipped; new recovery/memory/receipt/argument checks also pass in isolation.
+- Dashboard tests: 15 passed; type checking and targeted lint passed.
+- Playwright CLI: real Assistant save/reload, six enabled switches, desktop and
+  375px mobile layout, preserved model/voice, no overflow or alerts.
+- Before/after DB comparison confirmed no unrelated assistant changes.
+- Worker build 2026-11-10-call-intelligence-v23 was refreshed only after no live
+  rooms, recent active calls or running campaigns were found. Existing stale
+  call registry rows were not deleted.
+- Final worker PID 4899 registered in India South as AW_fQq5mcfpcCoh.
+  Log: output/logs/worker-local-intelligence-v23-final-20261110.log.
+  The previous worker's control connection re-registered after a missed PONG;
+  that is worker-control recovery, not a paid Gemini audio recovery test.
+- Dashboard login and API /health returned HTTP 200.
+- No paid audio test, outbound call, booking, email, SMS or transfer was started
+  automatically. Actual audible tone and network-failure behavior during a
+  paid conversation remain for the user's next call.
+
+KEY FILES
+call_intelligence.py, callstate.py, gemini_live_runtime.py, gpt_live_phone.py,
+gpt_live_experiment.py, agent.py, tools.py, db.py,
+dashboard/lib/call-intelligence.ts, dashboard/components/AssistantForm.tsx,
+dashboard/components/CallIntelligence.tsx,
+dashboard/app/(admin)/assistants/actions.ts,
+dashboard/app/(admin)/calls/[id]/page.tsx and focused Python/TypeScript tests.
+
+OPERATE
+Use the existing Assistant UI switches to enable/disable enhancements; save and
+start a NEW session. Existing core consent/receipt safeguards remain in place.
+Use http://localhost:3000/demo for a user-started sandbox conversation, then an
+intentional phone test if real business actions are wanted. No new key is needed.
+LiveKit SDK references: https://docs.livekit.io/agents/models/realtime/gemini/
+https://docs.livekit.io/reference/agents/events/

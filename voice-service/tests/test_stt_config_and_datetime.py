@@ -125,12 +125,18 @@ def test_stt_connected_no_longer_reports_env_defaults():
 
 
 def test_stt_connected_reports_the_session_provider():
+    import ast
     import agent
     src = inspect.getsource(agent.entrypoint)
-    i = src.index('logger.info("stt_connected"')
-    seg = src[i - 700:i + 420]
-    assert "_jj_stt_provider" in seg
-    assert "selected_provider=" in seg, "configured vs actual must both appear"
+    tree=ast.parse(src)
+    provider=next(node for node in ast.walk(tree) if isinstance(node,ast.Assign)
+        and any(isinstance(target,ast.Name) and target.id=='_conn_prov' for target in node.targets))
+    assert '_jj_stt_provider' in ast.unparse(provider.value)
+    logged=next(node for node in ast.walk(tree) if isinstance(node,ast.Call)
+        and node.args and isinstance(node.args[0],ast.Constant) and node.args[0].value=='stt_connected')
+    kwargs={kw.arg:kw.value for kw in logged.keywords}
+    assert isinstance(kwargs['provider'],ast.Name) and kwargs['provider'].id=='_conn_prov'
+    assert 'selected_provider' in kwargs, "configured vs actual must both appear"
 
 
 def test_deepgram_is_not_hardcoded_as_the_stt_source():

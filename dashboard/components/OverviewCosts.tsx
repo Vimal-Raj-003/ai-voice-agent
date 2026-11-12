@@ -19,20 +19,23 @@
 // original USD number and cannot compound.
 import { useState } from "react";
 import { ChevronDown, Table2, ReceiptText } from "lucide-react";
-import { type Currency, type FxRate } from "@/lib/currency";
-import { CurrencyProvider } from "@/lib/currency-context";
+import { type FxRate } from "@/lib/currency";
+import { useCurrency } from "@/lib/currency-context";
 import CurrencyToggle from "@/components/CurrencyToggle";
 import CostsView, { type CostsViewProps } from "@/components/CostsView";
+import Money from "./Money";
+import type {ChannelSpend} from "@/lib/cost";
 
 type Panel = "rates" | "calls" | null;
 
 export default function OverviewCosts({
-  fx,
+  fx: initialFx,
   header,
   actions,
   children,
   costs,
   ratesPanel,
+  channelSpend = [],
 }: {
   fx: FxRate;
   /** The page title block, rendered beside the toggle. */
@@ -47,8 +50,10 @@ export default function OverviewCosts({
   /** The existing RatesPanel, server-rendered once and only revealed on demand
       — mounting it here rather than re-fetching on each expand. */
   ratesPanel: React.ReactNode;
+  channelSpend?:ChannelSpend[];
 }) {
-  const [currency, setCurrency] = useState<Currency>("USD");
+  const {currency, setCurrency, fx} = useCurrency();
+  void initialFx;
   const [panel, setPanel] = useState<Panel>(null);
 
   const btn = (id: Exclude<Panel, null>, label: string, Icon: typeof Table2) => {
@@ -76,7 +81,7 @@ export default function OverviewCosts({
   };
 
   return (
-    <CurrencyProvider currency={currency} fx={fx}>
+    <>
       <div className="space-y-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           {header}
@@ -89,6 +94,18 @@ export default function OverviewCosts({
         {children}
 
         <section id="costs" className="space-y-4 scroll-mt-6">
+          <div className="rounded-xl border border-white/10 p-4 sm:p-5 space-y-3">
+            <h2 className="text-lg font-semibold">Spend by call type</h2>
+            <p className="max-w-3xl text-sm text-gray-400">Priced usage for the selected date range. Demo and phone calls are tracked separately. Unpriced provider, media or storage usage is marked incomplete; these figures are estimates, not an invoice.</p>
+            <div className="overflow-x-auto"><table className="w-full text-left text-sm">
+              <thead className="text-gray-400"><tr><th className="py-3 pr-4 font-medium">Call type</th><th className="p-3 font-medium">Calls</th><th className="p-3 font-medium">Minutes</th><th className="p-3 font-medium">Priced cost</th><th className="p-3 font-medium">Coverage</th></tr></thead>
+              <tbody>{channelSpend.map(row=><tr key={row.channel} className="border-t border-white/10">
+                <th className="py-3 pr-4 font-medium">{row.channel}</th><td className="p-3 tabular-nums">{row.calls}</td><td className="p-3 tabular-nums">{row.minutes.toFixed(1)}</td>
+                <td className="p-3 whitespace-nowrap"><Money usd={row.pricedUsd} decimals={4}/></td><td className="p-3 text-gray-400">{!row.calls?'No recorded usage':row.incomplete?`${row.incomplete} incomplete`:'All recorded meters priced'}</td>
+              </tr>)}</tbody>
+            </table></div>
+            <p className="text-xs text-gray-400">Published paid-rate estimates; free-tier credits and invoices may differ. Browser demo tracking starts with this update. Earlier recordings without a usage ledger cannot be priced accurately.</p>
+          </div>
           {/* Single Costs & Usage heading, with both panel buttons beside it.
               They wrap under the heading on narrow screens. */}
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -150,6 +167,6 @@ export default function OverviewCosts({
           )}
         </section>
       </div>
-    </CurrencyProvider>
+    </>
   );
 }

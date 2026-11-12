@@ -31,3 +31,33 @@ export const E164_RE = /^\+[1-9]\d{7,14}$/;
 export function isE164(v: string): boolean {
   return E164_RE.test((v ?? "").trim());
 }
+
+export type ExtraTransferPerson = {
+  id: string; category: TransferCategory; label: string; phoneE164: string | null;
+  enabled: boolean; priority: number;
+};
+export function extraTransferPeople(metadata: unknown): ExtraTransferPerson[] {
+  const rows = (metadata as {humanTransferPeople?: unknown})?.humanTransferPeople;
+  return Array.isArray(rows) ? rows.filter((row): row is ExtraTransferPerson =>
+    !!row && /^person_[a-f0-9-]{36}$/.test(row.id) && TRANSFER_CATEGORIES.some(c => c.category === row.category)) : [];
+}
+
+export function withTransferPeople(metadata: unknown, form: FormData):Record<string,unknown> {
+  const current = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata as Record<string,unknown> : {};
+  if (!form.has("transferExtraIds")) return current;
+  const ids: unknown = JSON.parse(String(form.get("transferExtraIds")));
+  if (!Array.isArray(ids) || new Set(ids).size !== ids.length) throw new Error("Invalid forwarding people. Reload and try again.");
+  const people: ExtraTransferPerson[] = ids.map((id: unknown) => {
+    if (typeof id !== "string" || !/^person_[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid forwarding person.");
+    const category = String(form.get(`transfer_${id}_intent`) || "other") as TransferCategory;
+    const label = String(form.get(`transfer_${id}_label`) || "").trim().slice(0, 100);
+    const phone = String(form.get(`transfer_${id}_phone`) || "").trim();
+    const enabled = form.get(`transfer_${id}_enabled`) === "on";
+    if (!TRANSFER_CATEGORIES.some(c => c.category === category) || !label) throw new Error("Give each forwarding person a name and team.");
+    if ((phone && !isE164(phone)) || (enabled && !phone)) throw new Error(`${label}: enter a valid phone number with country code.`);
+    const priority = Number(form.get(`transfer_${id}_priority`) ?? 100);
+    if (!Number.isSafeInteger(priority)) throw new Error("Invalid forwarding priority.");
+    return {id, category, label, phoneE164: phone || null, enabled, priority};
+  });
+  return {...current, humanTransferPeople: people};
+}

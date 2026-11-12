@@ -201,6 +201,8 @@ async def test_cancel_calcom_fail_does_not_sync_local(monkeypatch):
 async def test_local_only_when_calcom_unconfigured(monkeypatch):
     _disable_calcom(monkeypatch)
     seen = {}
+    async def slot_free(date, time):return True
+    monkeypatch.setattr(tools.db, 'check_slot', slot_free)
 
     async def book(*a, **k):
         seen["calcom_called"] = True

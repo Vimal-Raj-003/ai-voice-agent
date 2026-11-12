@@ -1,11 +1,8 @@
-// Cost computation. The whole point: cost = usage × current rate, computed
-// at query time from the ProviderRate table — never stored on the Call.
-// When OpenAI cuts gpt-4o-mini prices tomorrow, every historical row's
-// reported cost moves with the rate.
+// Usage × rates. Native calls retain a rate receipt at completion; older
+// calls without that receipt explicitly use the currently configured rates.
 
 import type {
   Call,
-  CallDirection,
   ProviderRate,
   RateKind,
 } from "@prisma/client";
@@ -43,6 +40,8 @@ export type CostBreakdown = {
   totalUsd: number;
   lines: CostLine[];
   hasUnknownRates: boolean; // true if any usage column is set but no matching rate row
+  rateBasis?: 'call_snapshot'|'current_rates';
+  ratesCapturedAt?: string|null;
 };
 
 /**
@@ -87,6 +86,26 @@ function lookup(
 
 const SECONDS_PER_MINUTE = 60;
 
+type NativeUsage = {mode?:string;engine?:string;provider?:string;model?:string;complete?:boolean;tokens?:Record<string,number>;speechInput?:{provider:string;model:string;seconds:number;source:string};rateSnapshot?:{version:number;capturedAt:string;rows:{provider:string;sku:string;kind:RateKind;rateUsd:number}[]}};
+export function voiceUsage(metadata:unknown): NativeUsage | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const usage = (metadata as {voiceUsage?:unknown}).voiceUsage;
+  return usage && typeof usage === "object" ? usage as NativeUsage : null;
+}
+export function callChannel(call:{metadata?:unknown;direction:string;fromNumber?:string|null;toNumber?:string|null}) {
+  return voiceUsage(call.metadata)?.mode === "demo" || call.fromNumber === "demo-user" || call.toNumber === "browser-demo"
+    ? "Demo" : call.direction === "INBOUND" ? "Inbound" : "Outbound";
+}
+export type ChannelSpend = {channel:string;calls:number;minutes:number;pricedUsd:number;incomplete:number};
+export function channelSpending(calls:CallCostInput[], rates:Map<string,number>):ChannelSpend[] {
+  return ["Demo","Inbound","Outbound"].map(channel=>{
+    const rows=calls.filter(c=>callChannel(c)===channel);
+    const costs=rows.map(c=>computeCallCost(c,rates,{includeUnavailable:true}));
+    return {channel,calls:rows.length,minutes:rows.reduce((sum,c)=>sum+(c.durationSeconds||0)/60,0),
+      pricedUsd:costs.reduce((sum,c)=>sum+c.totalUsd,0),incomplete:costs.filter(c=>c.hasUnknownRates).length};
+  });
+}
+
 // Compute cost lines for a single call against the live rate map. Lines are
 // only added when the corresponding usage column is non-null AND a matching
 // rate row exists. Missing rates get flagged via hasUnknownRates so the UI
@@ -106,7 +125,7 @@ export type CallCostInput = Pick<
   | "ttsSkuUsed"
   | "telephonyProvider"
   | "durationSeconds"
->;
+> & {metadata?:unknown;fromNumber?:string|null;toNumber?:string|null};
 
 export function computeCallCost(
   call: CallCostInput,
@@ -115,6 +134,22 @@ export function computeCallCost(
 ): CostBreakdown {
   const lines: CostLine[] = [];
   let unknown = false;
+  const receipt = voiceUsage(call.metadata);
+  const snapshot=receipt?.rateSnapshot;
+  const frozen=snapshot?.version===1&&Array.isArray(snapshot.rows);
+  if(frozen){
+    rateMap=new Map(rateMap);
+    for(const modality of ['audio','text'])for(const kind of ['LLM_INPUT_MTOK','LLM_OUTPUT_MTOK'])
+      rateMap.delete(`google|${call.llmSkuUsed||receipt?.model}/${modality}|${kind}`);
+    if(receipt?.speechInput?.provider==='sarvam')
+      rateMap.delete(`sarvam|${receipt.speechInput.model}|STT_MINUTE`);
+    for(const row of snapshot.rows){
+      const speechRate=row.provider==='sarvam'&&row.provider===receipt?.speechInput?.provider&&
+        row.sku===receipt.speechInput.model&&row.kind==='STT_MINUTE';
+      if((row.provider==='google'||speechRate)&&Number.isFinite(row.rateUsd)&&row.rateUsd>=0)
+        rateMap.set(`${row.provider}|${row.sku}|${row.kind}`,row.rateUsd);
+    }
+  }
 
   // One place that decides: priced line, or an explicit "Rate unavailable"
   // line. Cost is NEVER invented — a missing rate yields costUsd 0 and the
@@ -153,20 +188,40 @@ export function computeCallCost(
     opts.configuredLlmModel !== call.llmSkuUsed,
   );
 
-  // — LLM input —
-  if (call.llmInputTokens && call.llmInputTokens > 0) {
+  const billedProvider = call.llmProviderUsed || receipt?.provider;
+  const billedModel = call.llmSkuUsed || receipt?.model;
+  const native = billedProvider === "google" && /^gemini-.*live/.test(billedModel || "");
+  if (native) {
+    const saved = voiceUsage(call.metadata);
+    if (!saved || saved.complete !== true) unknown = true;
+    if (saved?.tokens) {
+      for (const [field,modality,kind] of [
+        ["inputAudio","audio","LLM_INPUT_MTOK"], ["inputText","text","LLM_INPUT_MTOK"],
+        ["outputAudio","audio","LLM_OUTPUT_MTOK"], ["outputText","text","LLM_OUTPUT_MTOK"],
+      ] as const) {
+        const count = Number(saved.tokens[field] || 0);
+        if (count>0) add("LLM","google",`${billedModel}/${modality}`,kind,count/1_000_000,"Mtok",`Gemini Live ${modality} ${kind === "LLM_INPUT_MTOK" ? "input" : "output"}`);
+      }
+    }
+    if ((!saved || !saved.complete) && opts.includeUnavailable) lines.push({
+      label:"Native audio/text usage incomplete",provider:"google",sku:billedModel || "",kind:null,
+      category:"LLM",units:Number(saved?.tokens?.unclassified||0),unitLabel:"unclassified tokens",rateUsd:null,costUsd:0,unavailable:true,
+    });
+  }
+  // Cascaded models retain their existing meters.
+  if (!native && call.llmInputTokens && call.llmInputTokens > 0) {
     add("LLM", call.llmProviderUsed, call.llmSkuUsed, "LLM_INPUT_MTOK",
         call.llmInputTokens / 1_000_000, "Mtok",
         `${call.llmProviderUsed} ${call.llmSkuUsed} input`, { fallback: fellBack });
   }
   // — LLM output —
-  if (call.llmOutputTokens && call.llmOutputTokens > 0) {
+  if (!native && call.llmOutputTokens && call.llmOutputTokens > 0) {
     add("LLM", call.llmProviderUsed, call.llmSkuUsed, "LLM_OUTPUT_MTOK",
         call.llmOutputTokens / 1_000_000, "Mtok",
         `${call.llmProviderUsed} ${call.llmSkuUsed} output`, { fallback: fellBack });
   }
   // — STT —
-  if (call.sttSeconds && call.sttSeconds > 0) {
+  if ((!native || (receipt?.speechInput?.provider === 'sarvam' && call.sttProviderUsed === 'sarvam')) && call.sttSeconds && call.sttSeconds > 0) {
     // GPT-Live reuses the existing duration meter; it replaces both STT/TTS.
     const nativeAudio = call.sttProviderUsed === "openai" && call.sttSkuUsed === "gpt-live-1";
     add(nativeAudio ? "LLM" : "STT", call.sttProviderUsed, call.sttSkuUsed, "STT_MINUTE",
@@ -174,14 +229,14 @@ export function computeCallCost(
         nativeAudio ? "OpenAI GPT-Live full-duplex audio" : `${call.sttProviderUsed} ${call.sttSkuUsed} STT`);
   }
   // — TTS —
-  if (call.ttsChars && call.ttsChars > 0) {
+  if (!native && call.ttsChars && call.ttsChars > 0) {
     add("TTS", call.ttsProviderUsed, call.ttsSkuUsed, "TTS_KCHARS",
         call.ttsChars / 1000, "kchars",
         `${call.ttsProviderUsed} ${call.ttsSkuUsed} TTS`);
   }
   // — Telephony — pick the SKU by direction so inbound isn't billed at the
   // outbound rate. Inbound is typically zero (rolled into trunk rental).
-  if (call.telephonyProvider && call.durationSeconds && call.durationSeconds > 0) {
+  if (callChannel(call)!=='Demo' && call.telephonyProvider && call.durationSeconds && call.durationSeconds > 0) {
     const sku = call.direction === "INBOUND" ? "inbound" : "outbound";
     const r = lookup(rateMap, call.telephonyProvider, sku, "TELEPHONY_MINUTE");
     const min = call.durationSeconds / SECONDS_PER_MINUTE;
@@ -210,7 +265,7 @@ export function computeCallCost(
   }
 
   const totalUsd = lines.reduce((s, l) => s + l.costUsd, 0);
-  return { totalUsd, lines, hasUnknownRates: unknown };
+  return { totalUsd, lines, hasUnknownRates: unknown,rateBasis:frozen?'call_snapshot':'current_rates',ratesCapturedAt:frozen?snapshot.capturedAt:null };
 }
 
 // Aggregate many calls — used by the cost dashboard. Returns total + a

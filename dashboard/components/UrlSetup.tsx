@@ -14,6 +14,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Clock, Eye, FileSpreadsheet, FileText, FolderOpen, Globe, Image as ImageIcon, Link2, Loader2, Plus, RotateCw, Trash2, Upload } from "lucide-react";
 import KnowledgeInspector from "./KnowledgeInspector";
 import InfoTooltip from "./InfoTooltip";
+import RecordingKnowledge, {RecordingList} from "./RecordingKnowledge";
+import {useRecordingReferences} from "@/lib/useRecordingReferences";
 
 type Source = {
   id: string;
@@ -57,14 +59,11 @@ const DT = new Intl.DateTimeFormat("en-GB", {
 });
 
 export default function UrlSetup({ assistantId }: { assistantId: string }) {
+  const recordings=useRecordingReferences(assistantId);
   const [sources, setSources] = useState<Source[]>([]);
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<"URL" | "FILE">("URL");
-  // The existing-source list is collapsed by default to save vertical space.
-  // Separate from `tab` because it is a toggle, not an add-mode: clicking
-  // "Uploaded Files" again hides it and leaves the URL/File choice alone.
-  const [showSources, setShowSources] = useState(false);
+  const [tab, setTab] = useState<"URL" | "FILE" | "RECORDING" | "UPLOADED">("UPLOADED");
   const fileInput = useRef<HTMLInputElement>(null);
   // Which source's indexed data is open. Read-only; closing changes nothing.
   const [inspecting, setInspecting] = useState<Source | null>(null);
@@ -165,8 +164,8 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
     // container is ~1700px, and nothing else shares this row, so constraining
     // the card avoids the long empty stretch without leaving a gap elsewhere.
     // min-w-0 so it still shrinks correctly if it is ever placed in a grid.
-    <section className="glass min-w-0 rounded-2xl p-4 space-y-2">
-      <div className="flex items-center gap-2">
+    <section className="glass flex min-h-64 min-w-0 flex-1 shrink-0 flex-col gap-2 rounded-2xl p-4">
+      <div className="flex shrink-0 items-center gap-2">
         <Globe size={15} className="text-violet-300" />
         <h2 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
           Knowledge
@@ -174,45 +173,50 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
             Add your website or upload documents, and this assistant will answer
             callers from them. If a caller asks something your sources don&apos;t
             cover, the assistant says so instead of guessing.
+            {" "}{sources.length} website/document sources; {recordings.rows.length} recording references.
           </InfoTooltip>
         </h2>
       </div>
 
       {/* Both tabs feed the same knowledge base; the tab only picks how you add. */}
-      <div className="flex w-full flex-wrap items-center gap-0.5 rounded-lg border border-white/10 bg-black/30 p-0.5">
+      <div className="flex w-full shrink-0 flex-wrap items-center gap-0.5 rounded-lg border border-white/10 bg-black/30 p-0.5">
         {([["URL", "URL", Link2], ["FILE", "Upload File", Upload]] as const).map(([key, label, Icon]) => (
           <button
             key={key}
             type="button"
-            onClick={() => { setTab(key); setNotice(null); }}
+            onClick={() => { setTab(key); setInspecting(null); setNotice(null); }}
+            aria-pressed={tab===key}
+            aria-label={label}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition ${
               tab === key ? "bg-violet-500/20 text-violet-200" : "text-gray-400 hover:text-gray-200"
             }`}
           >
-            <Icon size={12} /> {label}
+            <Icon size={12} /> {key==='FILE'?'Upload':label}
           </button>
         ))}
-        {/* Reveals the existing sources below. A toggle, so it does not
-            disturb the URL / Upload File selection. */}
+        <button type="button" onClick={()=>{setTab("RECORDING");setInspecting(null);setNotice(null);}} aria-pressed={tab==="RECORDING"}
+          className={`inline-flex min-h-8 items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold ${tab==="RECORDING"?"bg-violet-500/20 text-violet-200":"text-gray-400 hover:text-gray-200"}`}>Recording</button>
         <button
           type="button"
-          onClick={() => setShowSources((v) => !v)}
-          aria-expanded={showSources}
-          aria-controls="knowledge-sources"
+          onClick={() => {setTab("UPLOADED");setInspecting(null);}}
+          aria-pressed={tab==="UPLOADED"}
+          aria-label="Uploaded Files"
           className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition ${
-            showSources ? "bg-violet-500/20 text-violet-200" : "text-gray-400 hover:text-gray-200"
+            tab === "UPLOADED" ? "bg-violet-500/20 text-violet-200" : "text-gray-400 hover:text-gray-200"
           }`}
         >
-          <FolderOpen size={12} /> Uploaded Files
-          {sources.length > 0 && (
+          <FolderOpen size={12} /> Files
+          {sources.length+recordings.rows.length > 0 && (
             <span className="rounded bg-white/10 px-1 text-[10px] tabular-nums text-gray-300">
-              {sources.length}
+              {sources.length+recordings.rows.length}
             </span>
           )}
         </button>
       </div>
 
-      {tab === "FILE" ? (
+      <div aria-label="Knowledge content" tabIndex={0} className="min-h-32 max-h-[min(48svh,26rem)] flex-1 overflow-y-auto pb-3 pt-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50">
+      <div hidden={!!inspecting}>
+      {tab === "RECORDING" ? <RecordingKnowledge references={recordings} onUploaded={()=>setTab("UPLOADED")}/> : tab === "FILE" ? (
         <div>
           <input
             key="knowledge-file-input"
@@ -224,12 +228,12 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
             disabled={busy}
             className="block w-full cursor-pointer rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm text-gray-300 file:mr-3 file:cursor-pointer file:rounded file:border-0 file:bg-violet-500/20 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-violet-200 disabled:opacity-50"
           />
-          <p className="mt-1 text-[11px] text-gray-500">
-            PDF, images (PNG/JPG/WEBP), Word, text, Markdown, CSV and Excel. Scanned
-            pages and photos are read automatically. You can select several at once.
+          <p className="mt-1 flex items-center text-xs text-gray-400">
+            Documents and images
+            <InfoTooltip>PDF, PNG/JPG/WEBP, Word, text, Markdown, CSV and Excel. Scanned pages and photos are read automatically. You can select several files at once.</InfoTooltip>
           </p>
         </div>
-      ) : (
+      ) : tab === "URL" ? (
       <div className="flex items-stretch gap-2">
         <input
           key="knowledge-url-input"
@@ -250,16 +254,17 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
           <Plus size={13} /> Add URL
         </button>
       </div>
-      )}
+      ) : null}
       {notice && <p className="mt-1.5 text-[11px] text-amber-300">{notice}</p>}
 
-      {showSources && (
+      {tab === "UPLOADED" && (
       <div id="knowledge-sources" className="mt-3 space-y-2">
-        {sources.length === 0 && (
+        {sources.length === 0 && recordings.rows.length === 0 && (
           <p className="py-6 text-center text-xs text-gray-500">
             Nothing added yet — add a website or upload a document.
           </p>
         )}
+        <RecordingList references={recordings}/>
         {sources.map((s) => {
           const st = STATUS[s.status] ?? STATUS.PENDING;
           const isFile = s.type !== "URL";
@@ -272,15 +277,15 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
             : s.url;
           return (
             <div key={s.id} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex min-w-0 items-start gap-2">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex min-w-0 flex-1 basis-48 items-start gap-2">
                   <Icon size={14} className="mt-0.5 shrink-0 text-violet-300/70" />
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium text-fg">{primary}</div>
                     <div className="truncate text-[11px] text-gray-500">{secondary}</div>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-1.5">
+                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
                   {s.status === "READY" && (
                     <button
                       type="button" onClick={() => setInspecting(s)}
@@ -341,11 +346,14 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
       </div>
       )}
 
+      </div>
+
       {/* Read-only inspector for one source. Mounted only while open, so it
           fetches nothing until the operator asks to see the stored data. */}
       {inspecting && (
         <KnowledgeInspector
           assistantId={assistantId}
+          inline
           source={{
             id: inspecting.id,
             type: inspecting.type,
@@ -356,6 +364,7 @@ export default function UrlSetup({ assistantId }: { assistantId: string }) {
           onClose={() => setInspecting(null)}
         />
       )}
+      </div>
     </section>
   );
 }

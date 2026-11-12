@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Money from "./Money";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
 import {
@@ -10,6 +11,7 @@ import {
 } from "@/components/Badge";
 import CallsFilters from "@/components/CallsFilters";
 import PhoneDialer from "@/components/PhoneDialer";
+import {buildRateMap,callChannel,computeCallCost,voiceUsage} from "@/lib/cost";
 
 // Call history, rendered as a SECTION of the Contacts page.
 //
@@ -46,7 +48,7 @@ export default async function CallsSection({
   // list with no control left to clear it. The backend status and outcome
   // values are untouched and still shown as badges on each row.
   const q = (sp.q ?? "").trim();
-  const direction = sp.direction || undefined;
+  const direction = ['INBOUND','OUTBOUND','DEMO'].includes(sp.direction||'')?sp.direction:undefined;
   const page = Math.max(1, Number(sp.page || 1));
   const offset = (page - 1) * PAGE_SIZE;
 
@@ -70,15 +72,17 @@ export default async function CallsSection({
   const where: Record<string, unknown> = {
     organizationId: orgId,
   };
-  if (direction) where.direction = direction;
+  if (direction==='DEMO')where.fromNumber='demo-user';
+  else if (direction) {where.direction = direction;where.fromNumber={not:'demo-user'};}
   if (idFilter) where.id = { in: idFilter };
 
-  const [calls, total, dialerAssistants] = await Promise.all([
+  const [calls, total, dialerAssistants, rates] = await Promise.all([
     prisma.call.findMany({
       where,
       orderBy: { createdAt: "desc" },
       skip: offset,
       take: PAGE_SIZE,
+      include:{assistant:{select:{name:true}}},
     }),
     prisma.call.count({ where }),
     // Active assistants for the dialer dropdown, with the fields it shows as a
@@ -95,7 +99,9 @@ export default async function CallsSection({
         voiceId: true,
       },
     }),
+    prisma.providerRate.findMany(),
   ]);
+  const rateMap=buildRateMap(rates);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -114,22 +120,25 @@ export default async function CallsSection({
           </li>
         )}
         {calls.map((c) => {
-          const cost = Number(c.costUsd ?? 0);
+          const breakdown=computeCallCost(c,rateMap,{includeUnavailable:true});
+          const cost = breakdown.totalUsd;
+          const channel=callChannel(c);
+          const incomplete=breakdown.hasUnknownRates||(channel==='Demo'&&!voiceUsage(c.metadata)?.complete);
           return (
             <li key={c.id} className="p-3 hover:bg-white/[0.02]">
              <div className="flex items-start gap-3">
               <Link href={`/calls/${c.id}`} className="block min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="font-mono text-sm">{c.toNumber}</div>
+                    <div className="text-sm">{channel==='Demo'?`Browser demo · ${c.assistant?.name||'Assistant'}`:c.toNumber}</div>
                     <div className="text-[11px] text-gray-500">
                       {c.createdAt.toLocaleString()}
                       {c.durationSeconds != null && ` · ${c.durationSeconds}s`}
-                      {cost > 0 && ` · $${cost.toFixed(4)}`}
+                      {incomplete&&cost===0?' · Cost incomplete':<> · <Money usd={cost} decimals={4}/>{incomplete?' + unmetered':' estimated'}</>}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge tone={directionTone(c.direction)}>{c.direction.toLowerCase()}</Badge>
+                    <Badge tone={directionTone(c.direction)}>{channel}</Badge>
                     <Badge tone={statusTone(c.status)}>{c.status}</Badge>
                     {c.outcome && <Badge tone={outcomeTone(c.outcome)}>{c.outcome}</Badge>}
                     {c.sentiment && <Badge tone={sentimentTone(c.sentiment)}>{c.sentiment}</Badge>}
