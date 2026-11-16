@@ -81,15 +81,17 @@ def send_booking_confirmation_email(
     booking_id: str,
     service: str = "",
     business_name: str = "VIMS Enterprise",
+    *, mail_settings: dict[str, str] | None = None,
 ) -> bool:
     """Send a booking confirmation email via standard SMTP or Resend API.
     
-    Reads credentials from env:
+    Reads credentials from saved settings supplied by the async caller, with env fallback:
       - SMTP: SMTP_HOST, SMTP_PORT (default 587), SMTP_USER, SMTP_PASSWORD/SMTP_PASS, SMTP_FROM
       - Resend: RESEND_API_KEY
     """
-    clean_email = (to_email or "").strip().lower()
-    if not clean_email or "@" not in clean_email or "." not in clean_email.split("@")[-1]:
+    from contact_corrections import canonical_recipient
+    clean_email = canonical_recipient(to_email)
+    if not clean_email:
         return False
 
     try:
@@ -98,13 +100,14 @@ def send_booking_confirmation_email(
     except Exception:
         readable = booking_time_iso
 
-    smtp_host = os.environ.get("SMTP_HOST", "").strip()
-    smtp_port_raw = os.environ.get("SMTP_PORT", "587").strip()
+    settings = os.environ if mail_settings is None else mail_settings
+    smtp_host = settings.get("SMTP_HOST", "").strip()
+    smtp_port_raw = settings.get("SMTP_PORT", "587").strip()
     smtp_port = int(smtp_port_raw) if smtp_port_raw.isdigit() else 587
-    smtp_user = os.environ.get("SMTP_USER", "").strip()
-    smtp_pass = os.environ.get("SMTP_PASSWORD", os.environ.get("SMTP_PASS", "")).strip()
-    smtp_from = os.environ.get("SMTP_FROM", smtp_user or f"bookings@{business_name.lower().replace(' ', '')}.com").strip()
-    resend_key = os.environ.get("RESEND_API_KEY", "").strip()
+    smtp_user = settings.get("SMTP_USER", "").strip()
+    smtp_pass = (settings.get("SMTP_PASSWORD") or settings.get("SMTP_PASS", "")).strip()
+    smtp_from = (settings.get("SMTP_FROM") or smtp_user or f"bookings@{business_name.lower().replace(' ', '')}.com").strip()
+    resend_key = settings.get("RESEND_API_KEY", "").strip()
 
     subject = f"Appointment Confirmed: {business_name} [Booking ID: {booking_id}]"
 

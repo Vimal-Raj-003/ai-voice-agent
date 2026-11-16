@@ -36,13 +36,12 @@ export default function HumanTransferFields({targets, extraPeople = []}: {
       <h3 className="flex items-center gap-1 font-semibold"><button type="button" aria-haspopup="dialog" onClick={()=>setOpen(true)} className="flex items-center gap-1 text-left focus-visible:outline-2"><ChevronRight size={15} className="shrink-0"/>Human call forwarding</button>
         <InfoTooltip>Configure trusted destinations for live calls. The assistant selects a person or team by name and intent; phone numbers stay private. Team requests use the lowest configured priority. Demo transfers stay simulated.</InfoTooltip>
       </h3>
-    </div>
-    {!!visible.length&&<p className="truncate text-xs text-gray-400">{visible.slice(0,3).map(p=>p.label||'Unnamed person').join(' · ')}{visible.length>3?` · +${visible.length-3} more`:''}</p>}
-    <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs font-normal text-gray-400">{visible.length} people · {visible.filter(p=>p.enabled&&p.phoneE164).length} enabled</span>
-      <button type="button" onClick={add} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-violet-400/30 bg-violet-500/10 px-3 py-2 text-sm text-violet-200">
-        <Plus size={16}/> Add person
+      <button type="button" onClick={add} aria-label="Add person" title="Add person" className="inline-flex min-h-9 min-w-9 items-center justify-center gap-1 rounded-lg border border-violet-400/30 bg-violet-500/10 px-2 text-sm text-violet-200">
+        <Plus size={16}/><span className="hidden 2xl:inline">Add person</span>
       </button>
     </div>
+    {!!visible.length&&<p className="truncate text-xs text-gray-400">{visible.slice(0,3).map(p=>p.label||'Unnamed person').join(' · ')}{visible.length>3?` · +${visible.length-3} more`:''}</p>}
+    <span className="text-xs font-normal text-gray-400">{visible.length} people · {visible.filter(p=>p.enabled&&p.phoneE164).length} enabled</span>
     <SettingsDialog open={open} onOpen={()=>setOpen(true)} onClose={()=>setOpen(false)} title="Human call forwarding" note="Save the assistant to apply forwarding changes.">
     <input type="hidden" name="transferExtraIds" value={JSON.stringify(people.filter(p => p.extra && p.present).map(p => p.id))}/>
     <div className="grid items-start gap-3 lg:grid-cols-2">

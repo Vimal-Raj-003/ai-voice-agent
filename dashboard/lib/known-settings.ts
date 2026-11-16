@@ -125,6 +125,12 @@ export const KNOWN_SETTINGS: SettingDef[] = [
 
   { key: "CALCOM_API_KEY", label: "Cal.com API key", category: "integrations", sensitive: true, type: "password" },
   { key: "CALCOM_EVENT_TYPE_ID", label: "Cal.com event type ID", category: "integrations", sensitive: false, type: "text" },
+  { key: "SMTP_HOST", label: "SMTP host", category: "integrations", sensitive: false, type: "text" },
+  { key: "SMTP_PORT", label: "SMTP port", category: "integrations", sensitive: false, type: "text", placeholder: "587" },
+  { key: "SMTP_USER", label: "SMTP username", category: "integrations", sensitive: false, type: "text" },
+  { key: "SMTP_PASSWORD", label: "SMTP password / App Password", category: "integrations", sensitive: true, type: "password" },
+  { key: "SMTP_FROM", label: "Booking email sender", category: "integrations", sensitive: false, type: "text" },
+  { key: "RESEND_API_KEY", label: "Resend API key (optional)", category: "integrations", sensitive: true, type: "password" },
   {
     key: "CALCOM_TIMEZONE",
     label: "Cal.com timezone",

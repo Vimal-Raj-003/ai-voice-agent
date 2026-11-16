@@ -33,6 +33,7 @@ import os
 import shutil
 import time
 import wave
+from collections import deque
 from typing import Any
 
 import numpy as np
@@ -107,6 +108,11 @@ class CallRecorder:
         self._tasks: list[asyncio.Task] = []
         self._closed = False
         self._truncated = False
+        self._started_wall: float | None = None
+        self._agent_playout = False
+        self._agent_frames: deque[tuple[int, np.ndarray]] = deque()
+        self._agent_staged = 0
+        self._agent_reported = 0
         # Caller tracks already being pumped. The track can be offered twice —
         # once by the live `track_subscribed` event and once by the sweep of
         # already-subscribed tracks that runs when recording starts — and two
@@ -134,6 +140,7 @@ class CallRecorder:
             self._ch[_CH_CALLER] = np.zeros(init_samples, dtype=np.float32)
             self._ch[_CH_AGENT] = np.zeros(init_samples, dtype=np.float32)
             self.started_at = time.monotonic()
+            self._started_wall = time.time()
             ts = time.gmtime()
             self.rel_key = (f"{ts.tm_year:04d}/{ts.tm_mon:02d}/{ts.tm_mday:02d}/"
                             f"{_safe(self.room)}.wav")
@@ -153,16 +160,13 @@ class CallRecorder:
     def _write(self, ch: int, pcm: np.ndarray, at: float) -> None:
         """Place `pcm` on channel `ch` at wall-clock offset `at` seconds.
 
-        Additive within a channel (two frames from the same leg should never
-        overlap, but if clocks jitter we sum rather than drop audio). The two
-        legs never share a buffer, so one speaker can no longer clip the other.
+        Frames on one leg are sequential PCM, even if several arrive together.
+        Preserve their order instead of summing network/synthesis bursts.
         """
         buf = self._ch.get(ch)
         if buf is None or self._closed or pcm is None or not len(pcm):
             return
-        start = int(at * self.rate)
-        if start < 0:
-            start = 0
+        start = max(0, round(at * self.rate), self._written[ch])
         end = start + len(pcm)
         if start >= self._max_samples:
             if not self._truncated:
@@ -180,7 +184,7 @@ class CallRecorder:
             grown[:len(buf)] = buf
             self._ch[ch] = grown
             buf = grown
-        buf[start:end] += pcm
+        buf[start:end] = pcm
         self._written[ch] = max(self._written[ch], end)
         if end > self._high_water:
             self._high_water = end
@@ -192,9 +196,55 @@ class CallRecorder:
         try:
             pcm = _frame_to_mono(frame, self.rate)
             if pcm is not None:
-                self._write(_CH_AGENT, pcm, time.monotonic() - self.started_at)
+                if self._agent_playout:
+                    size = min(len(pcm), self._max_samples - self._agent_staged)
+                    if size > 0:
+                        self._agent_frames.append((self._agent_staged, pcm[:size]))
+                        self._agent_staged += size
+                else:
+                    self._write(_CH_AGENT, pcm, time.monotonic() - self.started_at)
         except Exception:
             pass                      # never propagate into the audio path
+
+    def enable_agent_playout(self) -> None:
+        """Stage synthesis until the room sink reports what actually played."""
+        if not self._agent_playout:
+            logger.info('recording_agent_playout_enabled', room=self.room, source='RECORDING')
+        self._agent_playout = True
+
+    def agent_playback_progress(self, *, started_at: float, offset: float, duration: float) -> None:
+        """Map a public LiveKit playback run onto this recording's timeline.
+
+        Offset/duration refer to submitted segment PCM, not provider arrival
+        time. Unplayed audio removed by an interruption is never committed.
+        """
+        if self._closed or self._started_wall is None or duration <= 0:
+            return
+        try:
+            begin = max(self._agent_reported, round(offset * self.rate))
+            end = min(self._agent_staged, round((offset + duration) * self.rate))
+            for position, pcm in self._agent_frames:
+                lo, hi = max(begin, position), min(end, position + len(pcm))
+                if hi > lo:
+                    at = started_at - self._started_wall + (lo / self.rate - offset)
+                    self._write(_CH_AGENT, pcm[lo-position:hi-position], at)
+            self._agent_reported = max(self._agent_reported, end)
+            while self._agent_frames and self._agent_frames[0][0] + len(self._agent_frames[0][1]) <= end:
+                self._agent_frames.popleft()
+        except Exception:
+            logger.warning('recording_playback_progress_failed', room=self.room, source='RECORDING')
+
+    def agent_playback_finished(self) -> None:
+        """Drop any synthesized tail the room did not play; next offset is zero."""
+        self._agent_frames.clear()
+        self._agent_staged = 0
+        self._agent_reported = 0
+
+    def mark_ended(self) -> None:
+        """Freeze the call boundary before asynchronous shutdown bookkeeping."""
+        if self.started_at is not None:
+            self._max_samples = min(self._max_samples,
+                max(0, round((time.monotonic() - self.started_at) * self.rate)))
 
     def attach_caller_track(self, track: Any, track_sid: str = "") -> None:
         """Subscribe to the caller's audio track and mix it in the background.
@@ -282,7 +332,7 @@ class CallRecorder:
                         reason=self.failed_reason or "no audio captured", source="RECORDING")
             return None, None
         try:
-            n = max(self._high_water, min(elapsed, self._max_samples))
+            n = min(self._max_samples, max(self._high_water, elapsed))
             # Per-channel soft limit. The legs are separate so neither can clip the
             # other, but a leg whose SOURCE already sits at full scale (synthesised
             # speech often does) would still square off against the int16 ceiling —
@@ -334,6 +384,7 @@ class CallRecorder:
         finally:
             self._ch[_CH_CALLER] = None         # release memory promptly
             self._ch[_CH_AGENT] = None
+            self._agent_frames.clear()
 
     def _duration(self) -> int | None:
         return int(self._high_water / self.rate) if self._high_water else None

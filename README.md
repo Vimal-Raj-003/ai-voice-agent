@@ -2,6 +2,82 @@
 
 Inbound, outbound and browser voice assistants built with **LiveKit Agents 1.8.4**, **Next.js 16 / React 19**, FastAPI and Postgres. Each assistant owns its saved identity, prompt, knowledge, voice engine, model, voice and call controls. Gemini Live audio and the existing cascaded STT → LLM → TTS path share the same call lifecycle and business tools. Gemini phone calls can use the explicitly enabled Sarvam text-input mode described below; its STT is metered separately, while Gemini still produces the saved voice.
 
+## Contact confirmation and booking continuation (12 November 2026, v54)
+
+Email capture and readback now share complete-address normalization; explicit phonetic examples, same-turn spelling and unique letter corrections retain the caller's existing details. Name correction no longer derives a name from an email username. Confirmed email resumes the current request, while unresolved names/recipients remain blocked from booking. Models, voices and the existing call architecture are unchanged.
+
+**1,183 backend tests passed, 1 skipped**. One authorized **11.703-second Gemini 3.1 Flash Live / Despina** synthetic text session retained the name, corrected an email letter and accepted one approval without SDK errors. Mocked booking/email tests verify exactly one action to the corrected lowercase recipient. The original worker was reloaded on build `2026-11-12-contact-confirmation-continuation-v54`. Real SMTP authentication still returns **535**, so actual inbox delivery and a new handset booking remain unverified. [Diagnosis, evidence and remaining acceptance](docs/reports/v54-contact-confirmation-continuation.md).
+
+## Editor viewport and Privacy overlap repair (12 November 2026, v53)
+
+The editor now fits its measured visible viewport, including scaled desktop layouts, so card bottoms and the System Prompt footer remain visible. Privacy messages edit within their own row instead of covering forwarding; compact Knowledge headers leave more content space. The prompt dialog keeps its Done button in a reserved footer. Saved configuration and the voice backend are unchanged. [Reproduction and changes](docs/reports/v53-editor-viewport-privacy.md).
+
+## Assistant editor spacing follow-up (12 November 2026, v52)
+
+Voice/Speech now align above compact Privacy and forwarding rows, with Knowledge filling the area below. The editor uses its actual header height and available width, greetings fit their text, and the full System Prompt can be scrolled or expanded. Inbound/Outbound/Demo/All calls are visible options again. Saved assistant configuration and the voice backend are unchanged. [UI changes and browser verification](docs/reports/v52-assistant-layout-followup.md).
+
+## Dashboard layout and Gemini provenance (12 November 2026, v51)
+
+The assistant editor now groups compact controls above a wider Knowledge panel, with a single desktop viewport and a mobile layout that keeps all settings reachable. Overview retains the daily spend graph without its repeated table; Call history owns the full list, while Demo shows its latest result and links to that history. A read-only runtime audit traced Gemini to the worker's server key matching `voice-service/.env`, ending `cYpA`, at Google's direct Gemini API endpoint. The owning Google project and actual credit deductions remain unverified; dashboard costs are usage/rate estimates. [Changes, provenance, validation and limits](docs/reports/v51-dashboard-layout-billing-origin.md).
+
+## Gemini 2.5 phone spelling and reply recovery (12 November 2026, v50)
+
+The latest supplied call used Gemini 2.5 Native / Despina for output and the existing Sarvam phone STT for input. A spelling request was heard as billing; a blocked booking was spoken as successful; interruption was followed by repeated reply timeouts. Phone-only fixes now serialize append-only context, coalesce overlapping hooks without losing words, finish completed generation channels, give exact spelling-turn guidance with tool execution rejected, clarify isolated billing ambiguity once, distinguish blocked task completion from booking receipts, and wait for pending caller context before the first reply trigger. Saved models/voices, business prompts, call routing and integrations remain unchanged.
+
+Validation: **1,156 backend tests passed, 1 skipped**, with scoped lint/whitespace checks and authenticated Playwright recording/log-route checks. Three approved 20-second caller excerpts were transcribed once each. One approved 21.644-second Gemini 2.5 synthetic session recovered after interruption and read the corrected test address, but also logged one reply timeout and one harness callback exception. The startup ordering defect was then reproduced/fixed offline; the final guard was not paid-live-retested. The original worker is on build `2026-11-12-phone-native-spelling-recovery-v50`. No new phone call, booking or email was initiated. [Evidence, changes and validation limits](docs/reports/v50-gemini25-phone-spelling.md).
+
+## Recording timeline and email spelling repair (12 November 2026, v49)
+
+The supplied phone call exposed overlapping same-speaker recording frames, an unheard generated tail in interrupted audio, and shutdown silence appended to the file. Local recording now preserves sequential PCM and uses LiveKit room-playback progress for Gemini audio, discarding unplayed tails and freezing the recording boundary at hangup. The supplied original carrier WAV was linked as a byte-for-byte recovery of that one call; its damaged original remains preserved. Billable duration and cost records were not changed.
+
+Email collection now handles separately spoken domains, ASR sentence punctuation inside spelled chunks, explicit spelling offers, disputed-position corrections followed by full respelling, and requests to hear spelling. Partial replacement memory no longer exposes the old candidate as a usable address. Canonical lowercase recipients and complete-readback approval remain required; uncertain ASR letters still need clarification. Saved model/voice, phone-input architecture and business prompts remain unchanged.
+
+Validation: **1,146 backend tests passed, 1 skipped**; scoped lint and whitespace checks passed. Playwright CLI verified restored recording metadata, two-channel WAV decoding, seekable HTTP 206 ranges, muted playback and pause. Five approved 25-second caller excerpts were transcribed once each; no new call, booking, email or Gemini audio generation was initiated. The original local worker is running build `2026-11-12-recording-email-turns-v49`. [Evidence, changes and acceptance check](docs/reports/v49-recording-email-repair.md).
+
+## Global theme, daily spending and Live models (12 November 2026, v48)
+
+Theme controls now share a persistent preference across routes, reloads and tabs. Cost views show each call's priced total and average per minute (`subtotal × 60 / actual seconds`) using the existing global USD/INR choice; incomplete charges remain labelled. The Overview call-type section includes a daily Demo/Inbound/Outbound graph grouped by India calendar date. Light/dark surfaces, chart categories, native controls and gauge tracks use theme-appropriate tokens.
+
+Assistant Live models come from a cached, read-only Google account listing instead of a two-name dropdown. The current key lists eight streaming models: six conversational candidates and two visible, disabled transcription/translation workflows. Saved selections stay unchanged. Billing uses the server `GOOGLE_API_KEY` matching `voice-service/.env`; the associated project's credits/invoice are viewed in Google AI Studio, not inferred from estimated call totals. No audio engine, voice, prompt, booking flow or database schema was replaced. [Scope, model list, evidence and limitations](docs/reports/v48-theme-spend-models.md).
+
+Validation: **1,133 backend tests passed, 1 skipped; 37 dashboard tests passed**; TypeScript and scoped ESLint passed. Playwright CLI verified theme navigation/reload, global INR costs, all eight listed model choices with capability fences, unsaved selection preservation and desktop/mobile layouts. Build `2026-11-12-theme-spend-model-catalog-v48` is loaded in the original local worker. No new paid voice test, real booking or email was initiated.
+
+## Fragmented phone email and memory repair (12 November 2026, v47)
+
+The latest ten-minute phone call exposed local-part truncation across speech chunks, approval without a complete spoken email readback, unsupported model recipient replacements, and reply-before-memory timing. Active email capture now retains literal chunks; native approval requires the actual complete readback; phone replies await the current compact memory. Contact repair preserves the existing appointment instead of creating another booking at a different time. Model, voice, STT/audio transport and database schema remain unchanged.
+
+**1,130 backend tests passed, 1 skipped**, including real installed-SDK protocol tests with mocked providers. Five authorized 25-second caller excerpts were transcribed once each; no new real call, booking or outgoing email was started. The recorded call actually created two appointments, and both confirmation attempts failed with Amazon SES SMTP **535**. Correct the ap-south-1 SES SMTP credentials in Settings → Integrations, then verify one deliberate phone booking and inbox delivery. [Evidence, fixes and acceptance steps](docs/reports/v47-fragmented-email-memory.md).
+
+Build `2026-11-12-fragmented-email-memory-v47` is loaded in the original local WSL worker and registered with LiveKit; worker/API/dashboard health checks returned HTTP 200. No production deployment or Git push was performed for this repair.
+
+## Email approval and spoken details (12 November 2026, v46)
+
+The latest supplied call stored canonical lowercase email candidates correctly, but rejected the caller's “Correct super” approval. Both booking attempts were blocked, so no appointment or confirmation-email task was created. That exact approval now succeeds without accepting questions or refusals. Email readback no longer inserts commas; SMTP accepts only a single canonical address. English date/time readbacks and double/triple phone-digit grouping are presentation hints only and preserve the actual booking/contact values. Appointment Booker's saved greeting now uses the full **Vims Enterprises** business identity.
+
+The effective SMTP credentials still fail authentication with **535**. Fix and save them in Settings → Integrations before testing inbox delivery. **1,115 backend tests passed, 1 skipped**; scoped Python lint passed. Build `2026-11-12-email-spoken-details-v46` was reloaded in the original idle WSL worker and registered with LiveKit; worker/API/dashboard health checks returned HTTP 200. No old booking was recreated and no email or paid voice test was sent. Models, voices and the existing call architecture were preserved. [Findings, changes and acceptance steps](docs/reports/v46-email-readback.md).
+
+## IVR destinations and LiveKit task review (12 November 2026, v45)
+
+The IVR assistant now has four enabled, user-specified destinations: Software (Tamil), Sales & Marketing (Tamil), Content (Tamil), and Other (Tamil / English). Only that assistant's forwarding rows were changed; prompts, metadata, model, voice and inbound number assignment were preserved. The existing inbound number remains assigned to Appointment Booker. Select IVR Assistant in Phone Numbers before a deliberate real IVR test; selecting it in browser Demo does not reassign a phone number.
+
+Phone transfer blocks a destination matching the current caller, including Indian national/E.164 forms. Demo rehearsal reads saved team labels and category IDs but never dials the saved numbers; assistants without destinations retain explicitly labelled demo fixtures. Explicit spoken `dot`, `underscore`, `dash`, `hyphen`, `plus` and digit spelling retain the complete email local part and lowercase normalization.
+
+`GetNameTask` and `GetEmailTask` are already installed in LiveKit Agents 1.8.4. They were instantiated and inspected offline, **not enabled as native Gemini session handoffs**: the installed Google plugin advertises `manual_function_calls=False` and `mutable_tools=False`, changing tools marks a reconnect, and plain tasks lack the existing phone text-input/recording hooks. Enabling that handoff without an adapter and an approved real audio test could regress the working call. Existing contact guards remain active. No new dependency, provider or model was added. [Task findings and test steps](docs/reports/v45-ivr-livekit-tasks.md).
+
+Validation: **1,089 backend tests passed, 1 skipped**; TypeScript, changed Demo UI ESLint and new-test/undefined-name Python lint passed. Saved destinations were verified through the actual resolver and authenticated Playwright settings UI. Build `2026-11-12-ivr-contact-safety-v45` was reloaded in the existing WSL worker after checking there were no live rooms. No real transfer, booking, email or paid model session was initiated for v45. This supersedes v44's earlier observation that IVR had no destinations.
+
+## Contact and booking repair (12 November 2026, v44)
+
+An analysed 471-second inbound call reached the booking tool four times but never reached calendar submission: email/name correction state kept approval unresolved. No appointment or confirmation email was created, despite a spoken success claim. v44 normalizes email case before comparison, accepts clear Tamil/Tanglish readback approval, preserves complete spoken letters/numbers and explicit short-name corrections, and restores email confirmation after a name repair. Unapproved email guesses are no longer exported to Contacts.
+
+Production booking results now carry verified receipts; a blocked booking becomes an SDK tool error with `native_tool_result.status=not_confirmed`. A provider-held booking with pending local sync remains distinct. Cal.com requests include the configured required title. Booking email delivery reads saved SMTP overrides, rechecks recipient approval after that lookup, and retains queued/sent/failed tracking. Shutdown notifications do not send a second confirmation email.
+
+Configure **Settings → Integrations → SMTP host / port / username / password / sender**. Saved mail overrides take effect on the next delivery without restarting the worker. Passwords stay masked. The read-only provider check found Cal.com account/event-type access working, but the environment SMTP credentials were rejected; updating credentials and completing a real inbound booking/inbox check remain necessary. SMTP acceptance alone does not prove inbox delivery.
+
+The IVR assistant has a **Test transfer** link to its selected browser Demo. Its expandable instructions list sandbox routes, and simulated handoffs produce `demo_transfer_simulated` logs. No human is called or connected. Real IVR forwarding still requires approved saved destinations; none were configured for the audited IVR assistant.
+
+Validation: **1,080 backend tests passed, 1 skipped; 31 dashboard tests passed; TypeScript and scoped frontend ESLint passed.** Tests mock calendar, database and email writes. Playwright CLI checked authenticated call/Contacts/settings pages and the IVR link, idle state, help, desktop and mobile layout. The local worker was reloaded with build `2026-11-12-contact-booking-repair-v44` and registered with LiveKit; local API and dashboard returned HTTP 200. No new real call, booking, email or paid Gemini session was run for v44. [Detailed findings and feature status](docs/reports/v44-contact-booking-audit.md).
+
 ## Current assistant runtime
 
 The verified local worker runs in WSL/Linux with Python 3.14.4. Dashboard and FastAPI run on Windows; reuse the original WSL worker instead of starting a duplicate Windows worker. `voice-service/requirements.txt` pins the runtime libraries and `requirements.lock.txt` records the existing environment. Docker and CI still specify Python 3.11; validate those environments separately before production rollout.

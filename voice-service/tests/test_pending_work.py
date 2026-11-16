@@ -296,7 +296,7 @@ async def test_inflight_smtp_cannot_be_recalled_or_mark_new_address_delivered(mo
     import notify
     import threading
     entered, finish = threading.Event(), threading.Event()
-    def send(*args):
+    def send(*args, **kwargs):
         entered.set()
         finish.wait(3)
         return True

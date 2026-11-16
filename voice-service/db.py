@@ -147,6 +147,7 @@ SENSITIVE_KEYS = {
     "VOBIZ_PASSWORD", "TWILIO_AUTH_TOKEN",
     "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY",
     "CALCOM_API_KEY", "TELEGRAM_BOT_TOKEN", "VOICE_SERVICE_TOKEN",
+    "SMTP_PASSWORD", "SMTP_PASS", "RESEND_API_KEY",
 }
 
 KNOWN_SETTING_KEYS = [
@@ -162,6 +163,7 @@ KNOWN_SETTING_KEYS = [
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "TWILIO_WHATSAPP_NUMBER",
     "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
     "N8N_WEBHOOK_URL", "ENABLED_TOOLS",
+    "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_PASS", "SMTP_FROM", "RESEND_API_KEY",
 ]
 
 
@@ -208,6 +210,20 @@ async def get_setting(key: str, default: str = "") -> str:
     if val is not None:
         return val
     return os.getenv(key, default)
+
+
+async def booking_email_settings() -> dict[str, str]:
+    """Resolve saved mail overrides without mutating process-wide credentials."""
+    keys = ('SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_PASS', 'SMTP_FROM', 'RESEND_API_KEY')
+    result = {key:os.getenv(key, '') for key in keys}
+    pool = await get_pool()
+    rows = await pool.fetch('SELECT key, value FROM settings WHERE key = ANY($1::text[])', list(keys))
+    stored = {row['key']:row['value'] for row in rows}
+    result.update(stored)
+    # A saved password must override either legacy environment alias.
+    if 'SMTP_PASSWORD' in stored or 'SMTP_PASS' in stored:
+        result['SMTP_PASSWORD'] = stored.get('SMTP_PASSWORD') or stored.get('SMTP_PASS', '')
+    return result
 
 
 async def set_setting(key: str, value: str) -> None:

@@ -105,6 +105,28 @@ def bridge(backend=None, lookup=None):
     return value, events
 
 
+async def test_transfer_rehearsal_records_a_demo_route_without_dialing(monkeypatch):
+    import tools as real_tools
+    dial = AsyncMock(side_effect=AssertionError('Demo must never enter real transfer code'))
+    monkeypatch.setattr(real_tools.AppointmentTools, 'transfer_to_human', dial)
+    b, events = bridge()
+    result = await b.owner.transfer_to_human('Tamil support')
+    assert 'TEST_ONLY_TRANSFER_SIMULATED' in result
+    assert 'no human was called or connected' in result
+    assert b.state.tool_state['transfer'] == 'simulated:Tamil support'
+    assert any(event == 'demo_transfer_simulated' for event, _ in events)
+    dial.assert_not_awaited()
+    await b.close()
+
+
+async def test_transfer_rehearsal_cannot_invent_an_unknown_destination():
+    b, _ = bridge()
+    result = await b.owner.transfer_to_human('unknown doctor')
+    assert 'unavailable' in result
+    assert 'transfer' not in b.state.tool_state
+    await b.close()
+
+
 class Backend:
     def __init__(self, rounds):
         self.rounds = iter(rounds)

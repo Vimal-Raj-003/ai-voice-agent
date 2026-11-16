@@ -120,7 +120,9 @@ async def test_actual_phone_entrypoint_keeps_sip_tools_recording_and_transcripts
     if engine == 'gpt-live':
         monkeypatch.setattr(native, 'build_backend', lambda *a: (backend, 'openrouter', profile['model']))
     monkeypatch.setattr(sdk.GPTLiveSession, '_main_task', AsyncMock())
-    rec = NS(write_agent_frame=Mock(), attach_caller_track=Mock())
+    rec = NS(write_agent_frame=Mock(), attach_caller_track=Mock(),
+             enable_agent_playout=Mock(), agent_playback_progress=Mock(),
+             agent_playback_finished=Mock(), mark_ended=Mock())
     recorded = []
     async def start_recording(ctx, prof, owner):
         assert owner._answered_mono is not None
@@ -209,6 +211,9 @@ async def test_actual_phone_entrypoint_keeps_sip_tools_recording_and_transcripts
     rec.write_agent_frame.assert_called_once_with(frame)
     session.output.audio.emit('playback_started', NS(created_at=0))
     session.output.audio.emit('playback_finished', NS(playback_position=0.1, interrupted=True))
+    if engine == 'gemini-live':
+        rec.enable_agent_playout.assert_called_once()
+        rec.agent_playback_finished.assert_called_once()
     assert owner.interrupt_count == 1
     message = llm.ChatContext().add_message(role='assistant', content='The current time is noon.')
     session.emit('conversation_item_added', NS(item=message))

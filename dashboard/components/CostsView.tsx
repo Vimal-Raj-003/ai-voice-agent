@@ -18,7 +18,7 @@ import {
 import StatCard from "./StatCard";
 import CostStackedBar from "./charts/CostStackedBar";
 import CostByProvider from "./charts/CostByProvider";
-import { COST_CATEGORY_LABEL, type CostCategory, type CostLine } from "@/lib/cost";
+import { COST_CATEGORY_LABEL, costPerMinute, type CostCategory, type CostLine } from "@/lib/cost";
 import { type Currency, type FxRate, formatMoney } from "@/lib/currency";
 import CurrencyToggle from "@/components/CurrencyToggle";
 import { useCurrency } from "@/lib/currency-context";
@@ -341,6 +341,7 @@ function CallRows({
         </td>
         <td className="py-2.5 pl-3 text-right font-mono tabular-nums text-fg">
           {money(call.totalUsd, 4)}
+          <div className="mt-1 text-[11px] text-muted">{costPerMinute(call.totalUsd,call.durationSeconds)==null?'— / min':`${money(costPerMinute(call.totalUsd,call.durationSeconds)!,4)} / min`}</div>
           {call.hasUnknownRates && (
             <span className="ml-1 text-[9px] text-amber-300" title="Some usage on this call has no rate">
               ⚠

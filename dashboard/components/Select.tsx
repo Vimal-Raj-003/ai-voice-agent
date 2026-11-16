@@ -13,6 +13,7 @@ export type SelectOption = {
   value: string;
   label: string;
   description?: string;
+  disabled?: boolean;
 };
 
 type Props = {
@@ -24,6 +25,7 @@ type Props = {
   required?: boolean;
   className?: string;
   onChange?: (value: string) => void;
+  ariaLabel?: string;
 };
 
 export default function Select({
@@ -35,6 +37,7 @@ export default function Select({
   required,
   className,
   onChange,
+  ariaLabel,
 }: Props) {
   const [selection,setSelection]=useState({source:defaultValue,value:defaultValue??""});
   if(selection.source!==defaultValue)setSelection({source:defaultValue,value:defaultValue??""});
@@ -72,6 +75,7 @@ export default function Select({
       {/* Hidden real input so FormData picks the value up server-side. */}
       <input type="hidden" name={name} value={value} required={required} />
       <button
+        aria-label={ariaLabel}
         type="button"
         disabled={disabled}
         onClick={() => setOpen(v=>!v)}
@@ -101,12 +105,14 @@ export default function Select({
                 type="button"
                 role="option"
                 aria-selected={isSelected}
+                disabled={opt.disabled}
+                aria-disabled={opt.disabled||undefined}
                 onClick={() => {
                   setValue(opt.value);
                   onChange?.(opt.value);
                   setOpen(false);
                 }}
-                className={`w-full flex items-start justify-between gap-2 px-3 py-2 text-left text-sm transition ${
+                className={`w-full flex items-start justify-between gap-2 px-3 py-2 text-left text-sm transition disabled:opacity-50 disabled:cursor-not-allowed ${
                   isSelected
                     ? "bg-violet-500/[0.12] text-white"
                     : "text-gray-200 hover:bg-white/[0.04]"

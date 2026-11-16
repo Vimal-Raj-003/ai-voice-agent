@@ -64,6 +64,7 @@ async def test_phone_barge_in_never_sends_audio_activity_without_audio(monkeypat
     session = model.session()
     send = Mock()
     session._send_client_event = send
+    session._active_session = NS()
     try:
         session.start_user_activity()
         session.interrupt()
@@ -75,6 +76,7 @@ async def test_phone_barge_in_never_sends_audio_activity_without_audio(monkeypat
             'Text-only caller turns must not open/end an empty audio activity; Google closes 1007')
         assert events[-1].turn_complete is True
     finally:
+        session._active_session = None
         await session.aclose()
         await model.aclose()
 
@@ -144,7 +146,10 @@ async def test_real_sdk_turn_commit_forwards_phone_words_without_an_empty_second
                  for turn in event.turns or [] for part in turn.parts or []]
         # SDK versions may add a control placeholder; caller text must survive
         # verbatim and in order, including a genuinely repeated second utterance.
-        assert [word for word in words if word != '.'] == messages
+        assert [word for word in words if word != '.' and not word.startswith('[APPLICATION CALL MEMORY;')] == messages
+        memories = [word for word in words if word.startswith('[APPLICATION CALL MEMORY;')]
+        assert memories and '"name":"Nila"' in memories[-1]
+        assert words.index(memories[0]) < words.index(messages[0])
         assert sum(bool(getattr(event, 'turn_complete', False)) for event in events) == len(messages)
         assert not any(isinstance(event, types.LiveClientRealtimeInput) for event in events)
         assert [item.text_content for item in runtime.agent.chat_ctx.messages()

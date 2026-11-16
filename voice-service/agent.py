@@ -94,7 +94,7 @@ PROVIDER_HEALTH = _ph.ProviderHealth(log=lambda ev, **kw: logger.warning(ev, **k
 # Build marker logged at worker boot (_prewarm) and per job (entrypoint). Bump
 # this string whenever agent.py changes so the live logs prove which code the
 # running worker actually loaded. Absent from logs ⇒ worker not restarted.
-AGENT_BUILD = "2026-11-11-phone-text-protocol-v43"
+AGENT_BUILD = "2026-11-12-contact-confirmation-continuation-v54"
 
 
 def _warm_linecache() -> None:
@@ -3066,6 +3066,9 @@ async def entrypoint(ctx: JobContext) -> None:
             try:
                 ctx._jj_hangup_mono = time.monotonic()   # type: ignore[attr-defined]
                 ctx._jj_hangup_at = _db_utc_now()        # type: ignore[attr-defined]
+                recorder = getattr(agent_tools, '_recorder', None)
+                if recorder is not None:
+                    recorder.mark_ended()
             except Exception:
                 pass
         # The SIP leg leaving IS the end of the call — end the session now.
@@ -5348,10 +5351,11 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
     call_id = getattr(agent_tools, "_call_id", None)
     extracted_email = ""
     try:
-        if hasattr(agent_tools, "call_state") and agent_tools.call_state:
-            extracted_email = agent_tools.call_state.entities.get("email", "")
-        if not extracted_email and hasattr(agent_tools, "_extract_caller_details"):
-            extracted_email, _, _ = agent_tools._extract_caller_details()
+        from contact_corrections import confirmed_contact_email
+        contact_state = getattr(agent_tools, 'call_state', None)
+        extracted_email = confirmed_contact_email(contact_state)
+        if contact_state and contact_state.entities.get('name'):
+            name = contact_state.entities['name']
     except Exception:
         pass
     try:
@@ -5537,13 +5541,14 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
             if was_booked:
                 booking_id = getattr(agent_tools, "_last_booking_id", "") or ""
                 booking_time_iso = getattr(agent_tools, "_last_booking_time", "") or ""
-                booking_email = getattr(agent_tools, "_last_booking_email", "") or ""
                 booking_service = getattr(agent_tools, "_last_booking_service", "") or ""
                 tts_voice = (profile.get("voice") if isinstance(profile, dict) else "") or ""
                 await asyncio.to_thread(
                     notify.notify_booking_confirmed,
                     caller_name, phone, booking_time_iso, booking_id, reason, tts_voice,
-                    caller_email=booking_email, service=booking_service,
+                    # AppointmentTools owns recipient approval and delivery deduplication.
+                    # Shutdown notifications must not send the email again or use an old recipient.
+                    caller_email='', service=booking_service,
                 )
                 booking_webhook = os.environ.get("BOOKING_WEBHOOK_URL", "")
                 if booking_webhook:

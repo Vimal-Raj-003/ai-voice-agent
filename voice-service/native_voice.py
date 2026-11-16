@@ -1,10 +1,17 @@
 """Saved, assistant-scoped native voice settings. No SDK or network at import."""
 from dataclasses import dataclass
 import json
+import re
 
 from gpt_live_gate import ExperimentRejected, phone_enabled
 
-GEMINI_MODELS = {'gemini-3.8-live', 'gemini-3.1-flash-live-preview'}
+GEMINI_MODELS = {'gemini-3.8-live', 'gemini-3.8-live-extended-thinking', 'gemini-3.1-flash-live-preview'}
+
+
+def is_live_model_id(model: str) -> bool:
+    return bool(re.fullmatch(r'gemini-[a-z0-9][a-z0-9.-]*', model)
+                and ('live' in model or 'native-audio' in model)
+                and not any(word in model for word in ('tts', 'embedding', 'image', 'transcribe', 'translate')))
 GEMINI_VOICES = {
     'Achernar', 'Achird', 'Algenib', 'Algieba', 'Alnilam', 'Aoede', 'Autonoe',
     'Callirrhoe', 'Charon', 'Despina', 'Enceladus', 'Erinome', 'Fenrir', 'Gacrux',
@@ -63,7 +70,7 @@ def runtime_settings(profile: dict) -> NativeSettings | None:
     if engine != 'gemini-live':
         raise ExperimentRejected('Unknown saved voice engine; no automatic fallback.')
     model, voice = saved.get('model') or 'gemini-3.8-live', saved.get('voice') or 'Zephyr'
-    if model not in GEMINI_MODELS:
+    if not is_live_model_id(model):
         raise ExperimentRejected('Select a supported Gemini Live audio model.')
     if voice not in GEMINI_VOICES:
         raise ExperimentRejected('Select a supported Gemini Live voice.')

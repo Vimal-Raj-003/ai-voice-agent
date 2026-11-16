@@ -9,10 +9,10 @@ import { Mic, PhoneOff, Sparkles } from "lucide-react";
 import DemoAudioMonitor from "./DemoAudioMonitor";
 import Select from "./Select";
 
-export type DemoAssistantOption={id:string;assistant_name:string;engine:string;model:string|null;voice:string|null;sandbox:boolean};
+export type DemoAssistantOption={id:string;assistant_name:string;engine:string;model:string|null;voice:string|null;sandbox:boolean;transferTest?:boolean};
 
 export default function DemoWidget({config:initialConfig,assistants,initialAssistantId,onFinished}: {config?: {
-  engine: string; assistant_name: string | null; model: string | null; voice: string | null; sandbox: boolean;
+  engine: string; assistant_name: string | null; model: string | null; voice: string | null; sandbox: boolean; transferTest?:boolean;
 } | null;assistants?:DemoAssistantOption[];initialAssistantId?:string;onFinished?:()=>void}) {
   const [assistantId,setAssistantId]=useState(initialAssistantId||assistants?.[0]?.id||'');
   const [callId,setCallId]=useState<string|null>(null);
@@ -174,6 +174,14 @@ export default function DemoWidget({config:initialConfig,assistants,initialAssis
             {config.voice ? ` · ${config.voice}` : ""}</p>
           {config.sandbox && <p>Test mode: booking, messages and transfers are simulated.</p>}
         </div>}
+        {config?.sandbox&&config.transferTest&&<details className="mt-3 rounded-lg border border-[var(--surface-border)] p-3 text-xs">
+          <summary className="cursor-pointer font-medium">IVR transfer test</summary>
+          <div className="mt-2 space-y-2 text-gray-400">
+            <p>Start a demo call, then ask for one of this assistant’s saved teams in your preferred language.</p>
+            <p>Saved forwarding teams guide this rehearsal. If none are configured, labelled demonstration routes are used.</p>
+            <p>The handoff appears in this demo’s logs. No phone is dialed and no real person connects. Real phone transfers require saved forwarding numbers in the assistant’s settings.</p>
+          </div>
+        </details>}
         <div className="mt-4 flex">
           {!["connected", "reconnecting", "connecting"].includes(status) ? (
             <button onClick={start} disabled={!!assistants&&!assistantId} className="rounded-lg bg-violet-300 text-black px-4 py-2 font-medium inline-flex items-center gap-2 disabled:opacity-50">

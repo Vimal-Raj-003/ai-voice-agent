@@ -15,7 +15,7 @@ import OutcomeDonut from "@/components/charts/OutcomeDonut";
 import BookingGauge from "@/components/charts/BookingGauge";
 import TokensTimeline from "@/components/charts/TokensTimeline";
 import CostStackedBar from "@/components/charts/CostStackedBar";
-import { aggregateCalls, buildRateMap, computeCallCost, channelSpending } from "@/lib/cost";
+import { aggregateCalls, buildRateMap, computeCallCost, dailyChannelSpending } from "@/lib/cost";
 import { getUsdInrRate } from "@/lib/currency";
 import OverviewCosts from "@/components/OverviewCosts";
 import RangeSelector from "@/components/RangeSelector";
@@ -255,7 +255,7 @@ export default async function Overview({
         activeProviders: spendingProviders.map((p) => p.provider),
         calls: costCallRows,
       }}
-      channelSpend={channelSpending(costCalls,rateMap)}
+      dailySpend={dailyChannelSpending(costCalls,rateMap,currentConfig.is24h?2:daysBack)}
       ratesPanel={
         <div className="space-y-4">
       {/* Provider rate table + freshness banner, as on the old Costs page.

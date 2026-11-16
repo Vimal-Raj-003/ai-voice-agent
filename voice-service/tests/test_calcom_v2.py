@@ -146,6 +146,16 @@ async def test_booking_without_email_uses_placeholder(calcom_env):
     assert email == "919876500000@voiceagent.placeholder"
 
 
+async def test_booking_supplies_configured_required_title_and_lowercase_email(calcom_env):
+    import json
+    with respx.mock:
+        route = respx.post(BOOKINGS_URL).mock(return_value=httpx.Response(201,json={'data':{'uid':'test'}}))
+        await tools.calcom_book('Nila','NILA43@EXAMPLE.TEST','+919876500000',DATE,'10:00','Consultation')
+    body = json.loads(route.calls.last.request.read())
+    assert body['bookingFieldsResponses']['title'] == 'Consultation'
+    assert body['attendee']['email'] == 'nila43@example.test'
+
+
 # ── 4. booking cancellation ─────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_cancellation_posts_with_reason(calcom_env):

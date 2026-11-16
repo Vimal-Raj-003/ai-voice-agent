@@ -5,12 +5,7 @@ import { Search } from "lucide-react";
 
 type Option = { value: string; label: string };
 
-// Direction is now a three-tab segmented control instead of a dropdown. Same
-// filter mechanism as before (the `direction` search param consumed by the
-// existing server-side query) — only the control changed, so there is no new
-// endpoint and no duplicated call-history component.
-// Display order only. The empty value ("All Directions") stays the default —
-// no `direction` param means no direction filter — it is simply shown last.
+// Visible channel options filter the same call history and preserve its URLs.
 const DIRECTIONS: Option[] = [
   { value: "INBOUND", label: "Inbound" },
   { value: "OUTBOUND", label: "Outbound" },
@@ -71,39 +66,19 @@ export default function CallsFilters({
   const direction = sp.get("direction") ?? "";
 
   return (
-    <div className="space-y-3">
-      {/* Direction tabs — same active treatment as the sidebar's current item,
-          which already renders correctly in both themes. */}
-      <div
-        role="tablist"
-        aria-label="Call direction"
-        className="inline-flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1"
-      >
-        {DIRECTIONS.map((o) => {
-          const active = direction === o.value;
-          return (
-            <button
-              key={o.value || "all"}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => setParam("direction", o.value)}
-              className={`rounded-lg px-3 py-1.5 text-sm transition ${
-                active
-                  ? "bg-white/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
-                  : "text-gray-400 hover:bg-white/[0.04] hover:text-white"
-              }`}
-            >
-              {o.label}
-            </button>
-          );
-        })}
+    <div className="flex flex-col gap-3">
+      <div role="group" aria-label="Call type" className="flex w-fit max-w-full flex-wrap gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
+        {DIRECTIONS.map(option=><button key={option.value||'all'} type="button" aria-pressed={direction===option.value}
+          onClick={()=>setParam('direction',option.value)}
+          className={`min-h-9 rounded-lg px-3 py-1.5 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 ${direction===option.value?'bg-white/[0.08] text-white':'text-gray-400 hover:bg-white/[0.04] hover:text-white'}`}>
+          {option.label}
+        </button>)}
       </div>
-
       <div className="relative w-full max-w-md">
         <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" />
         <input
           type="search"
+          aria-label="Search calls"
           value={q}
           onChange={(e) => onQ(e.target.value)}
           placeholder="Search calls…"

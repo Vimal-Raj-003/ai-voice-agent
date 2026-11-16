@@ -3,11 +3,14 @@
 import { Coins, AlertTriangle } from "lucide-react";
 import type { CostBreakdown } from "@/lib/cost";
 import Money from "./Money";
+import CallSpend from './CallSpend';
 
 export default function CallCostBreakdown({
   breakdown,
+  durationSeconds,
 }: {
   breakdown: CostBreakdown;
+  durationSeconds?:number|null;
 }) {
   if (breakdown.lines.length === 0 && !breakdown.hasUnknownRates) {
     return null;
@@ -21,9 +24,7 @@ export default function CallCostBreakdown({
             Post-call cost breakdown
           </h2>
         </div>
-        <div className="text-base font-bold text-gradient">
-          <Money usd={breakdown.totalUsd} decimals={4}/>
-        </div>
+        <CallSpend totalUsd={breakdown.totalUsd} seconds={durationSeconds}/>
       </div>
       {breakdown.hasUnknownRates && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.08] p-2 mb-3 text-[11px] text-amber-200">

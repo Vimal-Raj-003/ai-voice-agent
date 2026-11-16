@@ -73,7 +73,7 @@ export default async function CallDetail({
 
       <CallRecording callId={c.id} durationSeconds={c.durationSeconds} />
 
-      <CallCostBreakdown breakdown={breakdown} />
+      <CallCostBreakdown breakdown={breakdown} durationSeconds={c.durationSeconds}/>
       <CallIntelligence metadata={c.metadata} />
 
       <CallNotesEditor callId={c.id} initial={c.notes} />

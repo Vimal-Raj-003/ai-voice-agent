@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import HumanTransferFields, { type TransferTarget } from "./HumanTransferFields";
 import ProviderStatusChip from "./ProviderStatusChip";
@@ -19,7 +19,8 @@ import MessageField from "./MessageField";
 import UrlSetup from "./UrlSetup";
 import LlmStackFields from "./LlmStackFields";
 import TtsStackFields from "./TtsStackFields";
-import { voiceSettings, GEMINI_LIVE_MODELS, GEMINI_LIVE_VOICES, type VoiceEngine } from "@/lib/native-voice";
+import { voiceSettings, GEMINI_LIVE_VOICES, type VoiceEngine } from "@/lib/native-voice";
+import LiveModelSelect from './LiveModelSelect';
 import {extraTransferPeople} from "@/lib/human-transfer";
 import {businessName} from "@/lib/assistant-identity";
 
@@ -100,6 +101,31 @@ export default function AssistantForm({
   const selectedSet = new Set(selectedToolIds);
   const savedVoice = voiceSettings(initial?.metadata);
   const [voiceEngine, setVoiceEngine] = useState<VoiceEngine>(savedVoice.engine);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(()=>{
+    const element=workspaceRef.current;
+    if(!element||voiceEngine!=="gemini-live")return;
+    let frame=0;
+    const measure=()=>{
+      const bounds=element.getBoundingClientRect();
+      const scale=bounds.width/element.offsetWidth||1;
+      const viewport=window.visualViewport;
+      const bottom=(viewport?.height??window.innerHeight)+(viewport?.offsetTop??0);
+      const height=Math.max(0,(bottom-Math.max(0,bounds.top))/scale-16);
+      element.style.setProperty('--assistant-workspace-height',`${height}px`);
+      element.style.setProperty('--assistant-workspace-width',`${(viewport?.width??window.innerWidth)/scale}px`);
+      document.documentElement.style.setProperty('--assistant-visual-height',`${(viewport?.height??window.innerHeight)/scale}px`);
+      document.documentElement.classList.add('assistant-workspace-active');
+      element.dataset.density=height<740?'compact':'regular';
+    };
+    const schedule=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(measure);};
+    const observer=new ResizeObserver(schedule);
+    observer.observe(element.parentElement??element);
+    window.addEventListener('resize',schedule);
+    window.visualViewport?.addEventListener('resize',schedule);
+    measure();
+    return()=>{cancelAnimationFrame(frame);observer.disconnect();window.removeEventListener('resize',schedule);window.visualViewport?.removeEventListener('resize',schedule);document.documentElement.classList.remove('assistant-workspace-active');document.documentElement.style.removeProperty('--assistant-visual-height');};
+  },[voiceEngine]);
   // Edit mode when an id is present (or explicitly passed). Drives the button
   // label and makes create-vs-edit unambiguous in the UI.
   const isEdit = mode ? mode === "edit" : Boolean(initial?.id);
@@ -112,7 +138,7 @@ export default function AssistantForm({
   return (
     // The page width is owned by the route-scoped AdminContainer; this form
     // lays out as independently stacked columns across whatever it is given.
-    <div className="assistant-settings">
+    <div ref={workspaceRef} className={`assistant-settings ${voiceEngine === "gemini-live" ? "assistant-settings-native" : ""}`}>
       {/* Page header. Save lives here, top-right, instead of in a full-width
           footer strip — measured, that strip was 57px tall and as wide as the
           content (1276px at 1600) for a single button, and it put Delete
@@ -177,7 +203,7 @@ export default function AssistantForm({
         </div>
       )}
 
-      <form id="assistant-form" action={formAction} className={`flex min-h-0 flex-col gap-3 ${voiceEngine === "gemini-live" ? "xl:h-[calc(100svh-77px)]" : ""}`}
+      <form id="assistant-form" action={formAction} className={`assistant-editor flex min-h-0 flex-col gap-3 ${voiceEngine === "gemini-live" ? "assistant-editor-native" : ""}`}
         onInvalidCapture={(event) => {
           const input = event.target as HTMLInputElement;
           const details = input.closest("details");
@@ -190,9 +216,9 @@ export default function AssistantForm({
       {/* Mode selector for the single saveAssistant action: present id → update
           that row; empty → create. Kept in sync with the record being edited. */}
       <input type="hidden" name="assistantId" defaultValue={initial?.id ?? ""} />
-      <div className={`grid grid-cols-1 items-start gap-3 ${voiceEngine === "gemini-live" ? "xl:h-full xl:grid-cols-3 xl:grid-rows-[minmax(0,1fr)] xl:items-stretch" : "xl:grid-cols-2"}`}>
-        <div className={`flex min-h-0 min-w-0 flex-col gap-3 ${voiceEngine === "gemini-live" ? "xl:h-full" : ""}`}>
-          <section data-settings-section="conversation" className="glass flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-2xl p-4 [&>h3]:shrink-0 [&>label]:shrink-0">
+      <div className={`assistant-editor-grid grid grid-cols-1 items-start gap-3 ${voiceEngine === "gemini-live" ? "" : "xl:grid-cols-2"}`}>
+        <div className="assistant-identity-column flex min-h-0 min-w-0 flex-col gap-3">
+          <section data-settings-section="conversation" className="glass flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-2xl p-3 [&>h3]:shrink-0 [&>label]:shrink-0">
             <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
               Identity
               <InfoTooltip width={300}>
@@ -213,10 +239,10 @@ export default function AssistantForm({
             <Field label="First message (greeting)">
               <textarea
                 name="firstMessage"
-                rows={2}
+                rows={4}
                 defaultValue={initial?.firstMessage ?? ""}
                 placeholder="Hi! Thanks for calling Acme Dental, this is Priya. How can I help?"
-                className={inputCls}
+                className={`${inputCls} assistant-greeting`}
               />
             </Field>
             <div data-settings-section="system-prompt" className="flex min-h-28 flex-1">
@@ -227,20 +253,14 @@ export default function AssistantForm({
             </div>
           </section>
         </div>
-        <div className={`flex min-h-0 min-w-0 flex-col gap-3 ${voiceEngine === "gemini-live" ? "xl:h-full xl:overflow-y-auto" : ""}`}>
-          <section data-settings-section="voice" className="glass flex min-w-0 flex-col gap-3 rounded-2xl p-4">
+        <div className="assistant-voice-column flex min-h-0 min-w-0 flex-col gap-3">
+          <section data-settings-section="voice" className="glass flex min-w-0 flex-col gap-3 rounded-2xl p-3">
             <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
               Voice &amp; model
               <InfoTooltip width={300}>
                 Choose the voice engine for this assistant. Gemini Live handles speech and reasoning directly and uses your existing business tools.
               </InfoTooltip>
             </h3>
-            {/* MEASURED: a two-column internal layout was tried here (brief §4
-                invites it) and rejected. Even at 1920, where this track is
-                707px, a half-cell is ~337px and the model select rendered as
-                "openai/gpt-oss-120b — not i…" with its Refresh button crushed
-                beside it — exactly the truncation §4 rules out. Call accuracy
-                below DOES pair cleanly, because its four knobs are short. */}
             <div className="grid grid-cols-1 gap-3">
               <Field label="Voice engine">
                 <Select name="voiceEngine" defaultValue={voiceEngine} onChange={(value) => setVoiceEngine(value as VoiceEngine)}
@@ -253,10 +273,7 @@ export default function AssistantForm({
               </Field>
               <div hidden={voiceEngine !== "gemini-live"} className="contents">
                 <Field label="Realtime audio model">
-                  <Select name="realtimeModel" defaultValue={savedVoice.model} options={GEMINI_LIVE_MODELS.map((model) => ({
-                    value: model, label: model,
-                    description: model === "gemini-3.8-live" ? "Current Gemini Live model" : "Legacy preview; prefer the current model",
-                  }))} />
+                  <LiveModelSelect saved={savedVoice.model}/>
                 </Field>
                 <Field label="Realtime voice" hint="Used for this assistant’s browser demo and phone calls. The saved prompt, knowledge, booking and transfer tools remain in use. Minimum pause sets turn detection; STT confidence and pipeline sensitivity do not apply to native audio. Response time also depends on the provider, network and tools.">
                   <Select name="realtimeVoice" defaultValue={savedVoice.voice}
@@ -284,14 +301,7 @@ export default function AssistantForm({
               </div>
             </div>
           </section>
-          <div data-settings-section="knowledge" className="flex min-h-64 min-w-0 shrink-0 flex-1 flex-col">
-            {initial?.id ? <UrlSetup assistantId={initial.id} /> : <p className="rounded-xl border border-white/10 p-4 text-sm text-gray-400">Create your assistant first to add websites and documents.</p>}
-          </div>
-          <div data-settings-section="actions" className="min-w-0"><HumanTransferFields targets={transferTargets} extraPeople={extraTransferPeople(initial?.metadata)} /></div>
-        </div>
-        <div className={`flex min-h-0 min-w-0 flex-col gap-3 ${voiceEngine === "gemini-live" ? "xl:overflow-y-auto" : "xl:col-span-2"}`}>
-            <div data-settings-section="speech" className="min-w-0"><CallAccuracySection initial={initial} engine={voiceEngine}/></div>
-          <section data-settings-section="privacy" className="glass min-w-0 shrink-0 rounded-2xl p-3 space-y-2">
+          <section data-settings-section="privacy" className="glass flex min-w-0 shrink-0 flex-col gap-2 rounded-2xl p-3">
             <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
               Privacy &amp; messages
               <InfoTooltip width={300}>
@@ -314,7 +324,7 @@ export default function AssistantForm({
               placeholder="Hi, this is Priya from Acme Dental — please call us back at +91…"
               tooltip="Spoken when voicemail is detected. Leave blank to hang up silently."
             />
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-2.5 py-1.5">
+            <div className="assistant-redaction-row flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-2.5">
               <span className="flex shrink-0 items-center text-[10px] uppercase tracking-widest text-gray-400">
                 Redact PII
                 <InfoTooltip>
@@ -330,6 +340,11 @@ export default function AssistantForm({
               </div>
             </div>
           </section>
+        </div>
+        <div className="assistant-speech-column flex min-h-0 min-w-0 flex-col gap-3">
+            <div data-settings-section="speech" className="min-w-0"><CallAccuracySection initial={initial} engine={voiceEngine}/></div>
+          <div data-settings-section="actions" className="assistant-forwarding flex min-w-0 flex-col gap-3"><HumanTransferFields targets={transferTargets} extraPeople={extraTransferPeople(initial?.metadata)} />
+
         {tools.length > 0 && (
           <section data-settings-section="actions" className="glass min-w-0 rounded-2xl p-4 space-y-3">
             <div>
@@ -381,7 +396,11 @@ export default function AssistantForm({
             </div>
           </section>
         )}
+          </div>
         </div>
+          <div data-settings-section="knowledge" className="assistant-knowledge flex min-h-0 min-w-0 flex-col">
+            {initial?.id ? <UrlSetup assistantId={initial.id} /> : <p className="rounded-xl border border-white/10 p-4 text-sm text-gray-400">Create your assistant first to add websites and documents.</p>}
+          </div>
       </div>
 
     </form>
@@ -389,11 +408,11 @@ export default function AssistantForm({
   );
 }
 
-// Speech settings span the editor so labels and number fields have room.
+// Keep speech controls visible, with the same input scale as voice settings.
 function CallAccuracySection({ initial, engine }: { initial?: Partial<Assistant>; engine: VoiceEngine }) {
   const native=engine==='gemini-live'||engine==='gpt-live';
   return (
-    <section className="glass flex min-w-0 flex-1 flex-col gap-3 rounded-2xl p-4">
+    <section className="glass flex min-w-0 flex-1 flex-col gap-3 rounded-2xl p-3">
       <div>
         <h3 className="flex items-center text-sm font-semibold uppercase tracking-widest text-gray-300">
           Call accuracy &amp; speech
@@ -404,10 +423,7 @@ function CallAccuracySection({ initial, engine }: { initial?: Partial<Assistant>
           </InfoTooltip>
         </h3>
       </div>
-      {/* Compact two-column field layout from 1536px (brief §5). These four
-          knobs are short — a select and two number inputs — so they pair
-          cleanly; below 1536 they stay stacked rather than truncate. */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 [&>label:first-child]:sm:col-span-2">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 [&>label:first-child]:sm:col-span-2">
         <Field
           label="End-of-speech sensitivity"
           hint={native?"This control applies to the STT/LLM/TTS pipeline. Your native voice model manages speech detection; Gemini Live uses Minimum pause below. The saved pipeline value is preserved.":"Silence wait: Low 2s, Medium 1s, High 0.4s. The larger of this and Min pause is used; model/STT/TTS add response time. Saved changes apply to new calls."}
@@ -448,16 +464,16 @@ function CallAccuracySection({ initial, engine }: { initial?: Partial<Assistant>
         <input type="hidden" name="recordingEnabled" value={String(initial?.recordingEnabled ?? true)} />
       </div>
 
-      <div className="flex items-center border-t border-white/10 pt-3 text-xs font-semibold text-gray-400">
+      <div className="flex items-center border-t border-white/10 pt-2 text-xs font-semibold text-gray-400">
             Advanced speech settings
             <InfoTooltip width={300}>
               Adjust pause handling, recognition confidence and call duration limits.
               Saved changes apply to new calls.
             </InfoTooltip>
       </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 [&>label:last-of-type]:sm:col-span-2">
+        <div className="assistant-advanced-speech grid grid-cols-1 gap-2 sm:grid-cols-3">
         <Field
-          label="Minimum pause (ms)"
+          label="Min pause (ms)"
           hint={engine==='gemini-live'?"Gemini Live silence duration before a turn ends, with a 200 ms minimum. This does not guarantee total response latency.":engine==='gpt-live'?"GPT-Live manages full-duplex turn taking. The saved pipeline value is preserved.":"Minimum end-of-turn wait. The larger of this and the selected sensitivity is used. This is not a total voice-response latency guarantee."}
         >
           <input
@@ -485,7 +501,7 @@ function CallAccuracySection({ initial, engine }: { initial?: Partial<Assistant>
           />
         </Field>
         <Field
-          label="Max call duration (s)"
+          label="Call limit (s)"
           hint="Hard cap. 1800 = 30 minutes."
         >
           <input

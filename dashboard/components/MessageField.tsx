@@ -50,7 +50,7 @@ export default function MessageField({
   }, [open]);
 
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-2.5 py-1.5">
+    <div className="relative flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-2.5 py-1.5">
       <span className="flex shrink-0 items-center text-[10px] uppercase tracking-widest text-gray-400">
         {label}
         {tooltip && <InfoTooltip>{tooltip}</InfoTooltip>}
@@ -60,6 +60,7 @@ export default function MessageField({
         onClick={() => setOpen(previous=>!previous)}
         aria-expanded={open}
         aria-label={`Edit ${label}`}
+        hidden={inline&&open}
         className="group flex min-w-0 flex-1 items-center justify-end gap-1.5 text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 rounded"
       >
         <span
@@ -81,16 +82,16 @@ export default function MessageField({
         className={
           open && !inline
             ? "fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm"
-            : open ? "w-full" : "hidden"
+            : open ? "min-w-0 flex-1" : "hidden"
         }
         role={open && !inline ? "dialog" : undefined}
         aria-modal={open && !inline ? true : undefined}
         aria-label={open && !inline ? label : undefined}
         onMouseDown={(e) => {
-          if (open && e.target === e.currentTarget) setOpen(false);
+          if (open && !inline && e.target === e.currentTarget) setOpen(false);
         }}
       >
-        <div className={inline?"w-full space-y-2 pt-2":"my-16 w-full max-w-xl space-y-3 rounded-2xl border border-white/10 bg-[#0d0f1a] p-5 shadow-2xl"}>
+        <div className={inline?"flex min-w-0 items-center gap-2":"my-16 w-full max-w-xl space-y-3 rounded-2xl border border-white/10 bg-[#0d0f1a] p-5 shadow-2xl"}>
           <div hidden={inline} className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
               {label}
@@ -109,14 +110,14 @@ export default function MessageField({
             ref={areaRef}
             name={name}
             aria-label={label}
-            rows={rows}
+            rows={inline?2:rows}
             value={value}
             onChange={(e) => setValue(e.target.value)}
             placeholder={placeholder}
-            className="w-full resize-y rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+            className={`${inline?'min-w-0 flex-1 resize-none px-2 py-1.5 text-xs':'w-full resize-y px-3 py-2 text-sm'} rounded-lg border border-white/10 bg-black/30 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-violet-500/40`}
           />
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-[10px] text-gray-500">
+          <div className={inline?"shrink-0":"flex items-center justify-between gap-3"}>
+            <span hidden={inline} className="text-[10px] text-gray-500">
               Changes apply when you save the assistant — closing this keeps them.
             </span>
             <button

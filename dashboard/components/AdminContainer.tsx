@@ -29,7 +29,7 @@ export default function AdminContainer({
   );
   // Collapsing the sidebar frees ~190px; the content takes it rather than
   // leaving new whitespace on the right. Wide routes simply stop being capped.
-  const maxWidth = wide
+  const maxWidth = pathname.startsWith('/assistants/') ? "max-w-none" : wide
     ? collapsed
       ? "max-w-none"
       : "max-w-[1700px]"
@@ -41,6 +41,6 @@ export default function AdminContainer({
     : pathname==='/demo' ? "px-4 py-4 sm:px-6"
     : wide ? "px-4 py-6 sm:px-6 lg:px-8" : "px-8 py-10";
   return (
-    <div className={`mx-auto ${padding} ${maxWidth}`}>{children}</div>
+    <div className={`mx-auto ${padding} ${maxWidth}`} style={pathname.startsWith('/assistants/')?{maxWidth:'none',width:'100%'}:undefined}>{children}</div>
   );
 }

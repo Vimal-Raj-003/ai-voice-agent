@@ -176,6 +176,12 @@ async def llm_models(provider: str, refresh: bool = False) -> dict:
     return await model_catalog.list_models(provider, force_refresh=refresh)
 
 
+@app.get('/api/voice/live-models', dependencies=[Depends(require_token)])
+async def live_voice_models(organization_id: str, refresh: bool = False) -> dict:
+    from live_model_catalog import list_live_models
+    return await list_live_models(organization_id, refresh)
+
+
 # ── Provider registry ─────────────────────────────────────────────────────────
 # THE source of truth for STT/TTS providers. The dashboard renders its dropdowns
 # and badges from this, so there is exactly one place a provider is declared.

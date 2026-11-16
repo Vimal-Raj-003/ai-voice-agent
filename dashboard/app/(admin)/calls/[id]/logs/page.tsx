@@ -91,7 +91,7 @@ export default async function CallLogsPage({
       <CallCostBreakdown breakdown={computeCallCost(c,buildRateMap(rates),{includeUnavailable:true})}/>
       {/* ── 3 / 4 / 6. FLOW, BREAKPOINT, TIMELINE (this call only) ────── */}
       <CallLogsView
-        nativeAudio={/^gemini-.*live|^gpt-live/.test(c.llmSkuUsed||'')||['gemini-live','gpt-live'].includes(String((c.metadata as Record<string,unknown>|null)?.demoEngine||''))}
+        nativeAudio={/^gemini-.*(?:live|native-audio)|^gpt-live/.test(c.llmSkuUsed||'')||['gemini-live','gpt-live'].includes(String((c.metadata as Record<string,unknown>|null)?.demoEngine||''))}
         room={c.livekitRoomName}
         hasUser={hasUser}
         hasAI={hasAI}

@@ -77,6 +77,7 @@ export default function AssistantLibrary({assistants}:{assistants:AssistantSumma
             {assistant.preview?<button type="button" className={styles.listen} aria-label={`${isPlaying?'Pause':'Listen to'} ${assistant.name} voice preview`} aria-pressed={isPlaying} onClick={()=>listen(assistant)}>
               {loading&&audioId===assistant.id?<LoaderCircle size={14} className={styles.spinner}/>:isPlaying?<Pause size={14}/>:<Play size={14}/>}{isPlaying?'Pause':'Listen'}
             </button>:<Link href={`/demo?assistant=${encodeURIComponent(assistant.id)}`} className={styles.listen}>Try Demo</Link>}
+            {assistant.role==='ivr'&&<Link href={`/demo?assistant=${encodeURIComponent(assistant.id)}`} className="mt-2 text-xs underline underline-offset-4">Test transfer</Link>}
           </article>;
         })}
         {!rows.length&&<div className={styles.empty}><h2>No assistants found</h2><p>Try another name or clear your search.</p><button type="button" onClick={()=>setQuery('')}>Clear search</button></div>}

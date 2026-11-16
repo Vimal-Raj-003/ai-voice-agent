@@ -162,28 +162,31 @@ export default function SystemPromptField({
         </button>
       </div>
 
-      {/* Preview: enough to recognise the prompt, not enough to dominate. */}
-      <button
-        type="button"
-        aria-label="Open system prompt editor"
-        onClick={() => setOpen(true)}
-        className={`${fillPreview ? "flex h-44 flex-col xl:h-0 xl:min-h-20 xl:flex-1" : "block"} w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-left transition hover:border-violet-400/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40`}
-      >
+      <div className={`${fillPreview ? "assistant-prompt-preview flex h-60 min-h-0 flex-col xl:h-0 xl:min-h-20 xl:flex-1" : "block"} w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-left`}>
         {value.trim() ? (
           <>
-            <span className={`${fillPreview ? "min-h-0 flex-1 overflow-hidden text-xs" : compact ? "line-clamp-1 text-[11px]" : "line-clamp-3 text-[11px]"} whitespace-pre-wrap font-mono leading-relaxed text-gray-400`}>
+            <div role="region" aria-label="System prompt preview" tabIndex={0}
+              onKeyDown={event=>{
+                if(event.key==='Home'||event.key==='End'){
+                  event.preventDefault();
+                  event.currentTarget.scrollTop=event.key==='End'?event.currentTarget.scrollHeight:0;
+                }
+              }}
+              className={`${fillPreview ? "min-h-0 flex-1 overflow-y-auto overscroll-contain text-xs" : compact ? "max-h-20 overflow-y-auto text-[11px]" : "max-h-44 overflow-y-auto text-[11px]"} whitespace-pre-wrap break-words font-mono leading-relaxed text-gray-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40`}>
               {value}
-            </span>
-            <span className="mt-1 block shrink-0 text-[10px] text-gray-600">
-              {directionLabel} · {words.toLocaleString()} words · click to edit
-            </span>
+            </div>
           </>
         ) : (
           <span className="block text-[11px] text-gray-600">
             No prompt yet — click to write one, or generate it with AI.
           </span>
         )}
-      </button>
+        <div className="mt-2 flex shrink-0 items-center justify-between gap-2 border-t border-white/10 pt-1.5">
+          <span className="text-[10px] text-gray-500">{directionLabel} · {words.toLocaleString()} words</span>
+          <button type="button" aria-label="Open system prompt editor" onClick={()=>setOpen(true)}
+            className="min-h-8 rounded px-2 text-xs text-violet-300 hover:bg-violet-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40">Expand</button>
+        </div>
+      </div>
 
       <div
         className={
@@ -203,7 +206,8 @@ export default function SystemPromptField({
             viewport (90vw x 85vh, capped on very wide screens) and lays out as
             a flex column: header and footer keep their natural height and the
             textarea absorbs everything left over. */}
-        <div className="modal-surface flex h-[85vh] w-[90vw] max-w-[1800px] flex-col gap-3 overflow-y-auto rounded-2xl p-5">
+        <div className="modal-surface flex h-[85vh] w-[90vw] max-w-[1800px] flex-col gap-3 overflow-hidden rounded-2xl p-5"
+          style={{maxHeight:'min(85dvh, calc(var(--assistant-workspace-height, 100dvh) - 3rem))',maxWidth:'min(1800px, calc(var(--assistant-workspace-width, 100dvw) - 2rem))'}}>
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
             <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-300">
               System prompt
@@ -254,7 +258,7 @@ export default function SystemPromptField({
             className={inputCls + " min-h-0 flex-1 resize-none font-mono text-[13px] leading-relaxed"}
           />
 
-          <div className="flex shrink-0 items-center justify-between gap-3">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-t border-white/10 pt-3">
             <span className="text-[10px] text-gray-500">
               Changes apply when you save the assistant — closing this editor
               keeps them.
@@ -262,7 +266,7 @@ export default function SystemPromptField({
             <button
               type="button"
               onClick={() => setOpen(false)}
-              className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-gray-300 transition hover:bg-white/[0.08] hover:text-white"
+              className="min-h-9 rounded-lg bg-violet-300 px-4 py-2 text-sm font-medium text-black transition hover:bg-violet-200"
             >
               Done
             </button>

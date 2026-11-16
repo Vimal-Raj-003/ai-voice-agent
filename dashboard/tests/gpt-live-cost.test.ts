@@ -16,6 +16,16 @@ const rates = new Map([
   ["vobiz|inbound|TELEPHONY_MINUTE", 0],
 ]);
 
+test('Gemini native-audio model IDs retain modality pricing without a live suffix',()=>{
+  const model='gemini-2.5-flash-native-audio-latest';
+  const call:CallCostInput={...native,llmProviderUsed:'google',llmSkuUsed:model,ttsChars:500,ttsProviderUsed:'sarvam',ttsSkuUsed:'legacy',
+    metadata:{voiceUsage:{engine:'gemini-live',provider:'google',model,complete:true,tokens:{inputAudio:1000,outputAudio:1000}}}};
+  const cost=computeCallCost(call,new Map([[`google|${model}/audio|LLM_INPUT_MTOK`,3],[`google|${model}/audio|LLM_OUTPUT_MTOK`,12]]));
+  assert.equal(cost.totalUsd,.015);
+  assert.equal(cost.lines.filter(line=>line.category==='LLM').length,2);
+  assert.equal(cost.lines.some(line=>line.category==='STT'||line.category==='TTS'),false);
+});
+
 test("native audio is metered once as full-duplex voice plus actual backend usage", () => {
   const cost = computeCallCost(native, rates);
   const voice = cost.lines.find((line) => line.sku === "gpt-live-1")!;

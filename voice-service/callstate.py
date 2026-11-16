@@ -22,7 +22,7 @@ from copy import copy, deepcopy
 from types import SimpleNamespace
 import re
 from typing import Any, Callable
-from contact_corrections import latest_email, correction_requested, rejection_requested, EMAIL_TOPIC, turn_intent, correct_email_part, CONFIRMATION, plausible_name, fragmented_spelling
+from contact_corrections import latest_email, correction_requested, rejection_requested, EMAIL_TOPIC, turn_intent, correct_email_part, CONFIRMATION, plausible_name, fragmented_spelling, clean_spoken_name, email_fragment, canonical_recipient, email_spelling_offer, email_readback_requested, email_spelling_remainder, email_readback_matches, spelled_name
 from call_intelligence import CallIntelligence
 from caller_consent import booking_declined, bare_refusal
 
@@ -80,6 +80,9 @@ class CallState:
     cancel_requested: bool = False
     response_tone: str = 'neutral'
     email_spelled_local: str = ''
+    email_restart_expected: bool = False
+    require_email_readback: bool = False
+    _email_readback_value: str = ''
     email_retry_requested: bool = False
     booking_hold: bool = False
     confirmed_at_turn: dict[str, int] = field(default_factory=dict)
@@ -132,6 +135,8 @@ class CallState:
             self.response_tone = self.intelligence.tone
         before = {k: self.entities.get(k) for k in ('name', 'email', 'date', 'time', 'service')}
         before_hold = self.booking_hold
+        before_draft = self.email_spelled_local
+        before_restart = self.email_restart_expected
         intent = turn_intent(text)
         if intent == 'presence':
             return  # Line checks neither answer intake nor revise caller details.
@@ -157,7 +162,7 @@ class CallState:
                 self._observe_user_details(text)
         finally:
             after = {k: self.entities.get(k) for k in before}
-            if before != after or before_hold != self.booking_hold or intent in ('correction', 'cancel') or retry_email:
+            if before != after or before_hold != self.booking_hold or before_draft != self.email_spelled_local or before_restart != self.email_restart_expected or intent in ('correction', 'cancel') or retry_email:
                 self.input_revision += 1
                 if self.work:
                     self.work.invalidate()
@@ -165,16 +170,62 @@ class CallState:
     def _observe_user_details(self, text: str) -> None:
         if turn_intent(text) in ('presence', 'status', 'cancel'):
             return
+        collecting_email = self.pending_slug in ('email', 'email_confirmation') or self.contact_repair
+        if collecting_email and email_spelling_offer(text):
+            self.email_spelled_local = ''
+            self.email_restart_expected = False
+            self.rejected_email = self.entities.pop('email', None) or self.rejected_email
+            self.entities['email_confirmed'] = 'no'
+            self._email_readback_value = ''
+            self.contact_repair = True
+            self.spelling_field = 'email'
+            self.set_pending('email', 'Listen to the replacement spelling; retain the other call details.')
+            text = email_spelling_remainder(text)
+            if not text:
+                return
+        if collecting_email and email_readback_requested(text):
+            self.spelling_field = 'email'
+            self.entities['email_confirmed'] = 'no'
+            self._email_readback_value = ''
+            if not canonical_recipient(latest_email(text)):
+                return  # Readback alone is not approval; retain explicit corrections below.
+        if collecting_email and self.email_spelled_local and re.search(
+                r'(?:[A-Za-z]|ஏ|பி|சி|டி)-?க்கு\s+அப்புறம்|\bafter\s+(?:the\s+)?(?:letter\s+)?[A-Za-z]\b', text, re.I):
+            self.email_restart_expected = True
+            self.entities['email_confirmed'] = 'no'
+            self._email_readback_value = ''
+            self.set_pending('email', 'A spelling position is being corrected. Listen to the corrected spelling; do not append a full respelling to the old draft.')
+            return
         if re.search(r"(?:appointment|அப்பாயின்ட்மென்ட்|நியமனம்).*?(?:book|வேணும்|செய்)", text, re.I):
             self.set_intent("appointment_booking")
-        candidate = '' if fragmented_spelling(text) else latest_email(text)
+        if re.search(r'\b(?:(?:another|different|new)\s+email|start\s+(?:again|over))\b|வேற.*(?:email|ஈமெயில்)', text, re.I) and not latest_email(text):
+            self.email_spelled_local = ''
+            self.email_restart_expected = False
+            self.rejected_email = self.entities.pop('email', None) or self.rejected_email
+            self.entities.pop('email_confirmed', None)
+            self._email_readback_value = ''
+            self.contact_repair = True
+            self.set_pending('email', 'Collect the replacement email only; keep the existing appointment and other details.')
+            return
+        candidate = '' if fragmented_spelling(text) else canonical_recipient(latest_email(text))
         repair = correction_requested(text)
-        if not candidate and (self.contact_repair or repair):
-            candidate = correct_email_part(text, self.entities.get('email') or self.rejected_email or '')
+        corrected = ''
+        if self.contact_repair or repair or self.pending_slug == 'email_confirmation':
+            corrected = correct_email_part(text, self.entities.get('email') or self.rejected_email or '')
+            candidate = corrected or candidate
         names = list(re.finditer(r"(?:my name is|என் பேர்|என் பெயர்|என்னுடைய பெயர்|en peru)\s+([^?!.,]+)", text, re.I))
         explicit_name = ''
+        if (self.pending_slug in ('name', 'name_spelling', 'name_confirmation')
+                and not candidate and not EMAIL_TOPIC.search(text)):
+            preferred = re.search(r"(?:^|[.!?,]\s*)([A-Za-z\u0b80-\u0bff]+)[ -]ன்னு\s+(?:போட்டுக்கோங்க|வச்சுக்கோங்க|குறிச்சுக்கோங்க)[.! ]*$", text)
+            if preferred and plausible_name(preferred.group(1)):
+                if self.update_entity('name', preferred.group(1)):
+                    self.entities['name_confirmed'] = 'no'
+                    self.spelling_field = None
+                    self.set_pending('name_confirmation', 'Confirm only the chosen name once; retain the other supplied details.')
+                return
         if names:
-            explicit_name = re.split(r"\s+(?:உன்\s|உங்க\s|your\b|and\b)", names[-1].group(1), maxsplit=1, flags=re.I)[0].strip()
+            explicit_name = clean_spoken_name(re.split(r"\s+(?:உன்\s|உங்க\s|your\b|and\b)", names[-1].group(1), maxsplit=1, flags=re.I)[0].strip())
             if (not plausible_name(explicit_name) or correction_requested(explicit_name)
                     or re.search(r'\bspelling\b|ஸ்பெல்லிங்', explicit_name, re.I)):
                 explicit_name = ''
@@ -187,16 +238,41 @@ class CallState:
             else:
                 self.entities['requested_name'] = explicit_name
             return
-        if not candidate and self.pending_slug == 'email' and not repair:
-            if re.fullmatch(r'(?:[A-Za-z0-9][ .-]+)+[A-Za-z0-9][. ]*', text):
-                self.email_spelled_local = re.sub(r'[ .-]+', '', text).lower()
-                self.pending_question = 'The local part letters are recorded. Ask only for the domain after at; do not ask for those letters again.'
-                return
-            if self.email_spelled_local:
-                domain = re.sub(r'\s+(?:dot|டாட்)\s+', '.', text, flags=re.I)
-                match_domain = re.fullmatch(r'(?:at\s+|@\s*)([A-Za-z0-9.-]+\.[A-Za-z]{2,})[. ]*', domain, re.I)
-                if match_domain:
-                    candidate = latest_email(self.email_spelled_local + '@' + match_domain.group(1))
+        if self.pending_slug in ('email', 'email_confirmation') and not repair and not corrected:
+            part = email_fragment(text)
+            if part:
+                local, domain = part
+                draft = self.email_spelled_local
+                if self.email_restart_expected:
+                    letters = re.findall(r'(?<![A-Za-z])[A-Za-z](?![A-Za-z])',text)
+                    if len(letters) >= 3 or canonical_recipient(latest_email(text)):
+                        draft = ''
+                        self.email_restart_expected = False
+                    else:
+                        return  # A domain alone cannot certify a disputed draft.
+                if draft and not local.startswith(draft):
+                    local = draft if local == draft else draft + local
+                if domain:
+                    candidate = canonical_recipient(local + '@' + domain)
+                    if not candidate:
+                        # Never promote a suffix of an invalid full spelling.
+                        self.email_spelled_local = local
+                        self.entities['email_confirmed'] = 'no'
+                        self.set_pending('email', 'Retain the spelled parts; clarify only the invalid or missing characters.')
+                        return
+                    self.email_spelled_local = ''
+                else:
+                    self.email_spelled_local = local
+                    self.entities['email_confirmed'] = 'no'
+                    self._email_readback_value = ''
+                    self.set_pending('email', 'Local-part chunks are recorded. Continue only the missing part, then ask for at and the domain; never restart intake.')
+                    return
+            elif '@' in text or re.search(r'\bat\b', text, re.I):
+                prefix = text[:text.lower().rfind(candidate)] if candidate else text
+                topic = EMAIL_TOPIC.search(prefix)
+                framed = topic and re.fullmatch(r'[\s:=]*(?:(?:id|address|is|ஐடி|இது)[\s:=]*)*', prefix[topic.end():], re.I)
+                if not framed:
+                    candidate = ''  # Never guess the tail of a non-ASCII local part.
         if rejection_requested(text) and re.search(r"(?:name|பெயர்|பேரு|பேர்)", text, re.I) and not EMAIL_TOPIC.search(text):
             if "name" not in self._locked:
                 self.entities.pop("name", None)
@@ -213,6 +289,13 @@ class CallState:
                 self.entities.pop('name', None)
                 self.set_pending('name_spelling', 'Please spell only the unclear name again.')
                 return
+        if (self.pending_slug in ('name_confirmation', 'name_spelling') and not repair
+                and not _is_ack(text) and '?' not in text and not candidate and not EMAIL_TOPIC.search(text)):
+            replacement_name = spelled_name(text) or clean_spoken_name(text.rstrip('.! '))
+            if plausible_name(replacement_name) and self.update_entity('name', replacement_name):
+                self.entities['name_confirmed'] = 'no'
+                self.set_pending('name_confirmation', 'Read back only this supplied name once; do not substitute a name from the email.')
+                return
         if self.pending_slug == "name_spelling" and not repair and not _is_ack(text) and "?" not in text:
             letters = re.fullmatch(r"\s*(?:[A-Za-z][ .-]+)+[A-Za-z][. ]*", text)
             if letters:
@@ -223,6 +306,7 @@ class CallState:
         other_field = re.search(r'\b(?:name|date|time|service)\b|பெயர்|பேர்|தேதி|நேரம்|சேவை', text, re.I)
         if rejection_requested(text) and (EMAIL_TOPIC.search(text) or (not other_field and self.pending_slug in ("email", "email_confirmation"))):
             self.email_spelled_local = ''
+            self.email_restart_expected = False
             self.entities['email_previous_delivery'] = self.entities.get('email_delivery', 'not_sent')
             self.contact_repair = True
             self.rejected_email = self.entities.pop("email", None) or self.rejected_email
@@ -230,12 +314,14 @@ class CallState:
             self.entities["email_delivery"] = "not_sent_to_corrected_address"
             self.set_pending("email", "Please spell the complete correct email address.")
         if candidate:
+            self.email_restart_expected = False
             self.details_parsed_turn = self.user_turn_id
             current = self.entities.get("email")
             old = current or self.rejected_email
             self.update_entity("email", candidate)
             if candidate != old or self.entities.get('email_confirmed') != 'yes':
                 self.entities["email_confirmed"] = "no"
+                self._email_readback_value = ''
             if old and old != candidate:
                 self.contact_repair = True
                 self.entities["email_delivery"] = "not_sent_to_corrected_address"
@@ -245,8 +331,9 @@ class CallState:
         elif self.pending_slug == "email_confirmation":
             low = text.lower().rstrip(".!?,")
             send_here = re.search(r"send\s+(?:it\s+)?to\s+(?:this|that)|இந்த.*(?:send|அனுப்பு)", text, re.I)
-            if low in _YES or CONFIRMATION.fullmatch(text.rstrip('.!? ')) or send_here:
+            if (low in _YES or CONFIRMATION.fullmatch(text.rstrip('.!? ')) or send_here) and self.can_confirm_email():
                 self.entities["email_confirmed"] = "yes"
+                self.spelling_field = None
                 self.confirmed_at_turn['email'] = self.user_turn_id
                 self.clear_pending()
             elif low in _NO:
@@ -257,7 +344,7 @@ class CallState:
         # Capture only explicit self-identification; never infer names from old notes.
         match = names[-1] if names else None
         if match:
-            name = re.split(r"\s+(?:உன்\s|உங்க\s|your\b|and\b)", match.group(1), maxsplit=1, flags=re.I)[0].strip()
+            name = clean_spoken_name(re.split(r"\s+(?:உன்\s|உங்க\s|your\b|and\b)", match.group(1), maxsplit=1, flags=re.I)[0].strip())
             if plausible_name(name):
                 self.update_entity("name", name)
                 if self.pending_slug == "name":
@@ -273,6 +360,23 @@ class CallState:
             return
         self._last_observed_assistant, self._last_observed_assistant_id = text, message_id
         self.intelligence.assistant(text, self, interrupted)
+        if self.entities.get('email_confirmed') != 'yes':
+            self._email_readback_value = ''
+        # A name correction may have used the single pending slot. Reattach an
+        # actual complete email readback to its candidate before accepting yes.
+        if (not interrupted and self.entities.get('email_confirmed') != 'yes'
+                and self.entities.get('email') and email_readback_matches(text, self.entities['email'])
+                and re.search(r'\b(?:correct|right|confirm)\b|கரெக்ட்|சரியா|சரிதானா|சரியான|உறுதி', text, re.I)
+                and not re.search(r'\b(?:wrong|incorrect|not\s+(?:correct|right))\b|தப்பா|தப்பு|தவறு', text, re.I)):
+            self._email_readback_value = self.entities['email'].lower()
+            self.set_pending('email_confirmation', 'Confirm this exact email readback once.')
+            return
+        # The model can ask for the name before finishing email approval. Match
+        # that actual question so the next name is not appended to an email draft.
+        name_question = re.search(r'(?:your name|உங்க(?:ள்)?\s*(?:name|பெயர்|பேரு|பேர்))[^?]*\?', text, re.I)
+        if not interrupted and name_question and not self.entities.get('name'):
+            self.set_pending('name', name_question.group())
+            return
         if (self.contact_repair and self.entities.get('email_confirmed') != 'yes') or self.pending_slug in ("email", "email_confirmation", "name_spelling", "name_confirmation"):
             return
         questions = re.findall(r"[^.!?]*\?", text)
@@ -280,6 +384,10 @@ class CallState:
             self.set_pending(None, questions[-1].strip())
         elif not interrupted and self.pending_slug is None:
             self.clear_pending()
+
+    def can_confirm_email(self) -> bool:
+        return not self.email_restart_expected and not self.email_spelled_local and (not self.require_email_readback or bool(self.entities.get('email')
+            and self._email_readback_value == self.entities['email']))
 
     def set_language(self, lang: str) -> bool:
         lang = _norm(lang)
@@ -314,6 +422,10 @@ class CallState:
         unconfirmed update (requirement 6)."""
         key = _norm(key)
         v = _norm(value)
+        if key == 'email':
+            v = v.lower()
+        elif key == 'name':
+            v = clean_spoken_name(v)
         if not key or not v or _is_ack(v):
             return False
         if key == 'name' and not plausible_name(v):
@@ -345,12 +457,17 @@ class CallState:
             return 'Rejected stale turn. Read the latest call state; no details were changed.'
         if not evidence.strip() or evidence.strip() not in self._last_observed_user:
             return 'Rejected: quote the current caller words as evidence. No details changed.'
+        values = dict(values)
+        if values.get('email'):
+            values['email'] = values['email'].strip().lower()
         before = (dict(self.entities), self.cancel_requested, self.pending_slug, self.booking_hold)
         if confirmed_field and confirmed_field not in ('name', 'email'):
             return 'Only name or email confirmation can be recorded here.'
         if confirmed_field and (self.pending_slug != confirmed_field + '_confirmation'
                                 or not self.entities.get(confirmed_field)):
             return 'No matching pending read-back to confirm. Do not invent confirmation.'
+        if confirmed_field == 'email' and not self.can_confirm_email():
+            return 'Email has not been fully read back to this caller. Read the complete current candidate once and ask approval; an acknowledgement to another question is not email approval.'
         needs_readback = False
         if confirmed_field and self.pending_set_turn >= self.user_turn_id:
             confirmed_field = ''  # A newly supplied candidate needs a later read-back.
@@ -360,8 +477,11 @@ class CallState:
         if values.get('name') and not plausible_name(values['name']):
             return 'Rejected non-name reply. Retain the scheduling details and ask only for the caller name.'
         if values.get('name'):
+            explicit_name = re.search(r'(?:my name is|என் பேர்|என் பெயர்|என்னுடைய பெயர்|en peru)\s+', evidence, re.I)
+            if not explicit_name and (latest_email(evidence) or EMAIL_TOPIC.search(evidence) or '@' in evidence):
+                return 'Rejected unsupported name: an email username is not the caller name. Ask only for the name; retain the email.'
             letters = lambda v: ''.join(c for c in v.casefold() if c.isalpha())
-            if letters(values['name']) not in letters(evidence):
+            if letters(values['name']) not in letters(evidence) and letters(values['name']) != letters(spelled_name(evidence)):
                 return 'Rejected unsupported name. Ask only for the caller name; never store an unknown placeholder.'
         if values.get('booking_permission') == 'allowed':
             permission = re.search(r'\b(?:book|confirm|schedule)\b|புக்|பதிவு', evidence, re.I)
@@ -370,17 +490,26 @@ class CallState:
                 self.booking_hold = False
             else:
                 return 'Booking permission is unclear. No booking submitted; ask one explicit confirmation.'
-        if values.get('email') and latest_email(values['email']) != values['email'].lower():
+        if values.get('email') and canonical_recipient(values['email']) != values['email'].lower():
             return 'Rejected incomplete email; ask only for the missing part. No details changed.'
         if values.get('email') and values['email'] != self.entities.get('email'):
             # A rejection alone contains no new recipient. The model must not
             # resurrect an old guess from history during a spelling repair.
             supplied = latest_email(evidence)
             corrected = correct_email_part(evidence, self.entities.get('email') or self.rejected_email or '')
-            spelled = (fragmented_spelling(evidence)
-                       or re.search(r'\b(?:[A-Za-z0-9][ .-]+){2,}[A-Za-z0-9]\b', evidence)
-                       or (correction_requested(evidence) and re.search(r'\b[A-Za-z0-9]\b', evidence)))
-            if values['email'].lower() not in (supplied, corrected) and not spelled:
+            if self.pending_slug in ('email', 'email_confirmation'):
+                # observe_user has already parsed this utterance with all its
+                # local-part words. A model must not bypass a rejected whole
+                # spelling by promoting the regex's last-word suffix.
+                framed_literal = re.search(
+                    r'(?:^|[.!?]\s*|\b(?:use|email(?:\s+(?:address|id))?(?:\s+is)?)\s+)'
+                    + re.escape(values['email']) + r'(?![A-Za-z0-9._%+\-])', evidence, re.I)
+                if not framed_literal:
+                    supplied = ''
+            # Spelled letters alone do not authorize an invented domain or
+            # removal of the rest of a recipient. Completed chunks are already
+            # assembled by observe_user before a model tool can act.
+            if values['email'].lower() not in (supplied, corrected):
                 return 'Rejected unsupported email: no new address or spelled characters in this caller turn. Retain the known parts; ask only for the unclear part.'
         if confirmed_field and values.get(confirmed_field) and self.entities.get(confirmed_field) != values[confirmed_field]:
             # Do not discard a useful correction just because the model also
@@ -415,6 +544,7 @@ class CallState:
             if key in ('name', 'email') and previous != value:
                 self.entities[key + '_confirmed'] = 'no'
                 if key == 'email':
+                    self._email_readback_value = ''
                     self.contact_repair = bool(previous or self.rejected_email)
                     self.entities['email_delivery'] = 'not_sent_to_corrected_address'
                 self.set_pending(key + '_confirmation', f'Read back only the corrected {key} once for confirmation.')
@@ -454,7 +584,7 @@ class CallState:
         if slug is None and question:
             if EMAIL_TOPIC.search(question):
                 slug = "email_confirmation" if self.entities.get("email") else "email"
-            elif re.search(r"(?:your name|உங்க.*பெயர்|உங்கள்.*பெயர்|உங்க.*பேரு|உங்க.*பேர்)", question, re.I):
+            elif re.search(r"(?:your name|உங்க.*name|உங்க.*பெயர்|உங்கள்.*பெயர்|உங்க.*பேரு|உங்க.*பேர்)", question, re.I):
                 slug = "name"
             elif re.search(r"(?:what|which|எந்த|என்ன|எது).*?(?:service|சேவை)|(?:service|சேவை).*?(?:what|which|எந்த|என்ன|எது)", question, re.I):
                 slug = "service"

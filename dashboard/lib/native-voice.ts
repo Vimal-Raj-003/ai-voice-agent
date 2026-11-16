@@ -1,6 +1,10 @@
 import type { Prisma } from "@prisma/client";
 
-export const GEMINI_LIVE_MODELS = ["gemini-3.8-live", "gemini-3.1-flash-live-preview"] as const;
+export const GEMINI_LIVE_MODELS = ["gemini-3.8-live", "gemini-3.8-live-extended-thinking", "gemini-3.1-flash-live-preview"] as const;
+export function isLiveModelId(model:string):boolean {
+  return /^gemini-[a-z0-9][a-z0-9.-]*$/.test(model) && (model.includes('live')||model.includes('native-audio'))
+    && !/tts|embedding|image|transcribe|translate/.test(model);
+}
 export const GEMINI_LIVE_VOICES = [
   "Zephyr", "Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede", "Autonoe",
   "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome", "Fenrir", "Gacrux",
@@ -29,7 +33,7 @@ export function withVoiceSettings(metadata: unknown, input: {engine: string; mod
     throw new Error("Select a supported voice engine.");
   }
   if (input.engine === "gemini-live") {
-    if (!(GEMINI_LIVE_MODELS as readonly string[]).includes(input.model)) throw new Error("Select a supported Gemini Live model.");
+    if (!isLiveModelId(input.model)) throw new Error("Select a supported Gemini Live model.");
     if (!(GEMINI_LIVE_VOICES as readonly string[]).includes(input.voice)) throw new Error("Select a supported Gemini Live voice.");
   }
   const current = object(metadata);

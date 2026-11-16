@@ -6,6 +6,7 @@ import type {
   ProviderRate,
   RateKind,
 } from "@prisma/client";
+import {isLiveModelId} from './native-voice';
 
 /** Pipeline stage a cost line belongs to, for the per-call breakdown. */
 export type CostCategory =
@@ -97,6 +98,31 @@ export function callChannel(call:{metadata?:unknown;direction:string;fromNumber?
     ? "Demo" : call.direction === "INBOUND" ? "Inbound" : "Outbound";
 }
 export type ChannelSpend = {channel:string;calls:number;minutes:number;pricedUsd:number;incomplete:number};
+export function costPerMinute(totalUsd: number, durationSeconds: number | null | undefined): number | null {
+  return durationSeconds && durationSeconds > 0 && Number.isFinite(durationSeconds)
+    && Number.isFinite(totalUsd) && totalUsd >= 0 ? totalUsd * 60 / durationSeconds : null;
+}
+
+export type DailyChannelSpend = {date:string;Demo:number;Inbound:number;Outbound:number};
+export function indiaDay(value: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(value);
+}
+export function dailyChannelSpending(calls: Array<CallCostInput & {createdAt:Date}>, rates:Map<string,number>, days=14, now=new Date()): DailyChannelSpend[] {
+  const end = new Date(indiaDay(now)+'T12:00:00Z');
+  const earliest = calls.reduce((first,call)=>indiaDay(call.createdAt)<first?indiaDay(call.createdAt):first,indiaDay(now));
+  const calendarSpan=Math.round((end.getTime()-new Date(earliest+'T12:00:00Z').getTime())/86400000)+1;
+  const rows: DailyChannelSpend[] = [];
+  for(let i=Math.max(1,days,calendarSpan)-1;i>=0;i--) {
+    const d = new Date(end); d.setUTCDate(d.getUTCDate()-i);
+    rows.push({date:d.toISOString().slice(0,10),Demo:0,Inbound:0,Outbound:0});
+  }
+  const bins = new Map(rows.map(row=>[row.date,row]));
+  for(const call of calls) {
+    const bin = bins.get(indiaDay(call.createdAt));
+    if(bin) bin[callChannel(call)] += computeCallCost(call,rates,{includeUnavailable:true}).totalUsd;
+  }
+  return rows;
+}
 export function channelSpending(calls:CallCostInput[], rates:Map<string,number>):ChannelSpend[] {
   return ["Demo","Inbound","Outbound"].map(channel=>{
     const rows=calls.filter(c=>callChannel(c)===channel);
@@ -190,7 +216,7 @@ export function computeCallCost(
 
   const billedProvider = call.llmProviderUsed || receipt?.provider;
   const billedModel = call.llmSkuUsed || receipt?.model;
-  const native = billedProvider === "google" && /^gemini-.*live/.test(billedModel || "");
+  const native = billedProvider === "google" && (receipt?.engine==='gemini-live'||isLiveModelId(billedModel||''));
   if (native) {
     const saved = voiceUsage(call.metadata);
     if (!saved || saved.complete !== true) unknown = true;

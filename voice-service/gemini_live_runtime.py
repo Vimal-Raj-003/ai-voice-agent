@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from dataclasses import replace
 from collections import deque
@@ -16,6 +17,8 @@ from google.genai import types
 
 from native_voice import runtime_settings, initial_native_language, spoken_native_text
 from gpt_live_gate import ExperimentRejected
+from contact_corrections import email_spelling, email_readback_requested
+from spoken_details import spoken_readbacks
 
 
 def instructions(system_prompt: str, direction: str, *, sandbox=False) -> str:
@@ -29,8 +32,9 @@ def instructions(system_prompt: str, direction: str, *, sandbox=False) -> str:
 {direction_fact}
 {actions}
 Follow this assistant's saved business policy. Speak warmly, softly and clearly with native
-Tamil rhythm, no American accent. Use familiar Tamil/Tanglish: appointment book pannalaam,
-not முன்பதிவு. Honour explicit language requests; English acknowledgements alone do not switch.
+Tamil rhythm, no American accent. Use Tamil/Tanglish: appointment book pannalaam,
+not முன்பதிவு. Use memory.language; switch only on explicit requests. Never speak tool code.
+Use English spoken_details dates/times; group phone repeats as double/triple, never email characters.
 Address callers as நீங்க/நீங்கள், never Sir/Madam/ஐயா/அம்மா. Use an occasional brief mm/hmm or oh
 after listening, never repeated fillers. Smile gently for happy news or harmless humour.
 Never laugh at sadness, confusion, complaints or booking details. Stay calm with frustration,
@@ -63,8 +67,32 @@ def memory_snapshot(state):
     fields = ('role','direction','language','phase','intent','entities','tool_state',
               'pending_slug','pending_question','unresolved_item','contact_repair',
               'rejected_email','spelling_field','booking_hold','cancel_requested',
-              'confirmed_at_turn','email_retry_requested')
+              'confirmed_at_turn','email_retry_requested','email_restart_expected')
     snapshot = {key:getattr(state, key) for key in fields}
+    if state.email_spelled_local and state.entities.get('email_confirmed') != 'yes':
+        snapshot['entities'] = {key:value for key,value in state.entities.items() if key != 'email'}
+    spoken = spoken_readbacks(state.entities)
+    if spoken:
+        snapshot['spoken_details'] = spoken
+    if state.entities.get('email') or state.contact_repair or state.email_spelled_local:
+        guidance = 'Retain known name/service/slot; never restart intake. Never derive a caller name from an email username. Never invent missing email characters or a domain.'
+        if state.entities.get('email_confirmed') != 'yes':
+            if state.email_spelled_local:
+                guidance += ' Continue only the missing part of email_spelled_local; the old entities.email is not approved. Do not confirm a partial draft.'
+                if state.email_restart_expected:
+                    guidance += ' Caller is correcting a letter position; await replacement spelling, not more characters appended to the disputed draft.'
+            elif state.entities.get('email'):
+                snapshot['email_readback'] = email_spelling(state.entities['email'])
+                guidance += ' Speak email_readback character by character, digits individually, then domain; never pronounce the local part as a name. Ask approval once. For a disputed letter use a phonetic example (B for ball, D for Delhi); clarify only that letter. Never repeat an unchanged rejected guess.'
+        if state.tool_state.get('booking'):
+            guidance += ' Booking already exists: correct contact with remember_details, never rebook.'
+        if state.entities.get('email_delivery') == 'failed':
+            guidance += ' Email delivery failed; do not claim sent or request the address again. Retry only when explicitly requested.'
+        if state.entities.get('email_confirmed') == 'yes':
+            guidance += ' Email is settled; no more readback or email questions. Resume the caller request using the known details and real action tools.'
+        snapshot['contact_guidance'] = guidance
+    if state.email_spelled_local:
+        snapshot['email_spelled_local'] = state.email_spelled_local
     snapshot['correction_applied'] = (state.correction_applied
         if state._correction_turn == state.user_turn_id else '')
     snapshot['caller_evidence'] = state.known_facts[:3] + state.known_facts[3:][-3:]
@@ -75,6 +103,11 @@ def memory_snapshot(state):
                           and intelligence.repair_turn >= state.user_turn_id - 1 else '')
     snapshot['recovering'] = intelligence.recovering
     snapshot['active_work'] = state.work.directive() if state.work else ''
+    if state.work and state.work.items and not state.tool_state.get('booking'):
+        work = state.work.items[-1]
+        if work.kind == 'booking' and work.finished:
+            snapshot['booking_action_status'] = ('OUTCOME_UNKNOWN_NO_BOOKING_RECEIPT' if work.committed
+                else 'NOT_SUBMITTED_NO_BOOKING_RECEIPT')
     snapshot = {key:value for key,value in snapshot.items() if value}
     return json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
@@ -92,10 +125,13 @@ class GeminiRuntime:
         if settings is None or settings.engine != self.engine:
             raise ExperimentRejected('Gemini Live must be selected in this assistant’s saved settings.')
         self.ctx, self.profile, self.state, self.owner, self.log = ctx, profile, state, owner, log
+        self.state.require_email_readback = True
         self.state.intelligence.configure(profile)
         self.model, self.voice_name = settings.model, settings.voice
         self.language_state, self.carrier_pattern, self.sandbox = language_state, carrier_pattern, sandbox
         self.recorder = recorder
+        if recorder is not None:
+            recorder.enable_agent_playout()
         self.input_stt = input_stt
         self.stt_audio_seconds = 0.0
         self.ready = asyncio.Event()
@@ -104,11 +140,15 @@ class GeminiRuntime:
         self.provider_seconds = 0.0
         self._close_lock = asyncio.Lock()
         self._instruction_task = None
+        self._memory_lock = asyncio.Lock()
         self._audio_playing = False
         self._response_busy = False
         self._phone_turn_committed_at = None
         self._phone_audio_turn = None
         self._phone_pending_commits = deque(maxlen=64)
+        self._phone_inputs = deque()
+        self._phone_hook_messages = set()
+        self._phone_billing_clarification_turn = -2
         self.transcript_items = {}
         self._user_messages = set()
         self._last_user_text = ''
@@ -137,18 +177,34 @@ class GeminiRuntime:
                 if runtime.input_stt is not None:
                     if not new_message.text_content.strip() or (runtime.carrier_pattern and runtime.carrier_pattern.search(new_message.text_content)):
                         raise StopResponse()
+                    if new_message.id in runtime._phone_hook_messages:
+                        raise StopResponse()
+                    runtime._phone_hook_messages.add(new_message.id)
+                    runtime._phone_inputs.append(new_message)
                 runtime.observe_user(new_message.text_content, new_message.id)
                 if runtime.input_stt is not None:
-                    # The realtime SDK recreates the user item with a fresh ID.
-                    # Reconcile that commit with this already-observed STT turn.
-                    runtime._phone_pending_commits.append(new_message.text_content.strip())
+                    # Finish memory delivery before asking for this phone reply,
+                    # including when the SDK has already entered thinking state.
+                    await runtime._sync_instructions(before_reply=True)
+                    if runtime.closed or not runtime._phone_inputs or runtime._phone_inputs[-1].id != new_message.id:
+                        raise StopResponse()  # A newer hook owns this reply.
+                    queued = list(runtime._phone_inputs)
+                    runtime._phone_inputs.clear()
+                    submitted = new_message
+                    if len(queued) > 1:
+                        submitted = llm.ChatContext().add_message(role='user',
+                            content='\n'.join(item.text_content for item in queued))
+                    # The SDK recreates caller messages with fresh IDs; account
+                    # for the grouped transcript without observing words twice.
+                    runtime._phone_pending_commits.append(submitted.text_content.strip())
                     runtime._phone_turn_committed_at = time.monotonic()
                     runtime.emit('phone_text_turn_committed', turn_id=state.user_turn_id,
-                                 text_chars=len(new_message.text_content))
+                                 text_chars=len(submitted.text_content), merged_fragments=len(queued))
+                    options = runtime.phone_reply_options(new_message.text_content)
                     # AgentActivity discards external STT text for RealtimeModel
                     # after this hook. Submit the recognized message explicitly,
                     # then suppress that empty, automatic second generation.
-                    runtime.session.generate_reply(user_input=new_message, input_modality='audio')
+                    runtime.session.generate_reply(user_input=submitted, input_modality='audio', **options)
                     raise StopResponse()
 
             async def stt_node(self, audio, model_settings):
@@ -171,6 +227,7 @@ class GeminiRuntime:
                     recorder = runtime.recorder or getattr(owner, '_recorder', None)
                     if recorder is not None:
                         try:
+                            recorder.enable_agent_playout()
                             recorder.write_agent_frame(frame)
                         except Exception:
                             runtime.emit('native_recording_frame_failed')
@@ -260,6 +317,31 @@ class GeminiRuntime:
                   input_sample_rate=room_input_options.audio_sample_rate,
                   input_frame_ms=room_input_options.audio_frame_size_ms)
 
+    def phone_reply_options(self, text):
+        candidate = self.state.entities.get('email', '')
+        if candidate and email_readback_requested(text):
+            return {'instructions': 'The caller asked for EMAIL SPELLING, not approval or a booking. '
+                'Read these separated characters individually, digits one by one, then the domain: '
+                + email_spelling(candidate) + '. Ask whether that spelling is correct. '
+                'Never say booked, confirmed or email sent; no action was requested. Do not call tools.',
+                'tool_choice': 'none'}
+        if (candidate and self.state.pending_slug in ('email', 'email_confirmation')
+                and re.fullmatch(r'billing(?:\s+(?:சொல்லுங்க|sollunga|please))?[.!? ]*', text.strip(), re.I)
+                and self.state.user_turn_id - self._phone_billing_clarification_turn > 1):
+            self._phone_billing_clarification_turn = self.state.user_turn_id
+            return {'instructions': 'The last question was about email spelling. The caller text says billing, '
+                'which may be an STT confusion. Ask once whether they mean email spelling or billing details. '
+                'Do not assume either meaning and do not book or claim an action.', 'tool_choice':'none'}
+        if (candidate and self.state.pending_slug == 'email_confirmation'
+                and self.state.details_parsed_turn == self.state.user_turn_id
+                and self.state.entities.get('email_confirmed') != 'yes'
+                and not self.state.email_spelled_local):
+            return {'instructions': 'The current caller email was captured. Read this exact spelling once: '
+                + email_spelling(candidate) + '. Ask whether it is correct; preserve all other known details. '
+                'Do not replace letters with a familiar name. Do not call booking or email tools or claim success before approval.',
+                'tool_choice': 'none'}
+        return {}
+
     def tool_memory(self):
         return f'\n[APPLICATION CALL MEMORY; turn={self.state.user_turn_id}]\n' + memory_snapshot(self.state)
 
@@ -295,10 +377,14 @@ class GeminiRuntime:
             if self._instruction_task is None or self._instruction_task.done():
                 self._instruction_task = asyncio.create_task(self._sync_instructions())
 
-    async def _sync_instructions(self):
+    async def _sync_instructions(self, *, before_reply=False):
+        async with self._memory_lock:
+            await self._sync_memory(before_reply=before_reply)
+
+    async def _sync_memory(self, *, before_reply=False):
         try:
             while not self.closed:
-                if self._audio_playing or self._response_busy:
+                if not before_reply and (self._audio_playing or self._response_busy):
                     return
                 current = memory_snapshot(self.state)
                 if current == self._last_memory and self.state.user_turn_id - self._last_memory_turn < 6:
@@ -380,6 +466,16 @@ class GeminiRuntime:
                 if target.info.name == 'update_call_details':
                     kwargs['turn_id'] = self.state.user_turn_id
                 try:
+                    if target.info.name == 'book_appointment' and not self.sandbox:
+                        if (not self.state.entities.get('name')
+                                and (not self.state.entities.get('email') or self.state.entities.get('email_confirmed') == 'yes')):
+                            self.state.set_pending('name', 'Ask only for the caller name; retain the confirmed email and slot.')
+                            raise llm.ToolError('BOOKING_NOT_CONFIRMED: No caller name has been supplied. '
+                                'An email username is not a caller name. Ask only for the name, record it with update_call_details, '
+                                'then resume this booking; no booking or email was submitted.' + self.tool_memory())
+                        if self.state.pending_slug in ('name_spelling', 'name_confirmation'):
+                            raise llm.ToolError('BOOKING_NOT_CONFIRMED: Resolve the pending caller name correction once; '
+                                'retain the other confirmed details. No booking or email was submitted.' + self.tool_memory())
                     if self.sandbox or target.info.name in {
                         'check_availability', 'book_appointment', 'remember_details', 'update_call_details'}:
                         result = await target(**kwargs)
@@ -389,13 +485,24 @@ class GeminiRuntime:
                             return await target(**kwargs)
                         result = await self.owner.work.run('integration:'+target.info.name,
                             {'arguments': arguments}, execute)
+                    status = 'returned'
+                    if target.info.name == 'book_appointment' and not self.sandbox:
+                        from tools import BookingReceipt
+                        status = result.status if isinstance(result, BookingReceipt) else 'not_confirmed'
                     self.emit('native_tool_result', tool=target.info.name,
-                              duration_ms=round((time.monotonic()-began)*1000), status='returned')
+                              duration_ms=round((time.monotonic()-began)*1000), status=status)
                     self.state.intelligence.counters['tool_results'] += 1
+                    if status == 'not_confirmed':
+                        self.state.intelligence.counters['tool_errors'] += 1
+                        raise llm.ToolError('BOOKING_NOT_CONFIRMED: ' + str(result)
+                            + ' This request supplies no new booking or email receipt. Preserve any earlier verified booking; do not claim this attempt succeeded. Resolve only the missing detail; do not repeat known intake.'
+                            + self.tool_memory())
                     if str(result).startswith(('TRANSFER_FAILED', 'BOOKING_FAILED', 'ERROR:', 'Tool request failed')):
                         self.state.intelligence.counters['tool_errors'] += 1
                     return str(result) + self.tool_memory()
                 except asyncio.CancelledError:
+                    raise
+                except llm.ToolError:
                     raise
                 except Exception as exc:
                     self.state.intelligence.counters['tool_errors'] += 1
@@ -490,12 +597,21 @@ class GeminiRuntime:
         @output.on('playback_finished')
         def finished(ev):
             self._audio_playing = False
+            recorder = self.recorder or getattr(self.owner, '_recorder', None)
+            if recorder is not None:
+                recorder.agent_playback_finished()
             self.emit('room_playback_finished', **self.playback_trace, interrupted=ev.interrupted,
                       handset_timing_verified=False)
             if ev.interrupted:
                 self.state.intelligence.counters['interruptions'] += 1
                 self.owner.interrupt_count = getattr(self.owner, 'interrupt_count', 0) + 1
             self._resume_memory_sync()
+        @output.on('playback_progressed')
+        def progressed(ev):
+            recorder = self.recorder or getattr(self.owner, '_recorder', None)
+            if recorder is not None:
+                recorder.agent_playback_progress(started_at=ev.started_at,
+                    offset=ev.offset, duration=ev.duration)
 
     async def close(self, reason=None):
         async with self._close_lock:
@@ -547,7 +663,7 @@ async def run_browser_test(ctx, selected, profile, log):
     from livekit.agents import RoomInputOptions
     from callstate import CallState
     from provider_credentials import load_for_org
-    from gpt_live_experiment import Journal, wait_for_microphone, sandbox_tools
+    from gpt_live_experiment import Journal, wait_for_microphone, sandbox_tools, demo_transfer_targets
     from recorder import CallRecorder
     from prompts import build_prompt
     from voice_usage import finish_demo_call
@@ -564,7 +680,8 @@ async def run_browser_test(ctx, selected, profile, log):
                 'request_id','input_tokens','output_tokens','input_audio','input_text','output_audio','output_text',
                 'unclassified','memory_chars','repeated_prompt_chars','role','item_id','text_chars',
                 'interrupted','boundary','caller_speech_timing_verified','sync_transcription',
-                'compression_trigger_tokens','compression_target_tokens','input_provider','google_audio_input'}})
+                'compression_trigger_tokens','compression_target_tokens','input_provider','google_audio_input',
+                'route','test_only','human_connected'}})
         except Exception:
             pass
         try:
@@ -578,13 +695,15 @@ async def run_browser_test(ctx, selected, profile, log):
         state = CallState(role=profile.get('role') or 'assistant', direction=selected.direction,
                           language=initial_native_language(profile))
         state.intelligence.configure(profile)
-        owner, tools = sandbox_tools(ctx, state, emit, slow_seconds=0)
+        targets = await demo_transfer_targets(profile['id'], emit)
+        owner, tools = sandbox_tools(ctx, state, emit, slow_seconds=0, transfer_targets=targets)
         recorder = CallRecorder(selected.room)
         await asyncio.to_thread(recorder.start)
         from assistant_identity import business_name_for_profile
         business_name = business_name_for_profile(profile, config.BUSINESS_NAME)
         system = build_prompt(custom_prompt=profile.get('system_prompt'),
             business_name=business_name, call_direction=selected.direction, native_audio=True, speech_style=profile.get('metadata'))
+        system += owner.demo_transfer_directory
         import knowledge
         try:
             async with asyncio.timeout(1.5):
@@ -612,6 +731,7 @@ async def run_browser_test(ctx, selected, profile, log):
         @ctx.room.on('participant_disconnected')
         def disconnected(participant):
             if participant.identity == 'demo-user':
+                recorder.mark_ended()
                 stopped.set()
         def attach(track, publication, participant):
             if participant.identity == 'demo-user' and track.kind == rtc.TrackKind.KIND_AUDIO:
@@ -642,6 +762,8 @@ async def run_browser_test(ctx, selected, profile, log):
         raise
     finally:
         finished_at=time.monotonic()
+        if recorder is not None:
+            recorder.mark_ended()
         if runtime is None:
             # Microphone/startup rejection never opened a paid session. Settle
             # its allocated row rather than leaving "Usage pending" forever.

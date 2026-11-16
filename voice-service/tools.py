@@ -21,6 +21,15 @@ from observability import get_logger
 
 logger = get_logger("tools")
 
+
+class BookingReceipt(str):
+    """String-compatible result created only after a verified booking receipt."""
+    def __new__(cls, text: str, booking_id: str, status: str = 'confirmed'):
+        result = super().__new__(cls, text)
+        result.booking_id = str(booking_id)
+        result.status = status
+        return result
+
 # ── Cal.com (v1) calendar integration ───────────────────────────────────────
 # Single source of external calendar truth for the live booking flow. The DB
 # mirrors every confirmed booking so the dashboard calendar keeps working and
@@ -145,7 +154,7 @@ async def calcom_book(name: str, email: str, phone: str, date: str, time: str,
                     # `attendee` object; timeZone and language moved inside it.
                     "attendee": {
                         "name": name,
-                        "email": email or (
+                        "email": email.strip().lower() or (
                             f"{_phone_digits(phone)}@voiceagent.placeholder"
                             if os.getenv("CALCOM_FALLBACK_DOMAIN") == "voiceagent.placeholder"
                             else f"caller.{_phone_digits(phone)}@voiceagent.invalid"
@@ -154,6 +163,7 @@ async def calcom_book(name: str, email: str, phone: str, date: str, time: str,
                         "language": "en",
                     },
                     "bookingFieldsResponses": {
+                        "title": service,
                         "notes": notes or f"Booked via AI voice agent. Phone: {phone}. Service: {service}",
                     },
                     "metadata": {"source": "JillJillVoice"},
@@ -541,6 +551,11 @@ class AppointmentTools(llm.ToolContext):
             return 'Read-only call test: no booking was submitted or confirmed.'
         if self.call_state and self.call_state.booking_hold:
             return 'Caller asked not to book yet. No booking submitted; get explicit permission first.'
+        if self._last_booking_id and self.call_state and self.call_state.contact_repair:
+            return BookingReceipt(f'Existing appointment {self._last_booking_id} at {self._last_booking_time} is unchanged; no new appointment was submitted. Email correction is not a new booking. '
+                    'Confirm only the complete corrected address, then use remember_details to update its contact. '
+                    'Do not claim a different slot is confirmed or that this email was sent.',
+                    self._last_booking_id, 'existing_booking_unchanged')
         call_id = self._room_call_id()
         # 1. Validate.
         if not _valid_date(date) or not _valid_time(time):
@@ -587,6 +602,7 @@ class AppointmentTools(llm.ToolContext):
                         call_id=call_id, date=date, time=time)
             msg = (f"You're already booked for {service} on {date} at {time}. "
                    f"Booking ID: {existing_bid}.")
+            msg = BookingReceipt(msg, existing_bid)
             self._booked_keys[dedup_key] = msg
             self._last_booking_id = existing_bid
             self._last_booking_time = f"{date}T{time}:00+05:30"
@@ -621,6 +637,7 @@ class AppointmentTools(llm.ToolContext):
             else:
                 msg = (f"You're already booked for {other or service} on {date} at "
                        f"{time}. Booking ID: {existing_bid}.")
+            msg = BookingReceipt(msg, existing_bid, 'existing_booking')
             self._booked_keys[dedup_key] = msg
             self._last_booking_id = existing_bid
             self._last_booking_time = f"{date}T{time}:00+05:30"
@@ -751,10 +768,10 @@ class AppointmentTools(llm.ToolContext):
                     # Deliberately does NOT claim our calendar is updated — it
                     # is not. It states only what is true: the slot is held with
                     # the provider, and our record is still being completed.
-                    return (f"Your slot on {date} at {time} is held with our booking "
+                    return BookingReceipt(f"Your slot on {date} at {time} is held with our booking "
                             f"provider under reference {calcom_uid}. I could not finish "
                             f"writing it into our own system just now, so our team will "
-                            f"confirm it shortly — your slot is not lost.")
+                            f"confirm it shortly — your slot is not lost.", calcom_uid, 'provider_held_local_sync_pending')
                 raise
 
             self._last_booking_id = booking_id
@@ -766,6 +783,7 @@ class AppointmentTools(llm.ToolContext):
             reminder_note = " We'll remind you before the appointment." if reminder_at else ""
             msg = (f"Confirmed! Booking ID: {booking_id}. "
                    f"See you on {date} at {time} for {service}.{reminder_note}")
+            msg = BookingReceipt(msg, booking_id)
             self._booked_keys[dedup_key] = msg
 
             # Queue without blocking the audio loop; publish real delivery status.
@@ -776,7 +794,7 @@ class AppointmentTools(llm.ToolContext):
                     msg += " No new email was queued; confirm the latest recipient and cancellation status."
 
 
-            return msg
+            return BookingReceipt(msg, booking_id)
         except Exception as exc:
             self.work.uncertain()
             logger.error("book_appointment_failed", error=str(exc), call_id=call_id)
@@ -798,9 +816,21 @@ class AppointmentTools(llm.ToolContext):
             self.call_state.entities['email_delivery'] = 'sending'
         try:
             import notify
+            try:
+                mail_settings = await db.booking_email_settings()
+            except Exception:
+                mail_settings = None
+                logger.warning('booking_email_settings_unavailable', call_id=self._room_call_id(), source='EMAIL')
+            # Settings lookup yields; the caller may reject the recipient while it runs.
+            if self.call_state and (self.call_state.entities.get('email') != recipient
+                                    or self.call_state.entities.get('email_confirmed') != 'yes'
+                                    or self.call_state.cancel_requested):
+                self._deliveries[key] = 'invalidated'
+                return False
             sent = await asyncio.to_thread(
                 notify.send_booking_confirmation_email,
                 recipient, name, booking_time, booking_id, service,
+                mail_settings=mail_settings,
             )
         except Exception:
             sent = False
@@ -911,6 +941,18 @@ class AppointmentTools(llm.ToolContext):
             self._cs_tool("transfer", state="unavailable")
             return ("TRANSFER_UNAVAILABLE: no human destination is configured. Tell the "
                     "caller human support is unavailable right now and offer to help here.")
+
+        caller_digits = _phone_digits(self.phone_number or '')
+        target_digits = _phone_digits(target['phone'])
+        # Some SIP metadata supplies Indian national format rather than E.164.
+        if len(caller_digits) == 10 and len(target_digits) == 12 and target_digits.startswith('91'):
+            caller_digits = '91' + caller_digits
+        if caller_digits and caller_digits == target_digits:
+            logger.warning('transfer_blocked_self_target', destination=self._mask_phone(target['phone']),
+                           call_id=self._room_call_id(), source='TRANSFER')
+            self._cs_tool('transfer', state='unavailable:self_transfer')
+            return ('TRANSFER_FAILED: the destination is the same number as the current caller. '
+                    'No transfer was submitted. Explain this and ask which other configured contact they want.')
 
         logger.info("detected_category", category=target["category"],
                     destination_label=target["label"],

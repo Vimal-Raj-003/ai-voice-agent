@@ -20,6 +20,13 @@ test("invalid engine/model/voice combinations cannot be saved", () => {
   ]) assert.throws(() => withVoiceSettings({}, input));
 });
 
+test('new conversational Live models can be saved while dedicated speech engines cannot',()=>{
+  for(const model of ['gemini-3.8-live-extended-thinking','gemini-2.5-flash-native-audio-latest'])
+    assert.equal(voiceSettings(withVoiceSettings({}, {engine:'gemini-live',model,voice:'Despina'})).model,model);
+  for(const model of ['gemini-3.5-transcribe-live','gemini-3.5-live-translate-preview'])
+    assert.throws(()=>withVoiceSettings({}, {engine:'gemini-live',model,voice:'Despina'}));
+});
+
 test("a voice-only form save preserves business prompts despite browser CRLF normalization", () => {
   const saved = "தமிழ் instructions\nSecond instruction\n";
   assert.equal(preservePromptLineEndings(saved, saved.replace(/\n/g, "\r\n")), saved);

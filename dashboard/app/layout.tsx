@@ -28,7 +28,7 @@ const themeBootScript = `(function () {
   try {
     var stored = localStorage.getItem('jjv_theme');
     var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
-    var theme = stored && stored !== 'system' ? stored : (prefersLight ? 'light' : 'dark');
+    var theme = stored === 'dark' || stored === 'light' ? stored : (prefersLight ? 'light' : 'dark');
     document.documentElement.dataset.theme = theme;
   } catch (e) {
     document.documentElement.dataset.theme = 'dark';

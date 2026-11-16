@@ -33,7 +33,8 @@ export default function BookingGauge({ pct }: { pct: number }) {
             tick={false}
           />
           <RadialBar
-            background={{ fill: "rgba(255,255,255,0.05)" }}
+            background={{ fill: "var(--surface-border)" }}
+            isAnimationActive={false}
             dataKey="value"
             cornerRadius={20}
             fill="url(#gaugeFill)"
