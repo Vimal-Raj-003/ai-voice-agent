@@ -18,6 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from livekit import api as lkapi
 from prometheus_client import (
@@ -58,6 +59,14 @@ init_observability()
 logger = get_logger("server")
 
 app = FastAPI(title="OutboundAI Voice Service", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ── Rate limiting (Feature Pack 3 / Task 4) ──────────────────────────────────
 # Per-IP, in-process — sufficient for single-tenant deployments. Move to Redis

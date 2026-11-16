@@ -26,7 +26,6 @@ const links = [
   { href: "/calendar", label: "Calendar", icon: Calendar },
   { href: "/live-logs", label: "Live Logs", icon: Activity },
   { href: "/providers", label: "Providers", icon: Server },
-  { href: "/demo", label: "Demo", icon: Sparkles },
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/team", label: "Team", icon: Users },
 ];

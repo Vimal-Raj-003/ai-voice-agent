@@ -25,6 +25,15 @@ export default auth((req) => {
     pathname.startsWith("/forgot-password") ||
     pathname.startsWith("/reset-password");
   const isAuthenticated = !!req.auth;
+
+  // In development, allow direct access so the overview and all options show immediately without login
+  if (process.env.NODE_ENV !== "production") {
+    if (isAuthenticated && isLogin) {
+      return NextResponse.redirect(new URL("/", req.url));
+    }
+    return;
+  }
+
   if (!isAuthenticated && !isPublic) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";
@@ -38,6 +47,6 @@ export default auth((req) => {
 
 export const config = {
   matcher: [
-    "/((?!api/auth|api/webhooks|api/logs/proxy|api/demo/proxy|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/auth|api/webhooks|api/logs/proxy|api/demo/proxy|api/demo/public|_next/static|_next/image|favicon.ico).*)",
   ],
 };

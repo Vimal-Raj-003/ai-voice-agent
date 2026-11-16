@@ -4,6 +4,6 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
-      - "8000:8000"
+      - "${VOICE_PORT:-19700}:8000"
     volumes:
       - ./configs:/app/configs:ro
