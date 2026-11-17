@@ -263,6 +263,7 @@ class GeminiRuntime:
             from phone_text_input import PhoneTextModel
             model_class = PhoneTextModel
         self.voice = model_class(model=self.model, voice=self.voice_name, api_key=key,
+            api_version='v1beta',
             temperature=float(profile.get('temperature') if profile.get('temperature') is not None else 0.7),
             realtime_input_config=realtime_input,
             input_audio_transcription=None if input_stt is not None else types.AudioTranscriptionConfig(),
