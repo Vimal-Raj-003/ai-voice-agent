@@ -7,8 +7,6 @@ import {
   Track,
   DisconnectReason,
   type RemoteTrack,
-  type TranscriptionSegment,
-  type Participant,
 } from "livekit-client";
 import {
   GraduationCap,
@@ -50,10 +48,48 @@ interface TranscriptEntry {
   speaker: "user" | "agent";
   text: string;
   final: boolean;
+  updatedAt: number;
 }
 
-const LEAD_SESSION_KEY = "jjv_demo_lead_v2";
-const WAVE_BARS = 24;
+const LEAD_SESSION_KEY = "jjv_demo_lead_v3";
+const WAVE_BARS = 20;
+
+function sanitizeLiveTranscript(raw: string, speaker: "user" | "agent"): string {
+  if (!raw) return "";
+
+  let text = raw
+    .split(/\[APPLICATION CALL MEMORY/i)[0]
+    .split(/\[VERIFIED BUSINESS KNOWLEDGE/i)[0]
+    .split(/\[NATIVE VOICE\]/i)[0]
+    .split(/BOOKING_NOT_CONFIRMED:/i)[0]
+    .split(/TRANSFER_FAILED:/i)[0];
+
+  text = text.replace(
+    /\{\s*"(?:caller_evidence|direction|language|pending_question|phase|role|tone|entities|tool_state|spoken_details|active_work|booking_action_status)"[\s\S]*$/gi,
+    ""
+  );
+  text = text.replace(/\[[A-Z_;\s=0-9]+\]/g, "");
+  text = text.replace(/[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F\u3040-\u30FF\u4E00-\u9FFF]+/g, "");
+  text = text.replace(/\s+/g, " ").trim();
+
+  if (!text || /^[\s.,!?…\-–—:;'"()[\]{}]+$/.test(text)) {
+    return "";
+  }
+  if ((text.startsWith("{") && text.includes('":')) || text.startsWith('{"')) {
+    return "";
+  }
+  if (speaker === "user" && text.length < 2) {
+    return "";
+  }
+  return text;
+}
+
+function normalizeForDedup(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[\s.,!?…\-–—:;'"()]+/g, " ")
+    .trim();
+}
 
 const DEFAULT_ASSISTANTS: AssistantItem[] = [
   { id: "caaad76e39781563d9ee13de0", name: "Academy Assistant", role: "academy", active: true },
@@ -64,19 +100,13 @@ const DEFAULT_ASSISTANTS: AssistantItem[] = [
   { id: "cmuv75n1j0019v7f434t6xj6q", name: "Marketing Outreach", role: "marketing", active: true },
   { id: "cmuv6fea90015v7f4fexyfx8g", name: "Outbound Sales", role: "sales", active: true },
   { id: "cmuv4xd8i0011v7f4fgsgfr5x", name: "Receptionist", role: "receptionist", active: true },
-  {
-    id: "cmvxs7rk10001v7e8kcdra9ez",
-    name: "Hospital Assistant",
-    role: "hospital",
-    active: true,
-  },
+  { id: "cmvxs7rk10001v7e8kcdra9ez", name: "Hospital Assistant", role: "vasan", active: true },
 ];
 
 const PREFERRED_ORDER = [
   "academy",
   "appointment",
   "clinic",
-  "hospital",
   "support",
   "ivr",
   "marketing",
@@ -96,23 +126,28 @@ function sortAssistantsForGallery(list: AssistantItem[]): AssistantItem[] {
   });
 }
 
-const STATE_CITIES: Record<string, string[]> = {
-  "Tamil Nadu": ["Chennai", "Coimbatore", "Madurai", "Tiruchirappalli", "Salem", "Tirunelveli", "Vellore", "Erode", "Other"],
-  "Karnataka": ["Bengaluru", "Mysuru", "Mangaluru", "Hubballi", "Belagavi", "Other"],
-  "Maharashtra": ["Mumbai", "Pune", "Nagpur", "Nashik", "Thane", "Other"],
+// India-only states & major cities
+const INDIA_STATES_CITIES: Record<string, string[]> = {
+  "Tamil Nadu": ["Chennai", "Coimbatore", "Madurai", "Tiruchirappalli", "Salem", "Tirunelveli", "Vellore", "Erode", "Tiruppur", "Hosur", "Other"],
+  "Karnataka": ["Bengaluru", "Mysuru", "Mangaluru", "Hubballi", "Belagavi", "Tumakuru", "Other"],
+  "Maharashtra": ["Mumbai", "Pune", "Nagpur", "Nashik", "Thane", "Aurangabad", "Other"],
   "Delhi NCR": ["New Delhi", "Noida", "Gurugram", "Faridabad", "Ghaziabad", "Other"],
   "Telangana": ["Hyderabad", "Warangal", "Nizamabad", "Karimnagar", "Other"],
-  "Kerala": ["Kochi", "Thiruvananthapuram", "Kozhikode", "Thrissur", "Other"],
-  "Andhra Pradesh": ["Visakhapatnam", "Vijayawada", "Guntur", "Tirupati", "Other"],
+  "Kerala": ["Kochi", "Thiruvananthapuram", "Kozhikode", "Thrissur", "Kannur", "Other"],
+  "Andhra Pradesh": ["Visakhapatnam", "Vijayawada", "Guntur", "Tirupati", "Nellore", "Other"],
   "Gujarat": ["Ahmedabad", "Surat", "Vadodara", "Rajkot", "Other"],
   "West Bengal": ["Kolkata", "Howrah", "Siliguri", "Durgapur", "Other"],
-  "Other": ["Other"],
+  "Rajasthan": ["Jaipur", "Udaipur", "Jodhpur", "Kota", "Other"],
+  "Uttar Pradesh": ["Lucknow", "Kanpur", "Varanasi", "Agra", "Prayagraj", "Other"],
+  "Madhya Pradesh": ["Indore", "Bhopal", "Gwalior", "Jabalpur", "Other"],
+  "Punjab & Chandigarh": ["Chandigarh", "Ludhiana", "Amritsar", "Jalandhar", "Other"],
+  "Puducherry": ["Puducherry", "Karaikal", "Other"],
+  "Other State": ["Other"],
 };
 
 const roleIcons: Record<string, typeof Users> = {
   academy: GraduationCap,
   clinic: HeartPulse,
-  hospital: HeartPulse,
   vasan: HeartPulse,
   ivr: Workflow,
   appointment: CalendarDays,
@@ -142,12 +177,10 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
 
   const [formData, setFormData] = useState({
     fullName: "",
-    countryCode: "+91",
     phone: "",
     email: "",
     businessName: "",
     businessType: "",
-    country: "IN India",
     state: "",
     city: "",
     customCity: "",
@@ -161,14 +194,12 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
 
-  // Dual-channel real-time voice wobbling state (User Mic + Agent Output)
   const [waveBars, setWaveBars] = useState<number[]>(() => new Array(WAVE_BARS).fill(0.08));
   const [agentLevel, setAgentLevel] = useState(0);
   const [userLevel, setUserLevel] = useState(0);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [userSpeaking, setUserSpeaking] = useState(false);
 
-  // Live Real-Time Multilingual Transcript (User + Agent in spoken language)
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const transcriptBoxRef = useRef<HTMLDivElement | null>(null);
 
@@ -179,7 +210,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   const animFrameRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // Auto-scroll live transcript panel smoothly as words stream in
   useEffect(() => {
     if (transcriptBoxRef.current) {
       transcriptBoxRef.current.scrollTop = transcriptBoxRef.current.scrollHeight;
@@ -187,33 +217,71 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   }, [transcripts]);
 
   const upsertTranscript = useCallback(
-    (id: string, speaker: "user" | "agent", text: string, isFinal: boolean) => {
-      const cleaned = text.trim();
+    (id: string, speaker: "user" | "agent", rawText: string, isFinal: boolean) => {
+      const cleaned = sanitizeLiveTranscript(rawText, speaker);
       if (!cleaned) return;
+      const now = Date.now();
+      const normNew = normalizeForDedup(cleaned);
+      if (!normNew) return;
+
       setTranscripts((prev) => {
-        const idx = prev.findIndex((item) => item.id === id);
-        if (idx !== -1) {
+        const byId = prev.findIndex((item) => item.id === id);
+        if (byId !== -1) {
           const updated = [...prev];
-          updated[idx] = { id, speaker, text: cleaned, final: isFinal };
+          updated[byId] = { id, speaker, text: cleaned, final: isFinal, updatedAt: now };
           return updated;
         }
-        // Deduplicate when both LiveKit legacy TranscriptionReceived & lk.transcription text stream emit the same utterance
+
+        for (let i = prev.length - 1; i >= Math.max(0, prev.length - 4); i--) {
+          const candidate = prev[i];
+          if (candidate.speaker !== speaker) continue;
+          const normOld = normalizeForDedup(candidate.text);
+          if (
+            normOld === normNew ||
+            normNew.startsWith(normOld) ||
+            normOld.startsWith(normNew)
+          ) {
+            const updated = [...prev];
+            updated[i] = {
+              id: candidate.id,
+              speaker,
+              text: cleaned.length >= candidate.text.length ? cleaned : candidate.text,
+              final: isFinal || candidate.final,
+              updatedAt: now,
+            };
+            return updated;
+          }
+        }
+
         const last = prev[prev.length - 1];
-        if (
-          last &&
-          last.speaker === speaker &&
-          (last.text === cleaned || cleaned.startsWith(last.text) || last.text.startsWith(cleaned))
-        ) {
-          const updated = [...prev];
-          updated[prev.length - 1] = {
-            id: last.id,
-            speaker,
-            text: cleaned.length >= last.text.length ? cleaned : last.text,
-            final: isFinal || last.final,
-          };
-          return updated;
+        if (last && last.speaker === speaker) {
+          // If previous bubble from same speaker was an interim draft (!last.final), REPLACE it cleanly (never duplicate/append!)
+          if (!last.final) {
+            const updated = [...prev];
+            updated[prev.length - 1] = {
+              id,
+              speaker,
+              text: cleaned,
+              final: isFinal,
+              updatedAt: now,
+            };
+            return updated;
+          }
+          // If two finalized chunks arrive back-to-back in the same speaking turn (<1.2s) and aren't duplicates, join smoothly
+          if (isFinal && now - last.updatedAt < 1200 && !last.text.includes(cleaned) && !cleaned.includes(last.text)) {
+            const updated = [...prev];
+            updated[prev.length - 1] = {
+              id: last.id,
+              speaker,
+              text: `${last.text} ${cleaned}`.replace(/\s+/g, " ").trim(),
+              final: true,
+              updatedAt: now,
+            };
+            return updated;
+          }
         }
-        return [...prev, { id, speaker, text: cleaned, final: isFinal }];
+
+        return [...prev, { id, speaker, text: cleaned, final: isFinal, updatedAt: now }];
       });
     },
     []
@@ -347,7 +415,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     };
   }, [callStatus]);
 
-  // Start dual-channel Web Audio analyser for organic voice wobbling (both User & Agent)
   const startDualAudioWobble = useCallback((lkRoom: Room) => {
     try {
       const AudioContextClass =
@@ -371,7 +438,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         if (ts - lastTs < 36) return;
         lastTs = ts;
 
-        // Bind local user mic track
         const micPub = lkRoom.localParticipant?.getTrackPublication(Track.Source.Microphone);
         const micMst = micPub?.track?.mediaStreamTrack ?? null;
         if (micMst && micMst.id !== micTrackId) {
@@ -383,7 +449,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           }
         }
 
-        // Bind remote agent audio track
         for (const p of lkRoom.remoteParticipants.values()) {
           for (const pub of p.trackPublications.values()) {
             const t = pub.track;
@@ -422,7 +487,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         setAgentSpeaking(isAgentActive);
         setUserSpeaking(!isAgentActive && isUserActive);
 
-        // Compute symmetrical wobbling waveform bars from whichever voice is stronger
         const activeFreq = aAvg >= uAvg ? agentFreq : micFreq;
         const hasSignal = isAgentActive || isUserActive;
         const nextBars = new Array(WAVE_BARS);
@@ -442,7 +506,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
 
       animFrameRef.current = requestAnimationFrame(tick);
     } catch {
-      // ignore audio context errors
+      // ignore
     }
   }, []);
 
@@ -455,8 +519,8 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       return;
     }
     const digitsOnly = formData.phone.replace(/\D/g, "");
-    if (digitsOnly.length < 7) {
-      setFormError("Please enter a valid phone number.");
+    if (digitsOnly.length !== 10) {
+      setFormError("Please enter a valid 10-digit Indian mobile number.");
       return;
     }
     if (!formData.email.trim() || !formData.email.includes("@")) {
@@ -471,15 +535,13 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       setFormError("Please select your business type.");
       return;
     }
-    if (formData.country === "IN India") {
-      if (!formData.state) {
-        setFormError("Please select your state.");
-        return;
-      }
-      if (!resolvedCity) {
-        setFormError("Please select or enter your city.");
-        return;
-      }
+    if (!formData.state) {
+      setFormError("Please select your state.");
+      return;
+    }
+    if (!resolvedCity) {
+      setFormError("Please select or enter your city.");
+      return;
     }
 
     setFormError("");
@@ -498,13 +560,13 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         body: JSON.stringify({
           lead: {
             fullName: formData.fullName.trim(),
-            phone: `${formData.countryCode} ${formData.phone.trim()}`,
+            phone: `+91 ${digitsOnly}`,
             email: formData.email.trim(),
             businessName: formData.businessName.trim(),
             businessType: formData.businessType,
-            country: formData.country,
-            state: formData.state || undefined,
-            city: resolvedCity || undefined,
+            country: "India",
+            state: formData.state,
+            city: resolvedCity,
             description: formData.description.trim() || undefined,
           },
         }),
@@ -528,15 +590,16 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     await releaseActiveRoom();
 
     try {
+      const digitsOnly = formData.phone.replace(/\D/g, "");
       const payload = {
         assistantId: assistant.id,
         lead: {
           fullName: formData.fullName.trim(),
-          phone: `${formData.countryCode} ${formData.phone.trim()}`,
+          phone: digitsOnly ? `+91 ${digitsOnly}` : "",
           email: formData.email.trim(),
           businessName: formData.businessName.trim(),
           businessType: formData.businessType,
-          country: formData.country,
+          country: "India",
           state: formData.state,
           city: resolvedCity,
           description: formData.description.trim() || undefined,
@@ -577,20 +640,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       });
       roomRef.current = lkRoom;
 
-      // 1. Subscribe to LiveKit standard TranscriptionReceived events
-      lkRoom.on(
-        RoomEvent.TranscriptionReceived,
-        (segments: TranscriptionSegment[], participant?: Participant) => {
-          const isUser = participant?.identity === "demo-user";
-          for (const seg of segments) {
-            if (seg.text) {
-              upsertTranscript(seg.id, isUser ? "user" : "agent", seg.text, !!seg.final);
-            }
-          }
-        }
-      );
-
-      // 2. Subscribe to LiveKit Agents 1.x 'lk.transcription' real-time text streams
       try {
         lkRoom.registerTextStreamHandler("lk.transcription", async (reader, participantInfo) => {
           const attrs = reader.info?.attributes || {};
@@ -612,14 +661,13 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
             const isFinal = attrs["lk.transcription_final"] !== "false";
             upsertTranscript(segId, isUser ? "user" : "agent", accumulated, isFinal);
           } catch {
-            // ignore stream close
+            // ignore
           }
         });
       } catch {
-        // handler already registered or unsupported
+        // ignore
       }
 
-      // 3. Subscribe to remote agent voice audio track
       lkRoom.on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => {
         if (track.kind === Track.Kind.Audio) {
           const el = track.attach() as HTMLAudioElement;
@@ -643,7 +691,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           ].includes(reason);
         setCallStatus(normal ? "ended" : "error");
         if (!normal) {
-          setErrorMsg("Call ended unexpectedly. Click Call Again to reconnect.");
+          setErrorMsg("Call ended unexpectedly. Tap Call Again to reconnect.");
         }
       });
 
@@ -692,27 +740,26 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
 
   const modalWidthClass =
     step === "assistants"
-      ? "max-w-[980px]"
+      ? "max-w-[960px]"
       : step === "call"
-      ? "max-w-[880px]"
-      : "max-w-[660px]";
+      ? "max-w-[900px]"
+      : "max-w-[600px]";
 
-  const availableCities = formData.state ? STATE_CITIES[formData.state] || ["Other"] : [];
+  const availableCities = formData.state ? INDIA_STATES_CITIES[formData.state] || ["Other"] : [];
   const combinedEnergy = Math.max(agentLevel, userLevel);
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-black/85 backdrop-blur-xl"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/75 backdrop-blur-lg overflow-y-auto overscroll-contain"
       role="dialog"
       aria-modal="true"
     >
-      {/* Unified Cyber-Emerald Brand Modal Card — Zero Inner Scroll Clutter */}
       <div
-        className={`relative w-full ${modalWidthClass} overflow-hidden rounded-2xl transition-all duration-300 ${landingStyles.cyberModalSurface}`}
+        className={`relative w-full ${modalWidthClass} my-auto overflow-hidden rounded-2xl transition-all duration-200 ${landingStyles.cyberModalSurface}`}
       >
-        {/* Top Header Bar */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-[#9eff00]/20 bg-[#040902]/90">
-          <div className="flex items-center gap-2.5 min-w-0">
+        {/* Sticky Top Header Bar */}
+        <div className="flex items-center justify-between px-4 sm:px-5 py-2.5 sm:py-3 border-b border-[#7ed918]/20 bg-[#101913]/95 flex-shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
             {step !== "lead" && (
               <button
                 type="button"
@@ -724,7 +771,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                     setStep("lead");
                   }
                 }}
-                className="p-1.5 rounded-lg text-gray-300 hover:text-[#9eff00] hover:bg-[#9eff00]/10 transition-colors cursor-pointer"
+                className="p-1.5 rounded-lg text-gray-300 hover:text-[#8ee32b] hover:bg-[#7ed918]/10 transition-colors cursor-pointer"
                 title={step === "call" ? "Back to Voice Agents" : "Edit Details"}
               >
                 <ArrowLeft className="w-4 h-4" />
@@ -732,30 +779,26 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
             )}
 
             <div className="flex items-center gap-2 truncate">
-              <span className="h-2 w-2 rounded-full bg-[#9eff00] shadow-[0_0_8px_#9eff00] animate-pulse flex-shrink-0" />
-              <span className="text-xs font-bold tracking-wider uppercase text-[#9eff00] truncate">
+              <span className="h-2 w-2 rounded-full bg-[#8ee32b] animate-pulse flex-shrink-0" />
+              <span className="text-[11px] sm:text-xs font-bold tracking-wider uppercase text-[#8ee32b] truncate">
                 {step === "lead"
-                  ? "Experience Live AI Voice Demo"
+                  ? "Book Live Voice Demo"
                   : step === "assistants"
-                  ? "Select Your Industry Voice Agent"
-                  : `Live Session • ${selectedAssistant?.name || "AI Voice Agent"}`}
+                  ? "Choose Industry Voice Agent"
+                  : `Live Call • ${selectedAssistant?.name || "AI Voice Agent"}`}
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
             {step === "assistants" && formData.fullName && (
               <button
                 type="button"
                 onClick={() => setStep("lead")}
-                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold bg-[#9eff00]/12 border border-[#9eff00]/30 text-[#d8ff99] hover:bg-[#9eff00]/20 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10.5px] sm:text-[11px] font-semibold bg-[#7ed918]/12 border border-[#7ed918]/25 text-[#d9f7b8] hover:bg-[#7ed918]/20 transition-colors cursor-pointer max-w-[160px] sm:max-w-none truncate"
               >
-                <span className="max-w-[380px] truncate">
-                  {formData.fullName}
-                  {formData.businessName ? ` • ${formData.businessName}` : ""}
-                  {formData.businessType ? ` (${formData.businessType})` : ""}
-                </span>
-                <span className="underline text-[#9eff00] ml-1 flex-shrink-0">Edit</span>
+                <span className="truncate">{formData.fullName}</span>
+                <span className="underline text-[#8ee32b] ml-0.5 flex-shrink-0">Edit</span>
               </button>
             )}
 
@@ -766,7 +809,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                 await releaseActiveRoom();
                 onClose();
               }}
-              className="rounded-full p-1.5 text-gray-400 hover:bg-[#9eff00]/15 hover:text-[#9eff00] transition-colors cursor-pointer"
+              className="rounded-full p-1.5 text-gray-400 hover:bg-[#7ed918]/15 hover:text-[#8ee32b] transition-colors cursor-pointer"
               aria-label="Close modal"
             >
               <X className="w-5 h-5" />
@@ -774,161 +817,137 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           </div>
         </div>
 
-        {/* ── STEP 1: COMPACT SINGLE-SCREEN LEAD CAPTURE (Cyber-Green Brand) ──── */}
-        {step === "lead" && (
-          <div className="px-5 py-5 sm:px-7 sm:py-6">
-            <div className="flex items-center gap-3.5 mb-4">
-              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#9eff00] text-black shadow-[0_0_24px_rgba(158,255,0,0.45)] flex-shrink-0">
-                <PhoneCall className="w-5 h-5" />
+        {/* Scroll-safe Modal Body (Fits 1 page cleanly, scrolls smoothly if phone keyboard opens) */}
+        <div className="overflow-y-auto overscroll-contain flex-1">
+          {/* ── STEP 1: INDIA-ONLY SINGLE-PAGE LEAD FORM (Mobile, Tablet & Desktop) ─ */}
+          {step === "lead" && (
+            <div className="px-4 py-4 sm:px-6 sm:py-5">
+              <div className="flex items-center gap-3 mb-3.5">
+                <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-[#84de22] text-[#0e1710] shadow-[0_4px_16px_rgba(126,217,24,0.28)] flex-shrink-0">
+                  <PhoneCall className="w-4 h-4 sm:w-5 sm:h-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg sm:text-xl font-extrabold tracking-tight text-white leading-tight">
+                    Start Your Live AI Agent Call
+                  </h2>
+                  <p className="text-[11px] sm:text-xs text-[#a8bba9]">
+                    Quick one-time setup — test all 9 industry voice specialists live.
+                  </p>
+                </div>
               </div>
-              <div>
-                <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">
-                  Start Your Live AI Agent Call
-                </h2>
-                <p className="text-xs text-[#9cb097]">
-                  Enter your details once to test any of our specialized AI voice agents live.
-                </p>
-              </div>
-            </div>
 
-            {formError && (
-              <div className="mb-3 rounded-xl bg-red-500/15 border border-red-500/40 px-3.5 py-2 text-xs text-red-300">
-                {formError}
-              </div>
-            )}
+              {formError && (
+                <div className="mb-3 rounded-xl bg-red-500/15 border border-red-500/40 px-3 py-2 text-xs text-red-300">
+                  {formError}
+                </div>
+              )}
 
-            <form onSubmit={handleLeadSubmit} className="space-y-3">
-              {/* Row 1: Full Name + Phone Number */}
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                <div className="sm:col-span-5">
-                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
-                    FULL NAME *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.fullName}
-                    onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
-                    placeholder="John Doe"
-                    className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm text-white focus:border-[#9eff00] focus:outline-none focus:ring-1 focus:ring-[#9eff00]"
-                  />
+              <form onSubmit={handleLeadSubmit} className="space-y-2.5 sm:space-y-3">
+                {/* Row 1: Full Name + Indian Mobile (+91 fixed) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#b8cab9] mb-1">
+                      FULL NAME *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      autoComplete="name"
+                      value={formData.fullName}
+                      onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
+                      placeholder="Your full name"
+                      className="w-full rounded-xl border border-[#2d4534] px-3 py-2 text-base sm:text-sm focus:border-[#84de22] focus:outline-none focus:ring-1 focus:ring-[#84de22]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#b8cab9] mb-1">
+                      MOBILE NUMBER *
+                    </label>
+                    <div className="flex items-center rounded-xl border border-[#2d4534] bg-[#1a2920] focus-within:border-[#84de22] focus-within:ring-1 focus-within:ring-[#84de22] overflow-hidden">
+                      <span className="px-2.5 py-2 text-xs font-bold text-[#8ee32b] border-r border-[#2d4534] select-none flex-shrink-0">
+                        +91
+                      </span>
+                      <input
+                        type="tel"
+                        inputMode="numeric"
+                        maxLength={10}
+                        required
+                        autoComplete="tel-national"
+                        value={formData.phone}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            phone: e.target.value.replace(/\D/g, "").slice(0, 10),
+                          })
+                        }
+                        placeholder="98765 43210"
+                        className="w-full px-3 py-2 text-base sm:text-sm focus:outline-none border-0"
+                      />
+                    </div>
+                  </div>
                 </div>
 
-                <div className="sm:col-span-7">
-                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
-                    PHONE NUMBER *
-                  </label>
-                  <div className="flex items-center rounded-xl border border-[#243d1c] bg-[#0b1508] focus-within:border-[#9eff00] focus-within:ring-1 focus-within:ring-[#9eff00] overflow-hidden">
-                    <select
-                      aria-label="Country code"
-                      value={formData.countryCode}
-                      onChange={(e) => setFormData({ ...formData, countryCode: e.target.value })}
-                      className="pl-2.5 pr-1.5 py-2 text-xs font-bold border-r border-[#243d1c] focus:outline-none cursor-pointer"
-                    >
-                      <option value="+91">IN +91</option>
-                      <option value="+1">US +1</option>
-                      <option value="+44">UK +44</option>
-                      <option value="+971">AE +971</option>
-                      <option value="+65">SG +65</option>
-                      <option value="+61">AU +61</option>
-                    </select>
+                {/* Row 2: Email + Business Name */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#b8cab9] mb-1">
+                      EMAIL ADDRESS *
+                    </label>
                     <input
-                      type="tel"
+                      type="email"
                       required
-                      value={formData.phone}
-                      onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                      placeholder="98765 43210"
-                      className="w-full px-3 py-2 text-sm focus:outline-none border-0"
+                      autoComplete="email"
+                      value={formData.email}
+                      onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                      placeholder="you@company.com"
+                      className="w-full rounded-xl border border-[#2d4534] px-3 py-2 text-base sm:text-sm focus:border-[#84de22] focus:outline-none focus:ring-1 focus:ring-[#84de22]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#b8cab9] mb-1">
+                      BUSINESS NAME *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      autoComplete="organization"
+                      value={formData.businessName}
+                      onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
+                      placeholder="Company / Clinic / Academy"
+                      className="w-full rounded-xl border border-[#2d4534] px-3 py-2 text-base sm:text-sm focus:border-[#84de22] focus:outline-none focus:ring-1 focus:ring-[#84de22]"
                     />
                   </div>
                 </div>
-              </div>
 
-              {/* Row 2: Email + Business Name */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
-                    EMAIL ADDRESS *
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    value={formData.email}
-                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    placeholder="john@company.com"
-                    className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none focus:ring-1 focus:ring-[#9eff00]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
-                    BUSINESS NAME *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.businessName}
-                    onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
-                    placeholder="Acme Corp"
-                    className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none focus:ring-1 focus:ring-[#9eff00]"
-                  />
-                </div>
-              </div>
-
-              {/* Row 3: Business Type + Country */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
-                    BUSINESS / SERVICE TYPE *
-                  </label>
-                  <select
-                    required
-                    value={formData.businessType}
-                    onChange={(e) => setFormData({ ...formData, businessType: e.target.value })}
-                    className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none cursor-pointer"
-                  >
-                    <option value="">Select service or industry</option>
-                    <option value="Hospital Appointment Booking">Hospital Appointment Booking</option>
-                    <option value="Clinic Appointment Booking">Clinic Appointment Booking</option>
-                    <option value="Dental Appointment Booking">Dental Appointment Booking</option>
-                    <option value="Hospital Management Software (HMS)">Hospital Management Software (HMS)</option>
-                    <option value="Software & AI Services">Software & AI Services</option>
-                    <option value="Academic & Coaching Agency">Academic & Coaching Agency</option>
-                    <option value="Customer Support / IVR">Customer Support / Conversational IVR</option>
-                    <option value="Real Estate">Real Estate & Property</option>
-                    <option value="E-Commerce & Retail">E-Commerce & Retail</option>
-                    <option value="Banking & Finance">Banking & Finance</option>
-                    <option value="Hospitality & Travel">Hospitality & Travel</option>
-                    <option value="Other">Other</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
-                    COUNTRY *
-                  </label>
-                  <select
-                    value={formData.country}
-                    onChange={(e) =>
-                      setFormData({ ...formData, country: e.target.value, state: "", city: "" })
-                    }
-                    className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none cursor-pointer"
-                  >
-                    <option value="IN India">IN India</option>
-                    <option value="US United States">US United States</option>
-                    <option value="AE United Arab Emirates">AE United Arab Emirates</option>
-                    <option value="GB United Kingdom">GB United Kingdom</option>
-                    <option value="SG Singapore">SG Singapore</option>
-                    <option value="AU Australia">AU Australia</option>
-                    <option value="Other">Other</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Row 4: State + City */}
-              {formData.country === "IN India" ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Row 3: Business Type + State (2-col on ALL devices including Mobile!) */}
+                <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
                   <div>
-                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#b8cab9] mb-1">
+                      INDUSTRY *
+                    </label>
+                    <select
+                      required
+                      value={formData.businessType}
+                      onChange={(e) => setFormData({ ...formData, businessType: e.target.value })}
+                      className="w-full rounded-xl border border-[#2d4534] px-2.5 sm:px-3 py-2 text-base sm:text-sm focus:border-[#84de22] focus:outline-none cursor-pointer"
+                    >
+                      <option value="">Select type</option>
+                      <option value="Healthcare & Clinic">Healthcare / Clinic</option>
+                      <option value="Education & Academy">Education / Academy</option>
+                      <option value="Real Estate">Real Estate</option>
+                      <option value="E-Commerce & Retail">E-Commerce / Retail</option>
+                      <option value="Banking & Finance">Banking / Finance</option>
+                      <option value="Customer Support / IVR">Support / IVR</option>
+                      <option value="IT & SaaS">IT &amp; SaaS</option>
+                      <option value="Hospitality & Travel">Hospitality</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#b8cab9] mb-1">
                       STATE *
                     </label>
                     <select
@@ -937,19 +956,22 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                       onChange={(e) =>
                         setFormData({ ...formData, state: e.target.value, city: "", customCity: "" })
                       }
-                      className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none cursor-pointer"
+                      className="w-full rounded-xl border border-[#2d4534] px-2.5 sm:px-3 py-2 text-base sm:text-sm focus:border-[#84de22] focus:outline-none cursor-pointer"
                     >
                       <option value="">Select state</option>
-                      {Object.keys(STATE_CITIES).map((st) => (
+                      {Object.keys(INDIA_STATES_CITIES).map((st) => (
                         <option key={st} value={st}>
                           {st}
                         </option>
                       ))}
                     </select>
                   </div>
+                </div>
 
+                {/* Row 4: City + Optional Note (2-col on ALL devices so form stays 1 screen!) */}
+                <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
                   <div>
-                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#b8cab9] mb-1">
                       CITY *
                     </label>
                     {formData.city === "Other" ? (
@@ -959,7 +981,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                         value={formData.customCity}
                         onChange={(e) => setFormData({ ...formData, customCity: e.target.value })}
                         placeholder="Enter city"
-                        className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none"
+                        className="w-full rounded-xl border border-[#2d4534] px-2.5 sm:px-3 py-2 text-base sm:text-sm focus:border-[#84de22] focus:outline-none"
                       />
                     ) : (
                       <select
@@ -967,10 +989,10 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                         disabled={!formData.state}
                         value={formData.city}
                         onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                        className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm disabled:opacity-60 focus:border-[#9eff00] focus:outline-none cursor-pointer"
+                        className="w-full rounded-xl border border-[#2d4534] px-2.5 sm:px-3 py-2 text-base sm:text-sm disabled:opacity-60 focus:border-[#84de22] focus:outline-none cursor-pointer"
                       >
                         <option value="">
-                          {formData.state ? "Select city" : "Select a state first"}
+                          {formData.state ? "Select city" : "Select state first"}
                         </option>
                         {availableCities.map((ct) => (
                           <option key={ct} value={ct}>
@@ -980,361 +1002,322 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                       </select>
                     )}
                   </div>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
                   <div>
-                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
-                      STATE / REGION
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#b8cab9] mb-1">
+                      NOTE <span className="text-[#7c9480] font-normal">(OPTIONAL)</span>
                     </label>
                     <input
                       type="text"
-                      value={formData.state}
-                      onChange={(e) => setFormData({ ...formData, state: e.target.value })}
-                      placeholder="State / Region"
-                      className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
-                      CITY
-                    </label>
-                    <input
-                      type="text"
-                      value={formData.city}
-                      onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                      placeholder="City"
-                      className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none"
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      placeholder="Optional use case..."
+                      className="w-full rounded-xl border border-[#2d4534] px-2.5 sm:px-3 py-2 text-base sm:text-sm focus:border-[#84de22] focus:outline-none"
                     />
                   </div>
                 </div>
-              )}
 
-              {/* Row 5: Compact Description (Optional) */}
-              <div>
-                <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
-                  DESCRIPTION <span className="text-[#6c8266] font-normal">(OPTIONAL)</span>
-                </label>
-                <input
-                  type="text"
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Optional: Custom workflow or call goal..."
-                  className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none"
-                />
-              </div>
-
-              <div className="pt-1.5">
-                <button
-                  type="submit"
-                  disabled={isSubmittingLead}
-                  className="w-full flex items-center justify-center gap-2.5 rounded-xl bg-[#9eff00] hover:bg-[#bfff40] py-3 px-6 font-extrabold text-sm uppercase tracking-wider text-black shadow-[0_0_28px_rgba(158,255,0,0.4)] hover:shadow-[0_0_36px_rgba(158,255,0,0.65)] transition-all disabled:opacity-60 cursor-pointer"
-                >
-                  {isSubmittingLead ? (
-                    <LoaderCircle className="w-5 h-5 animate-spin text-black" />
-                  ) : (
-                    <>
-                      <PhoneCall className="w-4 h-4 text-black" />
-                      <span>TEST WITH AI CALL</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        )}
-
-        {/* ── STEP 2: 9 CYBER-EMERALD ASSISTANT ORBS (Zero Scroll, Zero Model/Voice Names) ─ */}
-        {step === "assistants" && (
-          <div className="px-4 sm:px-7 py-4 sm:py-5">
-            <div className="text-center mb-3">
-              <h2 className="text-lg sm:text-2xl font-extrabold tracking-tight text-white">
-                Choose an AI Voice Agent to Speak Live
-              </h2>
-              <p className="text-xs text-[#9cb097] mt-0.5">
-                Click any specialized agent below — speaks naturally in English, Tamil, Telugu, Kannada, Malayalam &amp; Hindi with live captions.
-              </p>
-            </div>
-
-            <div className={landingStyles.orbGrid}>
-              {assistants.map((assistant) => {
-                const Icon = roleIcons[assistant.role] || Users;
-                const isHighlighted = preselectedRole === assistant.role;
-                return (
-                  <article
-                    key={assistant.id}
-                    className={`${landingStyles.orbStation} ${
-                      isHighlighted ? landingStyles.orbHighlighted : ""
-                    }`}
+                <div className="pt-1.5">
+                  <button
+                    type="submit"
+                    disabled={isSubmittingLead}
+                    className="w-full flex items-center justify-center gap-2 rounded-xl bg-[#84de22] hover:bg-[#94e838] py-3 px-5 font-extrabold text-sm uppercase tracking-wider text-[#0e1710] shadow-[0_6px_20px_rgba(126,217,24,0.28)] transition-all disabled:opacity-60 cursor-pointer"
                   >
-                    <button
-                      type="button"
-                      onClick={() => handleStartCall(assistant)}
-                      className={landingStyles.orbButton}
-                      aria-label={`Start live call with ${assistant.name}`}
-                    >
-                      <Icon
-                        size={28}
-                        strokeWidth={1.7}
-                        aria-hidden="true"
-                        className={landingStyles.orbIcon}
-                      />
-                      <h3 className={landingStyles.orbTitle}>{assistant.name}</h3>
-                      <span className={landingStyles.orbStatus}>
-                        <i className={landingStyles.orbStatusDot} />
-                        Active
-                      </span>
-                    </button>
-                    <span className={landingStyles.orbPlinth} aria-hidden="true" />
-                    <button
-                      type="button"
-                      onClick={() => handleStartCall(assistant)}
-                      className={landingStyles.tryDemoBtn}
-                    >
-                      Try Demo
-                    </button>
-                  </article>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* ── STEP 3: LIVE VOICE STUDIO — WOBBLING ORB + REAL-TIME MULTILINGUAL TRANSCRIPT ─ */}
-        {step === "call" && selectedAssistant && (
-          <div className="p-5 sm:p-6 grid grid-cols-1 md:grid-cols-12 gap-5 items-stretch">
-            {/* Left Column: Reactive Wobbling Voice Orb + Waveform + Call Controls */}
-            <div className="md:col-span-5 flex flex-col items-center justify-between rounded-2xl border border-[#9eff00]/20 bg-[#071104]/85 p-5 text-center">
-              <div className="w-full">
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider bg-[#9eff00]/12 border border-[#9eff00]/30 text-[#9eff00]">
-                  <span className="h-1.5 w-1.5 rounded-full bg-[#9eff00] animate-ping" />
-                  Live AI Agent
-                </span>
-                <h3 className="text-xl sm:text-2xl font-extrabold text-white mt-2.5">
-                  {selectedAssistant.name}
-                </h3>
-                {formData.fullName && (
-                  <p className="text-xs text-[#9cb097] mt-1">
-                    Caller: <strong className="text-white">{formData.fullName}</strong>
-                    {formData.businessName ? ` • ${formData.businessName}` : ""}
-                  </p>
-                )}
-              </div>
-
-              {/* Organic Wobbling Voice Sphere */}
-              <div className="relative my-5 flex h-36 w-36 items-center justify-center">
-                {/* Outer reactive aura */}
-                <div
-                  className="absolute inset-0 rounded-full bg-[#9eff00]/25 blur-2xl transition-transform duration-100 pointer-events-none"
-                  style={{
-                    transform: `scale(${1 + (combinedEnergy / 100) * 0.85})`,
-                    opacity: callStatus === "connected" ? 0.85 : 0.25,
-                  }}
-                />
-                {/* Secondary sonic ring */}
-                <div
-                  className="absolute inset-2 rounded-full border border-[#9eff00]/40 transition-transform duration-100 pointer-events-none"
-                  style={{
-                    transform: `scale(${1 + (combinedEnergy / 120) * 0.5})`,
-                  }}
-                />
-                {/* Core wobbling 3D orb */}
-                <div
-                  className={`relative flex h-28 w-28 items-center justify-center border-2 transition-all duration-150 ${
-                    agentSpeaking || userSpeaking ? landingStyles.wobbleActive : "rounded-full"
-                  } ${
-                    agentSpeaking
-                      ? "border-[#9eff00] shadow-[0_0_42px_rgba(158,255,0,0.55)] bg-gradient-to-br from-[#234712] to-[#0a1605]"
-                      : userSpeaking
-                      ? "border-[#ffd600] shadow-[0_0_36px_rgba(255,214,0,0.45)] bg-gradient-to-br from-[#38330d] to-[#0c1406]"
-                      : "border-[#9eff00]/45 shadow-[0_0_24px_rgba(158,255,0,0.2)] bg-gradient-to-br from-[#162b0d] to-[#081105]"
-                  }`}
-                  style={{
-                    transform: `scale(${1 + (combinedEnergy / 220) * 0.22})`,
-                  }}
-                >
-                  {(() => {
-                    const RoleIcon = roleIcons[selectedAssistant.role] || Users;
-                    return (
-                      <RoleIcon
-                        className={`w-12 h-12 transition-colors duration-150 ${
-                          agentSpeaking
-                            ? "text-[#9eff00]"
-                            : userSpeaking
-                            ? "text-[#ffd600]"
-                            : "text-[#c8f780]"
-                        }`}
-                      />
-                    );
-                  })()}
+                    {isSubmittingLead ? (
+                      <LoaderCircle className="w-5 h-5 animate-spin text-[#0e1710]" />
+                    ) : (
+                      <>
+                        <PhoneCall className="w-4 h-4 text-[#0e1710]" />
+                        <span>TEST WITH AI CALL</span>
+                      </>
+                    )}
+                  </button>
                 </div>
+              </form>
+            </div>
+          )}
+
+          {/* ── STEP 2: 9 INDUSTRY VOICE AGENTS (3x3 Mobile/Tablet, 5x2 Desktop) ─ */}
+          {step === "assistants" && (
+            <div className="px-3 sm:px-6 py-3.5 sm:py-5">
+              <div className="text-center mb-2.5 sm:mb-3">
+                <h2 className="text-base sm:text-2xl font-extrabold tracking-tight text-white">
+                  Choose an AI Voice Agent to Speak Live
+                </h2>
+                <p className="text-[11px] sm:text-xs text-[#a8bba9] mt-0.5">
+                  Tap any role below to start an instant voice call with live captions.
+                </p>
               </div>
 
-              {/* Dynamic Voice Wobble Bars + Status + Timer */}
-              <div className="w-full space-y-3">
-                {callStatus === "connecting" && (
-                  <div className="flex items-center justify-center gap-2 text-xs font-semibold text-[#ffd600]">
-                    <LoaderCircle className="w-4 h-4 animate-spin" />
-                    <span>Connecting instant voice channel...</span>
-                  </div>
-                )}
-
-                {callStatus === "connected" && (
-                  <>
-                    <div className="flex items-center justify-center gap-[3px] h-9 px-2">
-                      {waveBars.map((val, idx) => (
-                        <div
-                          key={idx}
-                          className="w-1.5 rounded-full transition-all duration-75"
-                          style={{
-                            height: `${Math.max(5, Math.round(val * 34))}px`,
-                            backgroundColor: agentSpeaking
-                              ? "#9eff00"
-                              : userSpeaking
-                              ? "#ffd600"
-                              : "rgba(158, 255, 0, 0.35)",
-                          }}
-                        />
-                      ))}
-                    </div>
-
-                    <div className="flex items-center justify-center gap-3">
-                      <span className="text-2xl font-mono font-extrabold text-white tracking-widest">
-                        {formatTimer(callDuration)}
-                      </span>
-                      <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-white/5 border border-white/10">
-                        {agentSpeaking ? (
-                          <span className="text-[#9eff00]">● Agent Speaking</span>
-                        ) : userSpeaking ? (
-                          <span className="text-[#ffd600]">● You Are Speaking</span>
-                        ) : isMuted ? (
-                          <span className="text-red-400">● Mic Muted</span>
-                        ) : (
-                          <span className="text-[#b5c7b0]">● Listening...</span>
-                        )}
-                      </span>
-                    </div>
-                  </>
-                )}
-
-                {callStatus === "ended" && (
-                  <div>
-                    <p className="text-sm font-bold text-white">Session Completed</p>
-                    <p className="text-xs text-[#9cb097]">Duration: {formatTimer(callDuration)}</p>
-                  </div>
-                )}
-
-                {callStatus === "error" && (
-                  <div className="rounded-xl bg-red-500/15 border border-red-500/40 p-2.5 text-xs text-red-300">
-                    {errorMsg}
-                  </div>
-                )}
-
-                {/* Controls */}
-                <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
-                  {callStatus === "connected" && (
-                    <button
-                      type="button"
-                      onClick={toggleMute}
-                      className={`flex items-center gap-1.5 px-4 py-2.5 rounded-xl border font-bold text-xs uppercase tracking-wider transition-all cursor-pointer ${
-                        isMuted
-                          ? "bg-red-500/20 border-red-500/50 text-red-200"
-                          : "bg-[#12240b] border-[#9eff00]/30 text-white hover:border-[#9eff00]"
+              <div className={landingStyles.orbGrid}>
+                {assistants.map((assistant) => {
+                  const Icon = roleIcons[assistant.role] || Users;
+                  const isHighlighted = preselectedRole === assistant.role;
+                  return (
+                    <article
+                      key={assistant.id}
+                      className={`${landingStyles.orbStation} ${
+                        isHighlighted ? landingStyles.orbHighlighted : ""
                       }`}
                     >
-                      {isMuted ? <MicOff className="w-4 h-4 text-red-400" /> : <Mic className="w-4 h-4 text-[#9eff00]" />}
-                      <span>{isMuted ? "Unmute" : "Mute"}</span>
-                    </button>
-                  )}
-
-                  {callStatus === "connected" || callStatus === "connecting" ? (
-                    <button
-                      type="button"
-                      onClick={handleEndCall}
-                      className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs uppercase tracking-wider shadow-[0_0_20px_rgba(220,38,38,0.4)] transition-all cursor-pointer"
-                    >
-                      <PhoneOff className="w-4 h-4" />
-                      <span>End Call</span>
-                    </button>
-                  ) : (
-                    <>
                       <button
                         type="button"
-                        onClick={() => handleStartCall(selectedAssistant)}
-                        className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#12240b] hover:bg-[#1a3310] border border-[#9eff00]/35 text-white font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
+                        onClick={() => handleStartCall(assistant)}
+                        className={landingStyles.orbButton}
+                        aria-label={`Start live call with ${assistant.name}`}
                       >
-                        <RotateCcw className="w-3.5 h-3.5 text-[#9eff00]" />
-                        <span>Call Again</span>
+                        <Icon
+                          size={26}
+                          strokeWidth={1.7}
+                          aria-hidden="true"
+                          className={landingStyles.orbIcon}
+                        />
+                        <h3 className={landingStyles.orbTitle}>{assistant.name}</h3>
+                        <span className={landingStyles.orbStatus}>
+                          <i className={landingStyles.orbStatusDot} />
+                          Active
+                        </span>
                       </button>
+                      <span className={landingStyles.orbPlinth} aria-hidden="true" />
                       <button
                         type="button"
-                        onClick={() => setStep("assistants")}
-                        className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#9eff00] hover:bg-[#bfff40] text-black font-extrabold text-xs uppercase tracking-wider transition-all cursor-pointer"
+                        onClick={() => handleStartCall(assistant)}
+                        className={landingStyles.tryDemoBtn}
                       >
-                        <Sparkles className="w-3.5 h-3.5 text-black" />
-                        <span>All Agents</span>
+                        Try Demo
                       </button>
-                    </>
-                  )}
-                </div>
+                    </article>
+                  );
+                })}
               </div>
             </div>
+          )}
 
-            {/* Right Column: Live Real-Time Multilingual Conversation Transcript */}
-            <div className="md:col-span-7 flex flex-col rounded-2xl border border-[#9eff00]/20 bg-[#060e04]/90 overflow-hidden h-[340px] sm:h-[370px]">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-[#9eff00]/15 bg-[#091506]">
-                <div className="flex items-center gap-2">
-                  <MessageSquareText className="w-4 h-4 text-[#9eff00]" />
-                  <span className="text-xs font-bold uppercase tracking-wider text-white">
-                    Live Conversation Transcript
+          {/* ── STEP 3: LIVE VOICE STUDIO (Responsive Mobile + Tablet + Desktop) ─ */}
+          {step === "call" && selectedAssistant && (
+            <div className="p-3.5 sm:p-5 grid grid-cols-1 md:grid-cols-12 gap-3.5 sm:gap-5 items-stretch">
+              {/* Voice Sphere + Waveform + Controls */}
+              <div className="md:col-span-5 flex flex-col items-center justify-between rounded-2xl border border-[#7ed918]/20 bg-[#17251c]/90 p-4 sm:p-5 text-center">
+                <div className="w-full">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10.5px] font-bold uppercase tracking-wider bg-[#7ed918]/12 border border-[#7ed918]/25 text-[#8ee32b]">
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#8ee32b] animate-ping" />
+                    Live Voice Session
+                  </span>
+                  <h3 className="text-lg sm:text-2xl font-extrabold text-white mt-1.5 sm:mt-2">
+                    {selectedAssistant.name}
+                  </h3>
+                  {formData.fullName && (
+                    <p className="text-[11px] sm:text-xs text-[#a8bba9] mt-0.5 truncate">
+                      Caller: <strong className="text-white">{formData.fullName}</strong>
+                      {formData.businessName ? ` • ${formData.businessName}` : ""}
+                    </p>
+                  )}
+                </div>
+
+                {/* Wobbling Voice Sphere (Compact on mobile so captions stay fully visible!) */}
+                <div className="relative my-2.5 sm:my-5 flex h-24 w-24 sm:h-36 sm:w-36 items-center justify-center">
+                  <div
+                    className="absolute inset-0 rounded-full bg-[#7ed918]/20 blur-xl transition-transform duration-100 pointer-events-none"
+                    style={{
+                      transform: `scale(${1 + (combinedEnergy / 100) * 0.75})`,
+                      opacity: callStatus === "connected" ? 0.8 : 0.25,
+                    }}
+                  />
+                  <div
+                    className={`relative flex h-20 w-20 sm:h-28 sm:w-28 items-center justify-center border-2 transition-all duration-150 ${
+                      agentSpeaking || userSpeaking ? landingStyles.wobbleActive : "rounded-full"
+                    } ${
+                      agentSpeaking
+                        ? "border-[#8ee32b] shadow-[0_0_28px_rgba(126,217,24,0.4)] bg-gradient-to-br from-[#294b30] to-[#142318]"
+                        : userSpeaking
+                        ? "border-[#f5ca3c] shadow-[0_0_26px_rgba(245,202,60,0.35)] bg-gradient-to-br from-[#3e3a1c] to-[#162219]"
+                        : "border-[#7ed918]/40 shadow-[0_0_18px_rgba(126,217,24,0.16)] bg-gradient-to-br from-[#203626] to-[#131f16]"
+                    }`}
+                    style={{
+                      transform: `scale(${1 + (combinedEnergy / 220) * 0.2})`,
+                    }}
+                  >
+                    {(() => {
+                      const RoleIcon = roleIcons[selectedAssistant.role] || Users;
+                      return (
+                        <RoleIcon
+                          className={`w-9 h-9 sm:w-12 sm:h-12 transition-colors duration-150 ${
+                            agentSpeaking
+                              ? "text-[#8ee32b]"
+                              : userSpeaking
+                              ? "text-[#f5ca3c]"
+                              : "text-[#c6eba0]"
+                          }`}
+                        />
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div className="w-full space-y-2.5">
+                  {callStatus === "connecting" && (
+                    <div className="flex items-center justify-center gap-2 text-xs font-semibold text-[#f5ca3c]">
+                      <LoaderCircle className="w-4 h-4 animate-spin" />
+                      <span>Connecting live voice channel...</span>
+                    </div>
+                  )}
+
+                  {callStatus === "connected" && (
+                    <>
+                      <div className="flex items-center justify-center gap-[3px] h-7 sm:h-9 px-2">
+                        {waveBars.map((val, idx) => (
+                          <div
+                            key={idx}
+                            className="w-1.5 rounded-full transition-all duration-75"
+                            style={{
+                              height: `${Math.max(4, Math.round(val * 30))}px`,
+                              backgroundColor: agentSpeaking
+                                ? "#8ee32b"
+                                : userSpeaking
+                                ? "#f5ca3c"
+                                : "rgba(138, 224, 48, 0.35)",
+                            }}
+                          />
+                        ))}
+                      </div>
+
+                      <div className="flex items-center justify-center gap-2.5">
+                        <span className="text-xl sm:text-2xl font-mono font-extrabold text-white tracking-widest">
+                          {formatTimer(callDuration)}
+                        </span>
+                        <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-white/5 border border-white/10">
+                          {agentSpeaking ? (
+                            <span className="text-[#8ee32b]">● Agent Speaking</span>
+                          ) : userSpeaking ? (
+                            <span className="text-[#f5ca3c]">● You Are Speaking</span>
+                          ) : isMuted ? (
+                            <span className="text-red-300">● Mic Muted</span>
+                          ) : (
+                            <span className="text-[#b8cab9]">● Listening...</span>
+                          )}
+                        </span>
+                      </div>
+                    </>
+                  )}
+
+                  {callStatus === "ended" && (
+                    <div>
+                      <p className="text-xs sm:text-sm font-bold text-white">Session Completed</p>
+                      <p className="text-[11px] text-[#a8bba9]">Duration: {formatTimer(callDuration)}</p>
+                    </div>
+                  )}
+
+                  {callStatus === "error" && (
+                    <div className="rounded-xl bg-red-500/15 border border-red-500/40 p-2 text-xs text-red-300">
+                      {errorMsg}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-center gap-2 pt-0.5">
+                    {callStatus === "connected" && (
+                      <button
+                        type="button"
+                        onClick={toggleMute}
+                        className={`flex items-center gap-1.5 px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-xl border font-bold text-xs uppercase tracking-wider transition-all cursor-pointer ${
+                          isMuted
+                            ? "bg-red-500/20 border-red-500/50 text-red-200"
+                            : "bg-[#1e3124] border-[#7ed918]/30 text-white hover:border-[#8ee32b]"
+                        }`}
+                      >
+                        {isMuted ? <MicOff className="w-4 h-4 text-red-300" /> : <Mic className="w-4 h-4 text-[#8ee32b]" />}
+                        <span>{isMuted ? "Unmute" : "Mute"}</span>
+                      </button>
+                    )}
+
+                    {callStatus === "connected" || callStatus === "connecting" ? (
+                      <button
+                        type="button"
+                        onClick={handleEndCall}
+                        className="flex items-center gap-1.5 px-4 py-2 sm:px-5 sm:py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs uppercase tracking-wider shadow-[0_4px_16px_rgba(220,38,38,0.35)] transition-all cursor-pointer"
+                      >
+                        <PhoneOff className="w-4 h-4" />
+                        <span>End Call</span>
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleStartCall(selectedAssistant)}
+                          className="flex items-center gap-1.5 px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-xl bg-[#1e3124] hover:bg-[#263d2d] border border-[#7ed918]/35 text-white font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5 text-[#8ee32b]" />
+                          <span>Call Again</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setStep("assistants")}
+                          className="flex items-center gap-1.5 px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-xl bg-[#84de22] hover:bg-[#94e838] text-[#0e1710] font-extrabold text-xs uppercase tracking-wider transition-all cursor-pointer"
+                        >
+                          <Sparkles className="w-3.5 h-3.5 text-[#0e1710]" />
+                          <span>All Agents</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Clean, Deduplicated, Multilingual Live Conversation Captions */}
+              <div className="md:col-span-7 flex flex-col rounded-2xl border border-[#7ed918]/20 bg-[#15221a]/95 overflow-hidden h-[240px] sm:h-[360px]">
+                <div className="flex items-center justify-between px-3.5 py-2.5 sm:px-4 sm:py-3 border-b border-[#7ed918]/15 bg-[#19291f] flex-shrink-0">
+                  <div className="flex items-center gap-2">
+                    <MessageSquareText className="w-4 h-4 text-[#8ee32b]" />
+                    <span className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-white">
+                      Live Conversation Captions
+                    </span>
+                  </div>
+                  <span className="text-[10.5px] sm:text-[11px] text-[#a8bba9]">
+                    Multilingual
                   </span>
                 </div>
-                <span className="text-[11px] text-[#9cb097]">
-                  Auto-detects spoken language
-                </span>
-              </div>
 
-              <div
-                ref={transcriptBoxRef}
-                className="flex-1 overflow-y-auto p-4 space-y-3 scroll-smooth"
-              >
-                {transcripts.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-center px-6">
-                    <p className="text-xs sm:text-sm text-[#9cb097] leading-relaxed">
-                      {callStatus === "connecting"
-                        ? "Preparing live transcript stream..."
-                        : "Start speaking in English, Tamil, Telugu, Kannada, Malayalam, or Hindi — real-time captions for both you and the AI agent will appear here."}
-                    </p>
-                  </div>
-                ) : (
-                  transcripts.map((entry) => (
-                    <div
-                      key={entry.id}
-                      className={`flex flex-col ${
-                        entry.speaker === "user" ? "items-end" : "items-start"
-                      }`}
-                    >
-                      <span className="text-[10px] font-bold uppercase tracking-wider mb-1 px-1 text-[#8ea688]">
-                        {entry.speaker === "user"
-                          ? formData.fullName || "You"
-                          : selectedAssistant.name}
-                      </span>
+                <div
+                  ref={transcriptBoxRef}
+                  className="flex-1 overflow-y-auto overflow-x-hidden p-3.5 sm:p-4 space-y-3 scroll-smooth"
+                >
+                  {transcripts.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-center px-4">
+                      <p className="text-xs sm:text-sm text-[#a8bba9] leading-relaxed">
+                        {callStatus === "connecting"
+                          ? "Preparing live conversation captions..."
+                          : "Speak naturally in English, Tamil, Tanglish, or Hindi — your live conversation captions appear cleanly right here."}
+                      </p>
+                    </div>
+                  ) : (
+                    transcripts.map((entry) => (
                       <div
-                        className={`max-w-[86%] rounded-2xl px-3.5 py-2.5 text-xs sm:text-sm leading-relaxed ${
-                          entry.speaker === "user"
-                            ? "bg-[#9eff00] text-black font-semibold rounded-br-sm"
-                            : "bg-[#11220c] border border-[#9eff00]/25 text-[#f1f5f0] rounded-bl-sm"
+                        key={entry.id}
+                        className={`flex flex-col min-w-0 ${
+                          entry.speaker === "user" ? "items-end" : "items-start"
                         }`}
                       >
-                        {entry.text}
+                        <span className="text-[10px] font-bold uppercase tracking-wider mb-1 px-1 text-[#97ad99]">
+                          {entry.speaker === "user"
+                            ? formData.fullName || "Caller"
+                            : selectedAssistant.name}
+                        </span>
+                        <div
+                          className={`max-w-[86%] rounded-2xl px-3.5 py-2 sm:px-4 sm:py-2.5 text-xs sm:text-sm leading-relaxed break-words [overflow-wrap:anywhere] ${
+                            entry.speaker === "user"
+                              ? "bg-[#23422b] border border-[#84de22]/40 text-[#f3f8f4] font-medium rounded-br-sm shadow-sm"
+                              : "bg-[#1b2c21] border border-white/10 text-[#edf3ee] rounded-bl-sm shadow-sm"
+                          }`}
+                        >
+                          {entry.text}
+                        </div>
                       </div>
-                    </div>
-                  ))
-                )}
+                    ))
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

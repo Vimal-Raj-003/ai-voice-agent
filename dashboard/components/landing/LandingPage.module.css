@@ -1,24 +1,22 @@
-/* Unified Jill-Jill Cyber-Emerald & Neon Lime Brand Design System */
+/* Executive Soft-Forest Slate & Refined Emerald Brand System — Desktop, Tablet & Mobile Optimized */
 
 .landingRoot {
-  /* CRITICAL: Prevent globals.css [data-theme="dark"] { color-scheme: dark } from
-     forcing Chrome/Edge to paint a solid white canvas behind cross-origin iframes (Spline)! */
   color-scheme: normal !important;
 
-  --jj-bg: #030a01;
-  --jj-primary: rgba(8, 15, 6, 0.9);
-  --jj-header: rgba(6, 12, 4, 0.88);
-  --jj-secondary: rgba(11, 20, 8, 0.9);
-  --jj-surface: rgba(20, 36, 15, 0.65);
-  --jj-accent: #9eff00;
-  --jj-accent-hover: #bfff40;
-  --jj-accent-soft: rgba(158, 255, 0, 0.14);
-  --jj-logo: #ffd600;
-  --jj-text: #f1f5f0;
-  --jj-muted: #9ca89a;
-  --jj-border: rgba(158, 255, 0, 0.18);
-  --jj-grid-alpha: 0.14;
-  --jj-glow-alpha: 0.2;
+  --jj-bg: #0e1611;
+  --jj-primary: rgba(20, 31, 24, 0.92);
+  --jj-header: rgba(16, 25, 19, 0.92);
+  --jj-secondary: rgba(24, 37, 29, 0.92);
+  --jj-surface: rgba(33, 50, 39, 0.75);
+  --jj-accent: #7ed918;
+  --jj-accent-hover: #8ee32b;
+  --jj-accent-soft: rgba(126, 217, 24, 0.14);
+  --jj-logo: #f5ca3c;
+  --jj-text: #eef4ef;
+  --jj-muted: #a6b8ab;
+  --jj-border: rgba(126, 217, 24, 0.2);
+  --jj-grid-alpha: 0.08;
+  --jj-glow-alpha: 0.13;
 
   position: relative;
   z-index: 0;
@@ -27,55 +25,35 @@
   background-color: var(--jj-bg);
   background-image:
     radial-gradient(
-      ellipse 80% 80% at 50% 45%,
-      hsla(85, 100%, 50%, var(--jj-glow-alpha)),
-      transparent 62%
+      ellipse 85% 75% at 50% 40%,
+      hsla(92, 72%, 45%, var(--jj-glow-alpha)),
+      transparent 65%
     ),
-    linear-gradient(hsla(85, 85%, 50%, var(--jj-grid-alpha)) 1px, transparent 1px),
-    linear-gradient(90deg, hsla(85, 85%, 50%, var(--jj-grid-alpha)) 1px, transparent 1px);
-  background-size: 100% 100%, 50px 50px, 50px 50px;
+    linear-gradient(hsla(92, 65%, 52%, var(--jj-grid-alpha)) 1px, transparent 1px),
+    linear-gradient(90deg, hsla(92, 65%, 52%, var(--jj-grid-alpha)) 1px, transparent 1px);
+  background-size: 100% 100%, 52px 52px, 52px 52px;
   background-repeat: no-repeat, repeat, repeat;
   background-attachment: fixed;
-  animation: jjSubtlePan 22s infinite ease-in-out alternate;
   overflow-x: hidden;
 }
 
 .landingRoot[data-jj-theme="light"] {
-  --jj-bg: #f6faf3;
-  --jj-primary: rgba(255, 255, 255, 0.94);
-  --jj-header: rgba(255, 255, 255, 0.92);
-  --jj-secondary: rgba(238, 246, 232, 0.92);
-  --jj-surface: rgba(230, 242, 220, 0.85);
-  --jj-accent: #4d8b00;
-  --jj-accent-hover: #3d7000;
-  --jj-accent-soft: rgba(77, 139, 0, 0.14);
-  --jj-logo: #b47800;
-  --jj-text: #0f1c0b;
-  --jj-muted: #43543e;
-  --jj-border: rgba(77, 139, 0, 0.22);
-  --jj-grid-alpha: 0.08;
-  --jj-glow-alpha: 0.1;
+  --jj-bg: #f4f8f3;
+  --jj-primary: rgba(255, 255, 255, 0.95);
+  --jj-header: rgba(255, 255, 255, 0.94);
+  --jj-secondary: rgba(238, 245, 236, 0.94);
+  --jj-surface: rgba(230, 240, 228, 0.88);
+  --jj-accent: #4c8c0b;
+  --jj-accent-hover: #3d7308;
+  --jj-accent-soft: rgba(76, 140, 11, 0.12);
+  --jj-logo: #b88300;
+  --jj-text: #132016;
+  --jj-muted: #4b5e50;
+  --jj-border: rgba(76, 140, 11, 0.2);
+  --jj-grid-alpha: 0.06;
+  --jj-glow-alpha: 0.08;
 }
 
-.landingRoot::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  background-image: linear-gradient(
-    to bottom,
-    transparent 0%,
-    hsla(85, 100%, 50%, 0.08) 45%,
-    hsla(85, 100%, 50%, 0.08) 55%,
-    transparent 100%
-  );
-  background-size: 100% 200px;
-  background-repeat: no-repeat;
-  animation: jjScannerGlow 8s infinite linear;
-  pointer-events: none;
-}
-
-/* Transparent Spline 3D Robot Container — eliminates browser white iframe backdrop */
 .splineStage {
   color-scheme: normal !important;
   background: transparent !important;
@@ -91,37 +69,27 @@
   height: 100%;
 }
 
-@keyframes jjScannerGlow {
-  0% { background-position: 50% -100%; }
-  100% { background-position: 50% 200%; }
-}
-
-@keyframes jjSubtlePan {
-  0%, 100% { background-position: 50% 50%, 0 0, 0 0; }
-  50% { background-position: 50% 50%, 25px 25px, 25px 25px; }
-}
-
 @keyframes jjBellRing {
   0%, 100% { transform: rotate(0deg); }
-  5%, 15% { transform: rotate(14deg); }
-  10%, 20% { transform: rotate(-12deg); }
+  5%, 15% { transform: rotate(12deg); }
+  10%, 20% { transform: rotate(-10deg); }
   25% { transform: rotate(0deg); }
 }
 
 @keyframes jjPulseGlow {
   0%, 100% {
-    box-shadow: 0 0 14px rgba(158, 255, 0, 0.6), 0 0 28px rgba(158, 255, 0, 0.3);
+    box-shadow: 0 0 12px rgba(126, 217, 24, 0.35), 0 0 24px rgba(126, 217, 24, 0.16);
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 24px rgba(191, 255, 64, 0.85), 0 0 48px rgba(191, 255, 64, 0.45);
-    transform: scale(1.03);
+    box-shadow: 0 0 18px rgba(142, 227, 43, 0.48), 0 0 32px rgba(142, 227, 43, 0.22);
+    transform: scale(1.02);
   }
 }
 
 @keyframes jjHeroGlow {
-  0%, 100% { opacity: 0.45; transform: scale(1); }
-  50% { opacity: 0.8; transform: scale(1.06); }
+  0%, 100% { opacity: 0.38; transform: scale(1); }
+  50% { opacity: 0.65; transform: scale(1.04); }
 }
 
 @keyframes jjOrbWobble {
@@ -137,7 +105,7 @@
 }
 
 .pulseGlowBtn {
-  animation: jjPulseGlow 2.2s ease-in-out infinite;
+  animation: jjPulseGlow 2.6s ease-in-out infinite;
 }
 .pulseGlowBtn:hover {
   animation: none;
@@ -151,20 +119,23 @@
   animation: jjOrbWobble 1.6s ease-in-out infinite;
 }
 
-/* ── Unified Cyber-Emerald Modal Surface (All 3 Steps Match Home Brand!) ──── */
+/* ── Softened Forest-Slate Modal Surface (Mobile Keyboard & Viewport Safe) ─── */
 .cyberModalSurface {
   color-scheme: dark;
-  color: #f1f5f0 !important;
-  background-color: #050b03;
+  color: #eef4ef !important;
+  background-color: #131e17;
   background-image:
-    radial-gradient(ellipse 75% 65% at 50% 0%, rgba(158, 255, 0, 0.13), transparent 65%),
-    linear-gradient(rgba(158, 255, 0, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(158, 255, 0, 0.05) 1px, transparent 1px);
-  background-size: 100% 100%, 40px 40px, 40px 40px;
-  border: 1px solid rgba(158, 255, 0, 0.28);
+    radial-gradient(ellipse 80% 65% at 50% 0%, rgba(126, 217, 24, 0.1), transparent 68%),
+    linear-gradient(rgba(126, 217, 24, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(126, 217, 24, 0.04) 1px, transparent 1px);
+  background-size: 100% 100%, 44px 44px, 44px 44px;
+  border: 1px solid rgba(126, 217, 24, 0.24);
   box-shadow:
-    0 24px 80px rgba(0, 0, 0, 0.85),
-    0 0 60px rgba(158, 255, 0, 0.14);
+    0 24px 72px rgba(0, 0, 0, 0.65),
+    0 0 42px rgba(126, 217, 24, 0.08);
+  max-height: 94dvh;
+  display: flex;
+  flex-direction: column;
 }
 
 .cyberModalSurface h1,
@@ -179,21 +150,21 @@
 .cyberModalSurface input,
 .cyberModalSurface select,
 .cyberModalSurface textarea {
-  color: #f4f8f2 !important;
-  background-color: #0b1508 !important;
+  color: #f3f7f4 !important;
+  background-color: #1a2920 !important;
 }
 
 .cyberModalSurface input::placeholder,
 .cyberModalSurface textarea::placeholder {
-  color: #5c6e57 !important;
+  color: #788f7e !important;
 }
 
-/* ── Step 2: 9 Cyber-Emerald 3D Assistant Orbs (Zero Scroll, Single Viewport) ─ */
+/* ── Step 2: 9 Refined Sage-Emerald 3D Orbs (5x2 Desktop, 3x3 Tablet & Mobile!) */
 .orbGrid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 18px 14px;
-  padding: 10px 4px 6px;
+  gap: 16px 14px;
+  padding: 8px 4px 4px;
   perspective: 1100px;
 }
 
@@ -211,18 +182,18 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  width: 132px;
-  height: 132px;
+  gap: 5px;
+  width: 128px;
+  height: 128px;
   border-radius: 50%;
-  color: #f4f8f2 !important;
+  color: #f3f7f4 !important;
   background:
-    radial-gradient(circle at 34% 18%, rgba(158, 255, 0, 0.34), transparent 52%),
-    linear-gradient(145deg, #1b3312, #091306 70%);
+    radial-gradient(circle at 34% 18%, rgba(138, 224, 48, 0.28), transparent 54%),
+    linear-gradient(145deg, #243c2b, #142218 72%);
   box-shadow:
-    inset 1px 2px 4px rgba(215, 255, 140, 0.32),
-    inset -5px -10px 18px rgba(2, 6, 1, 0.8),
-    0 12px 24px -10px rgba(0, 0, 0, 0.85);
+    inset 1px 2px 4px rgba(215, 250, 175, 0.26),
+    inset -5px -10px 18px rgba(7, 13, 9, 0.72),
+    0 12px 22px -10px rgba(0, 0, 0, 0.65);
   transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s;
   z-index: 1;
   text-align: center;
@@ -236,67 +207,66 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  border: 1px solid rgba(158, 255, 0, 0.42);
+  border: 1px solid rgba(138, 224, 48, 0.34);
   pointer-events: none;
 }
 
 .orbButton:hover,
 .orbButton:focus-visible {
-  transform: translateY(-5px) scale(1.03);
+  transform: translateY(-4px) scale(1.025);
   box-shadow:
-    inset 1px 2px 5px rgba(220, 255, 160, 0.45),
-    0 16px 30px -10px rgba(158, 255, 0, 0.38);
+    inset 1px 2px 5px rgba(220, 252, 180, 0.36),
+    0 16px 28px -10px rgba(126, 217, 24, 0.3);
 }
 
 .orbHighlighted .orbButton {
   box-shadow:
-    0 0 0 2.5px #9eff00,
-    inset 1px 2px 5px rgba(220, 255, 160, 0.48),
-    0 16px 32px -8px rgba(158, 255, 0, 0.5);
+    0 0 0 2px #7ed918,
+    inset 1px 2px 5px rgba(220, 252, 180, 0.4),
+    0 16px 28px -8px rgba(126, 217, 24, 0.38);
 }
 
 .orbTitle {
-  font-size: 12px;
-  line-height: 1.22;
-  font-weight: 700;
-  max-width: 114px;
-  color: #f4f8f2 !important;
+  font-size: 11.5px;
+  line-height: 1.2;
+  font-weight: 650;
+  max-width: 112px;
+  color: #f3f7f4 !important;
   text-wrap: balance;
 }
 
 .orbIcon {
-  color: #9eff00 !important;
+  color: #8ee32b !important;
 }
 
 .orbStatus {
-  font-size: 9.5px;
+  font-size: 9px;
   font-weight: 600;
   display: inline-flex;
   gap: 4px;
   align-items: center;
-  color: #d9ffe2 !important;
-  background: rgba(18, 64, 28, 0.85);
-  border: 1px solid rgba(158, 255, 0, 0.28);
+  color: #dcfce7 !important;
+  background: rgba(24, 68, 38, 0.8);
+  border: 1px solid rgba(138, 224, 48, 0.25);
   border-radius: 20px;
-  padding: 2px 8px;
+  padding: 2px 7px;
 }
 
 .orbStatusDot {
-  width: 5px;
-  height: 5px;
+  width: 4.5px;
+  height: 4.5px;
   border-radius: 50%;
-  background: #9eff00;
-  box-shadow: 0 0 6px #9eff00;
+  background: #8ee32b;
 }
 
 .orbPlinth {
-  height: 12px;
-  width: 136px;
+  height: 11px;
+  width: 132px;
   max-width: 100%;
   border-radius: 50%;
   margin-top: -2px;
-  background: radial-gradient(ellipse at 50% 20%, rgba(158, 255, 0, 0.38), #1e3b12 48%, #071004 75%);
-  box-shadow: 0 4px 0 -2px #0b1807, 0 6px 0 -3px rgba(158, 255, 0, 0.65);
+  background: radial-gradient(ellipse at 50% 20%, rgba(138, 224, 48, 0.3), #233b29 48%, #101b13 76%);
+  box-shadow: 0 4px 0 -2px #132017, 0 6px 0 -3px rgba(126, 217, 24, 0.48);
 }
 
 .tryDemoBtn {
@@ -304,53 +274,73 @@
   align-items: center;
   justify-content: center;
   gap: 5px;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
-  min-height: 31px;
-  padding: 5px 14px;
-  margin-top: 9px;
-  color: #071004 !important;
+  min-height: 30px;
+  padding: 4px 13px;
+  margin-top: 8px;
+  color: #0e1710 !important;
   border-radius: 8px;
-  background: #9eff00;
-  border: 1px solid #bfff40;
+  background: #84de22;
+  border: 1px solid #9aea42;
   cursor: pointer;
-  transition: background 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+  transition: background 0.18s ease, transform 0.18s ease;
 }
 
 .tryDemoBtn:hover {
-  background: #bfff40;
+  background: #94e838;
   transform: translateY(-1px);
-  box-shadow: 0 0 16px rgba(158, 255, 0, 0.45);
 }
 
+/* Tablet View (3x3 clean layout) */
 @media (max-width: 960px) {
   .orbGrid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 16px 10px;
+    gap: 14px 10px;
   }
   .orbButton {
-    width: 120px;
-    height: 120px;
+    width: 116px;
+    height: 116px;
   }
   .orbPlinth {
-    width: 124px;
+    width: 120px;
   }
 }
 
+/* Mobile Phone View — 3x3 Single-Page Grid so all 9 agents fit on ONE mobile screen! */
 @media (max-width: 600px) {
   .orbGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px 8px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px 6px;
+    padding: 4px 0 2px;
   }
   .orbButton {
-    width: 112px;
-    height: 112px;
+    width: 92px;
+    height: 92px;
+    gap: 3px;
+    padding: 5px;
+  }
+  .orbIcon {
+    width: 20px !important;
+    height: 20px !important;
   }
   .orbTitle {
-    font-size: 11px;
-    max-width: 98px;
+    font-size: 9.5px;
+    line-height: 1.15;
+    max-width: 82px;
+  }
+  .orbStatus {
+    display: none;
   }
   .orbPlinth {
-    width: 116px;
+    width: 94px;
+    height: 8px;
+  }
+  .tryDemoBtn {
+    font-size: 10px;
+    min-height: 25px;
+    padding: 3px 9px;
+    margin-top: 5px;
+    border-radius: 6px;
   }
 }
