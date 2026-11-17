@@ -42,24 +42,20 @@ export async function GET() {
         id: true,
         name: true,
         description: true,
-        voiceId: true,
         isActive: true,
         metadata: true,
       },
       orderBy: { createdAt: "asc" },
     });
 
+    // Public response intentionally hides internal model & voice provider identifiers
     const formatted = assistants.map((a) => {
       const meta = (a.metadata as Record<string, unknown>) || {};
-      const vr = (meta.voiceRuntime as Record<string, unknown>) || {};
       return {
         id: a.id,
         name: a.name,
         description: a.description,
         role: (meta.roleKey as string) || "support",
-        engine: (vr.engine as string) || "gemini-live",
-        model: (vr.model as string) || "gemini-3.1-flash-live-preview",
-        voice: (vr.voice as string) || a.voiceId || "Zephyr",
         active: a.isActive,
       };
     });
@@ -115,7 +111,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // Persist lead in Contacts table
     if (lead?.phone) {
       try {
         const cleanPhone = String(lead.phone).trim();
@@ -158,7 +153,9 @@ export async function POST(request: Request) {
     const tokenData = await voiceService.demoToken(assistant.id, org.id);
     return Response.json(
       {
-        ...tokenData,
+        token: tokenData.token,
+        room: tokenData.room,
+        url: tokenData.url,
         assistant_name: assistant.name,
       },
       { status: 200, headers: CORS_HEADERS }

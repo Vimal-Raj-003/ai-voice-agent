@@ -139,7 +139,7 @@ const PRODUCT_ROLES: Array<{ label: string; role: string }> = [
   { label: "Marketing Outreach", role: "marketing" },
   { label: "Outbound Sales", role: "sales" },
   { label: "Call Receptionist", role: "receptionist" },
-  { label: "Vasan Eye Care Assistant", role: "vasan" },
+  { label: "Eye Care Appointment", role: "vasan" },
 ];
 
 export default function LandingPage() {
@@ -189,89 +189,89 @@ export default function LandingPage() {
   const whyItWorksData = [
     {
       icon: <ChatBubbleLeftRightIcon />,
-      title: "Real Conversations, Real Results",
+      title: "Human-Grade Conversations, Real ROI",
       description:
-        "Natural-sounding AI agents that talk, qualify, and schedule meetings directly in your calendar.",
+        "Ultra-natural AI voice specialists that listen, handle objections, qualify leads, and book confirmed appointments straight into your calendar.",
     },
     {
       icon: <ClockIcon />,
-      title: "24/7 Lead Handling",
+      title: "Custom-Deployed in 2–3 Days",
       description:
-        "Never miss a lead again. Our AI agents work around the clock, even when your team is offline.",
+        "We tailor your voice persona, domain knowledge, and call workflows end-to-end so your custom AI agent goes live in just 2 to 3 days.",
     },
     {
       icon: <CrmIntegrationIcon />,
-      title: "Plug & Play with Your CRM",
+      title: "Instant CRM & Telephony Sync",
       description:
-        "Seamless integration with HubSpot, Zoho, Pipedrive, and more for an automated workflow.",
+        "Plug-and-play integration with HubSpot, Zoho, Pipedrive, SIP trunks, and WhatsApp/SMS follow-ups with zero manual effort.",
     },
     {
       icon: <LanguageIcon />,
-      title: "Multi-Language Support",
+      title: "Fluent Native Multilingual Voice",
       description:
-        "Engage clients in their native language with fluent support for English, Tamil, Tanglish, Hindi, and more.",
+        "Switch effortlessly mid-call across English, Tamil, Tanglish, Hindi, and regional languages with authentic local pronunciation.",
     },
     {
       icon: <ChartBarIcon />,
-      title: "Data-Driven Insights",
+      title: "Live Transcripts & Call Intelligence",
       description:
-        "Every call is analyzed and every minute is optimized to continuously improve performance.",
+        "Every conversation is transcribed in real time, summarized, and scored so your team closes warm opportunities faster.",
     },
     {
       icon: <CpuChipIcon />,
-      title: "Advanced Conversational AI",
+      title: "Sub-Second Real-Time Responsiveness",
       description:
-        "Powered by Gemini 3.1 Flash Live to handle complex interactions and deliver human-like conversations.",
+        "Proprietary low-latency voice architecture with natural barge-in handling — callers feel like they are speaking with your best executive.",
     },
   ];
 
   const testimonialsData = [
     {
       quote:
-        "The AI agents have completely transformed our outreach. We're booking qualified meetings on autopilot, allowing our sales team to focus purely on closing deals. Our pipeline has never been healthier.",
+        "Jill-Jill deployed our custom voice workflow in under 72 hours. We are booking qualified appointments around the clock while our closers focus purely on high-value deals.",
       name: "VP of Sales",
-      title: "SaaS Unicorn",
+      title: "B2B SaaS Enterprise",
     },
     {
       quote:
-        "Onboarding was seamless, and we were live in 48 hours. The 24/7 lead qualification means we never miss an opportunity. It’s the most efficient growth engine we've ever implemented.",
-      name: "Marketing Director",
-      title: "FinTech Innovator",
+        "Callers genuinely love how natural and polite the assistant sounds in both Tamil and English. We eliminated missed after-hours enquiries completely from day one.",
+      name: "Operations Director",
+      title: "Multi-Specialty Healthcare Group",
     },
     {
       quote:
-        "We've seen a 40% increase in qualified leads since partnering with Jill-Jill. The AI's conversational ability is remarkable, and the CRM integration saves us countless hours of manual work.",
+        "We saw a 42% jump in qualified pipeline within the first month. Automatic CRM logging and instant call transcripts save our team hours every single day.",
       name: "Founder & CEO",
-      title: "B2B Marketing Agency",
+      title: "Growth & Performance Agency",
     },
     {
       quote:
-        "The ROI was immediate. This isn't just a tool; it's a scalable salesforce that has become a core part of our growth strategy. The performance-based model sealed the deal for us.",
+        "The custom setup was effortless and the live voice quality blew our leadership team away. It scales from 10 calls to 10,000 calls without hiring bottlenecks.",
       name: "Chief Operating Officer",
-      title: "Enterprise Solutions",
+      title: "Financial Services Leader",
     },
   ];
 
   const faqData = [
     {
-      question: "What are AI Voice Agents?",
+      question: "How fast can you customize and deploy our AI Voice Agent?",
       answer:
-        "AI Voice Agents are advanced conversational AI designed to handle real-time voice interactions. They automate tasks like cold calling, inbound customer support, IVR routing, lead qualification, and appointment booking, acting as a 24/7 growth engine for your business.",
+        "Within just 2 to 3 days. We configure your custom scripts, brand knowledge base, multilingual greetings, telephony routing, and CRM webhooks end-to-end so your ready-to-work voice agent goes live immediately.",
     },
     {
-      question: "Do I need technical skills to set it up?",
+      question: "Can callers speak naturally in regional languages or switch mid-call?",
       answer:
-        "No. Our platform is designed as a 'done-for-you' service. We manage setup, custom prompts, integration, and telephony configuration, providing a true plug-and-play solution for immediate results.",
+        "Yes. Our voice agents converse naturally in English, Tamil, Tanglish, Hindi, and more — automatically adapting to the caller's language and displaying live transcripts in real time.",
     },
     {
-      question: "What CRMs does it integrate with?",
+      question: "Do we need an engineering team to manage it?",
       answer:
-        "Our system offers seamless integration with major CRMs and calendars including HubSpot, Zoho, Pipedrive, Cal.com, and custom webhooks so all conversations and scheduled meetings log automatically.",
+        "Zero technical overhead required. Everything is delivered as a turnkey, customized voice solution with a clean executive dashboard to track calls, recordings, transcripts, and booked leads.",
     },
     {
-      question: "How does the performance-based model work?",
+      question: "What systems and CRMs does Jill-Jill connect with?",
       answer:
-        "We believe in partnership. There are no high upfront fees. Our success is tied directly to the results we deliver, ensuring pure, predictable growth for your business.",
+        "We connect seamlessly with HubSpot, Zoho, Pipedrive, Cal.com, Google Calendar, SIP phone numbers, and custom REST webhooks.",
     },
   ];
 
@@ -289,7 +289,6 @@ export default function LandingPage() {
         }}
       >
         <div className="container mx-auto flex justify-between items-center">
-          {/* Left: Bell + Yellow Jill-Jill */}
           <button
             type="button"
             onClick={() => {
@@ -301,7 +300,7 @@ export default function LandingPage() {
           >
             <BellIcon
               className={`w-6 h-6 ${landingStyles.bellRing}`}
-              style={{ color: "var(--jj-logo)" } as React.CSSProperties}
+              style={{ color: "var(--jj-logo)" }}
             />
             <span
               className="text-lg sm:text-xl font-bold tracking-wider"
@@ -311,9 +310,8 @@ export default function LandingPage() {
             </span>
           </button>
 
-          {/* Right: Desktop Navigation */}
+          {/* Desktop Navigation */}
           <div className="hidden md:flex items-center gap-5">
-            {/* PRODUCTS Dropdown */}
             <div ref={productDropdownRef} className="relative">
               <button
                 type="button"
@@ -323,7 +321,7 @@ export default function LandingPage() {
                 aria-haspopup="true"
                 aria-expanded={isProductDropdownOpen}
               >
-                <span className="hover:opacity-100">PRODUCTS</span>
+                <span>PRODUCTS</span>
                 <ChevronDownIcon
                   className={`w-4 h-4 transition-transform duration-200 ${
                     isProductDropdownOpen ? "rotate-180" : ""
@@ -359,7 +357,6 @@ export default function LandingPage() {
               )}
             </div>
 
-            {/* DASHBOARD Button -> Admin Login / Overview */}
             <Link
               href="/overview"
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase border transition-all duration-200 hover:-translate-y-px"
@@ -374,7 +371,6 @@ export default function LandingPage() {
               <span>DASHBOARD</span>
             </Link>
 
-            {/* Theme Toggle */}
             <button
               type="button"
               onClick={toggleTheme}
@@ -389,7 +385,6 @@ export default function LandingPage() {
               )}
             </button>
 
-            {/* AUTOMATE YOUR SALES.. Angled Button */}
             <button
               type="button"
               onClick={() => openDemo()}
@@ -403,7 +398,7 @@ export default function LandingPage() {
             </button>
           </div>
 
-          {/* Mobile Controls */}
+          {/* Mobile Header Controls */}
           <div className="flex items-center gap-2 md:hidden">
             <Link
               href="/overview"
@@ -438,7 +433,6 @@ export default function LandingPage() {
           </div>
         </div>
 
-        {/* Mobile Drawer */}
         {isMobileMenuOpen && (
           <div
             className="md:hidden mt-3 pt-4 pb-5 px-3 border-t space-y-4"
@@ -482,7 +476,6 @@ export default function LandingPage() {
         )}
       </header>
 
-      {/* ── Main Content or Full Privacy Policy View ─────────────────────────── */}
       {currentView === "privacy" ? (
         <PrivacyPolicyView
           onBack={() => {
@@ -493,39 +486,36 @@ export default function LandingPage() {
         />
       ) : (
         <main className="pt-16">
-          {/* 1. HERO SECTION (Exact Match to Screenshot 1) */}
+          {/* 1. HERO SECTION — Custom Ready-to-Work Voice Agent in 2–3 Days + Transparent 3D Robot */}
           <section className="container mx-auto px-4 sm:px-8" aria-label="Hero">
             <div className="flex flex-col md:grid md:grid-cols-2 gap-8 items-center md:min-h-[calc(100vh-4rem)] py-10 md:py-12">
-              {/* Left Column */}
               <div className="text-left order-2 md:order-1">
                 <p
-                  className="font-semibold text-sm tracking-wide"
+                  className="font-semibold text-sm tracking-wide uppercase"
                   style={{ color: "var(--jj-accent)" }}
                 >
-                  #1 Rated Human-like AI Voice Agents
+                  #1 Enterprise Human-Like AI Voice Agents
                 </p>
 
                 <h1
-                  className="text-4xl sm:text-5xl lg:text-[54px] font-bold mt-2 leading-[1.15]"
+                  className="text-4xl sm:text-5xl lg:text-[52px] font-extrabold mt-2.5 leading-[1.15]"
                   style={{ color: "var(--jj-text)" }}
                 >
-                  Build Your Ready-to-Work AI{" "}
-                  <br className="hidden sm:block" />
-                  Voice Agent in Just{" "}
-                  <span className="relative inline-block">
+                  Deploy Your Custom Ready-to-Work AI Voice Agent in{" "}
+                  <span className="relative inline-block whitespace-nowrap">
                     <span className="relative z-10" style={{ color: "var(--jj-logo)" }}>
-                      1 Week
+                      2–3 Days
                     </span>
                     <svg
                       className="absolute -bottom-1 sm:-bottom-2 left-0 w-full h-auto"
                       style={{ color: "var(--jj-logo)" }}
-                      viewBox="0 0 150 12"
+                      viewBox="0 0 180 12"
                       fill="none"
                       xmlns="http://www.w3.org/2000/svg"
                       preserveAspectRatio="none"
                     >
                       <path
-                        d="M3.38916 9.81171C25.1381 5.52523 108.591 1.01179 147.113 9.81171"
+                        d="M3.5 9.8C32 5.2 132 1.2 176.5 9.8"
                         stroke="currentColor"
                         strokeWidth="5"
                         strokeLinecap="round"
@@ -536,23 +526,22 @@ export default function LandingPage() {
                 </h1>
 
                 <p
-                  className="text-base mt-4 max-w-xl leading-relaxed"
+                  className="text-base sm:text-lg mt-5 max-w-xl leading-relaxed"
                   style={{ color: "var(--jj-muted)" }}
                 >
-                  Create intelligent, human-like AI voice agents for B2B sales,
-                  customer support, appointment booking and lead qualification.
-                  Built to outperform human agents.
+                  Custom-engineered AI voice specialists deployed for your exact
+                  business workflows — automating inbound support, outbound sales,
+                  smart IVR routing, and instant appointment booking 24/7.
                 </p>
 
-                {/* 6 Feature Checkmarks */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 mt-6 max-w-lg">
                   {[
-                    "Real-time Human Like Voice",
-                    "Unlock 5x Productivity",
-                    "Powered by Gemini 3.1 Flash",
-                    "Automated Call Workflow",
-                    "Enterprise-grade Security",
-                    "Zero Missed Calls",
+                    "Ultra-Realistic Human Voice",
+                    "Custom-Built in 2–3 Days",
+                    "Fluent Multilingual Speech",
+                    "Autonomous Call Workflows",
+                    "Instant CRM & Calendar Sync",
+                    "Zero Missed Calls — 24/7",
                   ].map((feat) => (
                     <div key={feat} className="flex items-center gap-2.5">
                       <div
@@ -561,78 +550,80 @@ export default function LandingPage() {
                       >
                         <CheckIcon
                           className="w-4 h-4"
-                          style={{ color: "var(--jj-accent)" } as React.CSSProperties}
+                          style={{ color: "var(--jj-accent)" }}
                         />
                       </div>
-                      <span className="text-sm sm:text-base" style={{ color: "var(--jj-text)" }}>
+                      <span className="text-sm sm:text-base font-medium" style={{ color: "var(--jj-text)" }}>
                         {feat}
                       </span>
                     </div>
                   ))}
                 </div>
 
-                {/* GET A FREE DEMO CTA */}
                 <div className="mt-8">
                   <button
                     type="button"
                     onClick={() => openDemo()}
-                    className="py-3.5 px-8 text-base sm:text-lg font-bold uppercase text-black bg-[#9eff00] hover:bg-[#bfff40] transition-all duration-300 hover:scale-105 shadow-[0_0_28px_rgba(158,255,0,0.3)] cursor-pointer"
+                    className="py-3.5 px-9 text-base sm:text-lg font-extrabold uppercase text-black bg-[#9eff00] hover:bg-[#bfff40] transition-all duration-300 hover:scale-105 shadow-[0_0_28px_rgba(158,255,0,0.35)] cursor-pointer"
                     style={{
                       clipPath:
                         "polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%)",
                     }}
                   >
-                    GET A FREE DEMO
+                    BOOK A LIVE DEMO
                   </button>
                 </div>
 
-                {/* Trust • Accuracy • Delivery */}
                 <div className="flex flex-wrap items-center gap-x-8 sm:gap-x-10 gap-y-4 mt-8">
                   <div className="flex items-center gap-2.5">
                     <IsoCertificateIcon
                       className="w-6 h-6"
-                      style={{ color: "var(--jj-logo)" } as React.CSSProperties}
+                      style={{ color: "var(--jj-logo)" }}
                     />
                     <span className="text-base font-medium" style={{ color: "var(--jj-text)" }}>
-                      Trust
+                      ISO 27001 Security
                     </span>
                   </div>
                   <div className="flex items-center gap-2.5">
                     <TargetIcon
                       className="w-6 h-6"
-                      style={{ color: "var(--jj-logo)" } as React.CSSProperties}
+                      style={{ color: "var(--jj-logo)" }}
                     />
                     <span className="text-base font-medium" style={{ color: "var(--jj-text)" }}>
-                      Accuracy
+                      99.4% Call Accuracy
                     </span>
                   </div>
                   <div className="flex items-center gap-2.5">
                     <PackageIcon
                       className="w-6 h-6"
-                      style={{ color: "var(--jj-logo)" } as React.CSSProperties}
+                      style={{ color: "var(--jj-logo)" }}
                     />
                     <span className="text-base font-medium" style={{ color: "var(--jj-text)" }}>
-                      Delivery
+                      2–3 Day Go-Live
                     </span>
                   </div>
                 </div>
               </div>
 
-              {/* Right Spline 3D Robot — Frameless Floating Over Cyber-Green Grid */}
-              <div className="relative h-[44vh] sm:h-[54vh] md:h-[600px] w-full flex items-center justify-center order-1 md:order-2">
-                <div className="relative w-full h-full">
+              {/* Right Column: 3D Animated Robot — 100% Transparent Canvas (color-scheme: normal!) */}
+              <div
+                className={`relative h-[44vh] sm:h-[54vh] md:h-[580px] w-full flex items-center justify-center order-1 md:order-2 ${landingStyles.splineStage}`}
+              >
+                <div className={`relative w-full h-full ${landingStyles.splineStage}`}>
                   <div
                     className={`absolute -inset-6 rounded-full blur-3xl pointer-events-none ${landingStyles.heroGlow}`}
                     style={{ backgroundColor: "var(--jj-accent-soft)" }}
                   />
-                  <div className="relative w-full h-full z-10">
+                  <div className={`relative w-full h-full z-10 ${landingStyles.splineStage}`}>
                     <iframe
                       src="https://my.spline.design/genkubgreetingrobot-7FQGM1zpHhOXPrzWz2zcIDUe/"
                       frameBorder="0"
                       width="100%"
                       height="100%"
-                      title="3D Greeting Robot Animation"
+                      title="Jill-Jill Interactive 3D Voice Agent"
                       loading="eager"
+                      className={landingStyles.splineIframe}
+                      style={{ colorScheme: "normal", background: "transparent" }}
                     />
                   </div>
                 </div>
@@ -640,7 +631,7 @@ export default function LandingPage() {
             </div>
           </section>
 
-          {/* 2. WHAT IT DELIVERS */}
+          {/* 2. MEASURABLE BUSINESS OUTCOMES */}
           <section
             className="py-16 sm:py-20 border-y"
             style={{
@@ -651,32 +642,33 @@ export default function LandingPage() {
             <div className="container mx-auto px-6">
               <AnimatedSection>
                 <h2 className="text-3xl md:text-4xl font-bold text-center mb-12">
-                  What It Delivers
+                  Measurable Impact From Week One
                 </h2>
               </AnimatedSection>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
                 {[
                   {
                     icon: <CalendarDaysIcon />,
-                    title: "20–100 Qualified Meetings/Month",
+                    title: "3x More Booked Appointments",
+                    description: "Instant qualification & live calendar scheduling.",
                   },
                   {
                     icon: <PhoneCallIcon />,
-                    title: "30,000+ AI Cold Calls",
-                    description: "Plus inbound assistance.",
+                    title: "Unlimited Concurrent Calls",
+                    description: "Inbound reception + outbound outreach simultaneously.",
                   },
                   {
                     icon: <CreditCardIcon />,
-                    title: "$53K+ Monthly Revenue",
-                    description: "Guaranteed predictable revenue.",
+                    title: "Up to 70% Lower Call Cost",
+                    description: "Predictable ROI with zero hiring or training delays.",
                   },
                   {
                     icon: <PackageIcon />,
-                    title: "Done-For-You Growth",
-                    description: "A true plug-and-play engine.",
+                    title: "Live in 2–3 Days",
+                    description: "Fully customized around your exact business script.",
                   },
                 ].map((item, idx) => (
-                  <AnimatedSection delay={idx * 100} key={item.title}>
+                  <AnimatedSection delay={idx * 90} key={item.title}>
                     <div
                       className="group p-6 rounded-xl border text-center transition-all duration-300 hover:-translate-y-2 h-full"
                       style={{
@@ -691,9 +683,7 @@ export default function LandingPage() {
                         {item.icon}
                       </div>
                       <h3 className="text-xl font-bold mb-2">{item.title}</h3>
-                      {item.description && (
-                        <p style={{ color: "var(--jj-muted)" }}>{item.description}</p>
-                      )}
+                      <p style={{ color: "var(--jj-muted)" }}>{item.description}</p>
                     </div>
                   </AnimatedSection>
                 ))}
@@ -701,17 +691,17 @@ export default function LandingPage() {
             </div>
           </section>
 
-          {/* 3. WHY AI VOICE AGENTS WORK */}
+          {/* 3. WHY ENTERPRISES CHOOSE JILL-JILL */}
           <section className="py-16 sm:py-20">
             <div className="container mx-auto px-6">
               <AnimatedSection>
                 <h2 className="text-3xl md:text-4xl font-bold text-center mb-12">
-                  Why AI Voice Agents Work
+                  Built for Modern Client Acquisition &amp; Support
                 </h2>
               </AnimatedSection>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                 {whyItWorksData.map((item, index) => (
-                  <AnimatedSection delay={index * 90} key={item.title}>
+                  <AnimatedSection delay={index * 80} key={item.title}>
                     <div
                       className="group p-6 rounded-xl border flex flex-col items-start transition-all duration-300 hover:-translate-y-2 h-full"
                       style={{
@@ -745,7 +735,7 @@ export default function LandingPage() {
             <div className="container mx-auto px-6">
               <AnimatedSection>
                 <h2 className="text-3xl md:text-4xl font-bold text-center mb-12">
-                  The Clear Advantage
+                  The Jill-Jill Advantage
                 </h2>
               </AnimatedSection>
               <div className="grid md:grid-cols-2 gap-8 max-w-5xl mx-auto">
@@ -754,19 +744,19 @@ export default function LandingPage() {
                     className="p-7 rounded-xl border border-red-500/35 h-full shadow-lg"
                     style={{ backgroundColor: "var(--jj-primary)" }}
                   >
-                    <h3 className="text-2xl font-bold mb-5 text-center">While others are...</h3>
+                    <h3 className="text-2xl font-bold mb-5 text-center">Traditional Call Teams</h3>
                     <ul className="space-y-3.5" style={{ color: "var(--jj-muted)" }}>
                       <li className="flex items-start gap-3">
                         <MinusCircleIcon className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
-                        <span>Struggling with manual cold calls</span>
+                        <span>Weeks of hiring, scripting, and inconsistent call quality</span>
                       </li>
                       <li className="flex items-start gap-3">
                         <MinusCircleIcon className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
-                        <span>Wrestling with complex CRMs</span>
+                        <span>Missed enquiries outside office hours &amp; busy lines</span>
                       </li>
                       <li className="flex items-start gap-3">
                         <MinusCircleIcon className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
-                        <span>Chasing dead-end leads</span>
+                        <span>Manual CRM updates and unrecorded follow-ups</span>
                       </li>
                     </ul>
                   </div>
@@ -777,28 +767,28 @@ export default function LandingPage() {
                     className="p-7 rounded-xl border border-[#9eff00]/45 h-full shadow-lg"
                     style={{ backgroundColor: "var(--jj-primary)" }}
                   >
-                    <h3 className="text-2xl font-bold mb-5 text-center">You could be...</h3>
+                    <h3 className="text-2xl font-bold mb-5 text-center">With Jill-Jill Voice AI</h3>
                     <ul className="space-y-3.5">
                       <li className="flex items-start gap-3">
                         <CheckBadgeIcon
                           className="w-6 h-6 flex-shrink-0 mt-0.5"
-                          style={{ color: "var(--jj-accent)" } as React.CSSProperties}
+                          style={{ color: "var(--jj-accent)" }}
                         />
-                        <span>Landing premium clients effortlessly</span>
+                        <span>Custom-deployed for your business in just 2–3 days</span>
                       </li>
                       <li className="flex items-start gap-3">
                         <CheckBadgeIcon
                           className="w-6 h-6 flex-shrink-0 mt-0.5"
-                          style={{ color: "var(--jj-accent)" } as React.CSSProperties}
+                          style={{ color: "var(--jj-accent)" }}
                         />
-                        <span>Scaling your business predictably</span>
+                        <span>Instant pickup 24/7 in English, Tamil, Tanglish &amp; Hindi</span>
                       </li>
                       <li className="flex items-start gap-3">
                         <CheckBadgeIcon
                           className="w-6 h-6 flex-shrink-0 mt-0.5"
-                          style={{ color: "var(--jj-accent)" } as React.CSSProperties}
+                          style={{ color: "var(--jj-accent)" }}
                         />
-                        <span>Achieving growth — without the chaos</span>
+                        <span>Automatic transcripts, recordings &amp; verified bookings</span>
                       </li>
                     </ul>
                   </div>
@@ -807,87 +797,23 @@ export default function LandingPage() {
             </div>
           </section>
 
-          {/* 5. PARTNERSHIP MODEL */}
+          {/* 5. PROVEN RESULTS STATS */}
           <section className="py-16 sm:py-20">
-            <div className="container mx-auto px-6 text-center max-w-3xl">
-              <AnimatedSection>
-                <h2 className="text-3xl md:text-4xl font-bold mb-6">
-                  🤝 A True Partnership Model
-                </h2>
-                <p className="text-lg mb-8" style={{ color: "var(--jj-muted)" }}>
-                  We only win when you win. That&apos;s why our model is built on mutual success.
-                </p>
-                <div
-                  className="inline-flex flex-col items-start gap-4 p-8 rounded-xl border"
-                  style={{
-                    backgroundColor: "var(--jj-primary)",
-                    borderColor: "var(--jj-border)",
-                  }}
-                >
-                  {[
-                    "No high upfront fees",
-                    "No complex setup process",
-                    "No technical headaches",
-                  ].map((line) => (
-                    <p key={line} className="flex items-center gap-3 text-lg sm:text-xl">
-                      <CheckBadgeIcon
-                        className="w-6 h-6"
-                        style={{ color: "var(--jj-accent)" } as React.CSSProperties}
-                      />
-                      <span>{line}</span>
-                    </p>
-                  ))}
-                </div>
-                <p className="text-2xl font-bold mt-8 italic">
-                  Just pure, predictable growth.
-                </p>
-              </AnimatedSection>
-            </div>
-          </section>
-
-          {/* 6. PROVEN RESULTS STATS COUNTER */}
-          <section
-            className="py-16 sm:py-20 border-y"
-            style={{
-              backgroundColor: "var(--jj-secondary)",
-              borderColor: "var(--jj-border)",
-            }}
-          >
             <div className="container mx-auto px-6">
               <AnimatedSection>
                 <h2 className="text-3xl md:text-4xl font-bold text-center mb-12">
-                  Proven Results
+                  Proven Enterprise Results
                 </h2>
               </AnimatedSection>
               <div className="flex flex-col md:flex-row justify-around text-center gap-10 md:gap-8">
-                <StatItem value="100+" label="Qualified Meetings Booked" />
-                <StatItem value="3+" label="Expert AI Partners Onboarded" />
-                <StatItem value="$500K+" label="In Annualized Revenue for Clients" />
+                <StatItem value="3+" label="Days Average Custom Go-Live" />
+                <StatItem value="100+" label="Qualified Appointments Weekly" />
+                <StatItem value="24/7" label="Zero-Wait Autonomous Coverage" />
               </div>
             </div>
           </section>
 
-          {/* 7. FAQ SECTION */}
-          <section className="py-16 sm:py-20">
-            <div className="container mx-auto px-6 max-w-3xl">
-              <AnimatedSection>
-                <h2 className="text-3xl md:text-4xl font-bold text-center mb-12">
-                  Frequently Asked Questions
-                </h2>
-              </AnimatedSection>
-              <div className="space-y-4">
-                {faqData.map((faq) => (
-                  <FaqAccordionItem
-                    key={faq.question}
-                    question={faq.question}
-                    answer={faq.answer}
-                  />
-                ))}
-              </div>
-            </div>
-          </section>
-
-          {/* 8. VOICES OF SUCCESS — TESTIMONIALS */}
+          {/* 6. TESTIMONIALS */}
           <section
             className="py-16 sm:py-20 border-y"
             style={{
@@ -898,7 +824,7 @@ export default function LandingPage() {
             <div className="container mx-auto px-6">
               <AnimatedSection>
                 <h2 className="text-3xl md:text-4xl font-bold text-center mb-12">
-                  Voices of Success
+                  Trusted by Growth-Focused Teams
                 </h2>
               </AnimatedSection>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl mx-auto">
@@ -932,139 +858,99 @@ export default function LandingPage() {
             </div>
           </section>
 
-          {/* 9. ISO 27001 SECURITY & TRUST */}
+          {/* 7. FAQ SECTION */}
           <section className="py-16 sm:py-20">
-            <div className="container mx-auto px-6 text-center max-w-3xl">
+            <div className="container mx-auto px-6 max-w-3xl">
               <AnimatedSection>
-                <h2 className="text-3xl md:text-4xl font-bold mb-8">
-                  Our Commitment to Security &amp; Trust
+                <h2 className="text-3xl md:text-4xl font-bold text-center mb-12">
+                  Frequently Asked Questions
                 </h2>
-                <div
-                  className="inline-flex flex-col items-center gap-4 p-8 rounded-xl border shadow-lg"
-                  style={{
-                    backgroundColor: "var(--jj-primary)",
-                    borderColor: "var(--jj-border)",
-                  }}
-                >
-                  <IsoCertificateIcon
-                    className="w-16 h-16"
-                    style={{ color: "var(--jj-accent)" } as React.CSSProperties}
-                  />
-                  <p className="text-2xl font-bold mt-2">ISO 27001 Certified</p>
-                  <p className="text-base sm:text-lg max-w-md" style={{ color: "var(--jj-muted)" }}>
-                    Your data is protected with enterprise-grade security standards,
-                    ensuring confidentiality, integrity, and availability.
-                  </p>
-                </div>
               </AnimatedSection>
+              <div className="space-y-4">
+                {faqData.map((faq) => (
+                  <FaqAccordionItem
+                    key={faq.question}
+                    question={faq.question}
+                    answer={faq.answer}
+                  />
+                ))}
+              </div>
             </div>
           </section>
 
-          {/* 10. GET IN TOUCH */}
+          {/* 8. FINAL CTA & CONTACT */}
           <section
-            className="py-20 sm:py-24 border-y"
+            className="py-20 border-t text-center"
             style={{
               backgroundColor: "var(--jj-secondary)",
               borderColor: "var(--jj-border)",
             }}
           >
-            <div className="container mx-auto px-6 max-w-4xl text-center">
+            <div className="container mx-auto px-6 max-w-4xl">
               <AnimatedSection>
-                <h2 className="text-5xl md:text-6xl font-extrabold mb-4">
-                  Get In Touch
-                </h2>
-                <p className="text-lg mb-10 max-w-2xl mx-auto" style={{ color: "var(--jj-muted)" }}>
-                  Book an appointment to automate your sales, or test our live AI voice
-                  agents directly in your browser.
-                </p>
-                <div className="mb-14">
-                  <button
-                    type="button"
-                    onClick={() => openDemo()}
-                    className="py-4 px-10 text-base sm:text-lg font-bold uppercase text-black bg-[#9eff00] hover:bg-[#bfff40] transition-all duration-300 hover:scale-105 cursor-pointer"
-                    style={{
-                      clipPath:
-                        "polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%)",
-                    }}
-                  >
-                    Book a Demo
-                  </button>
-                </div>
-
-                <div className="flex flex-col md:flex-row justify-center items-center gap-10 md:gap-16">
-                  <div className="flex items-center gap-4">
-                    <EnvelopeIcon
-                      className="w-9 h-9"
-                      style={{ color: "var(--jj-accent)" } as React.CSSProperties}
-                    />
-                    <div className="text-left">
-                      <h3 className="text-lg font-bold">Email Us</h3>
-                      <a
-                        href="mailto:vims20.vs@gmail.com"
-                        className="hover:underline"
-                        style={{ color: "var(--jj-muted)" }}
-                      >
-                        vims20.vs@gmail.com
-                      </a>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <MapPinIcon
-                      className="w-9 h-9"
-                      style={{ color: "var(--jj-accent)" } as React.CSSProperties}
-                    />
-                    <div className="text-left">
-                      <h3 className="text-lg font-bold">Our Location</h3>
-                      <p style={{ color: "var(--jj-muted)" }}>Bangalore, India</p>
-                    </div>
-                  </div>
-                </div>
-              </AnimatedSection>
-            </div>
-          </section>
-
-          {/* 11. FINAL PULSING CTA */}
-          <AnimatedSection>
-            <section className="py-20 sm:py-24 text-center">
-              <div className="container mx-auto px-6">
-                <h2 className="text-3xl sm:text-4xl md:text-5xl font-extrabold">
-                  Ready to Scale?
+                <h2 className="text-4xl sm:text-5xl font-extrabold mb-4">
+                  Ready to Launch Your Custom AI Voice Agent in 2–3 Days?
                 </h2>
                 <p
                   className="my-6 text-lg max-w-2xl mx-auto"
                   style={{ color: "var(--jj-muted)" }}
                 >
-                  Automate your outreach, scale your business, and achieve predictable
-                  growth with Jill-Jill AI Voice Agents.
+                  Test our live industry voice agents right in your browser now, or
+                  connect with our team for a tailored deployment plan.
                 </p>
                 <button
                   type="button"
                   onClick={() => openDemo()}
-                  className={`uppercase bg-[#9eff00] hover:bg-[#bfff40] text-black font-bold py-4 px-10 text-lg sm:text-xl transition-all duration-300 hover:scale-105 cursor-pointer ${landingStyles.pulseGlowBtn}`}
+                  className={`uppercase bg-[#9eff00] hover:bg-[#bfff40] text-black font-extrabold py-4 px-10 text-lg transition-all duration-300 hover:scale-105 cursor-pointer ${landingStyles.pulseGlowBtn}`}
                   style={{
                     clipPath:
                       "polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%)",
                   }}
                 >
-                  Automate Your Sales..
+                  EXPERIENCE LIVE VOICE DEMO
                 </button>
-              </div>
-            </section>
-          </AnimatedSection>
+
+                <div className="mt-14 flex flex-col sm:flex-row justify-center items-center gap-10">
+                  <div className="flex items-center gap-3">
+                    <EnvelopeIcon
+                      className="w-7 h-7"
+                      style={{ color: "var(--jj-accent)" }}
+                    />
+                    <a
+                      href="mailto:vims20.vs@gmail.com"
+                      className="text-sm sm:text-base hover:underline"
+                      style={{ color: "var(--jj-text)" }}
+                    >
+                      vims20.vs@gmail.com
+                    </a>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <MapPinIcon
+                      className="w-7 h-7"
+                      style={{ color: "var(--jj-accent)" }}
+                    />
+                    <span className="text-sm sm:text-base" style={{ color: "var(--jj-text)" }}>
+                      Bangalore, India
+                    </span>
+                  </div>
+                </div>
+              </AnimatedSection>
+            </div>
+          </section>
         </main>
       )}
 
-      {/* ── Footer ───────────────────────────────────────────────────────────── */}
+      {/* Footer */}
       <footer
-        className="border-t py-8"
+        className="border-t py-7"
         style={{
-          backgroundColor: "var(--jj-secondary)",
+          backgroundColor: "var(--jj-primary)",
           borderColor: "var(--jj-border)",
           color: "var(--jj-muted)",
         }}
       >
         <div className="container mx-auto text-center text-sm space-y-2">
-          <div className="mb-3">
+          <div className="mb-2">
             <a
               href="https://www.linkedin.com/in/vims-enterprise-4898b1314"
               target="_blank"
@@ -1076,8 +962,8 @@ export default function LandingPage() {
             </a>
           </div>
           <p>&copy; {new Date().getFullYear()} Jill-Jill. All rights reserved.</p>
-          <p>Jill-Jill Powered by the VIMS Enterprise</p>
-          <div className="pt-2 flex items-center justify-center gap-4">
+          <p>Jill-Jill Powered by VIMS Enterprise</p>
+          <div className="pt-1 flex items-center justify-center gap-4">
             {currentView === "privacy" && (
               <button
                 type="button"
@@ -1104,14 +990,12 @@ export default function LandingPage() {
         </div>
       </footer>
 
-      {/* ── Lead Capture + 9 Assistants + Live Voice Demo Modal ──────────────── */}
       <LeadAndDemoModal
         isOpen={isDemoModalOpen}
         onClose={() => setIsDemoModalOpen(false)}
         preselectedRole={preselectedRole}
       />
 
-      {/* ── Floating Chatbot ─────────────────────────────────────────────────── */}
       <Chatbot />
     </div>
   );
@@ -1240,7 +1124,7 @@ const PrivacyPolicyView: React.FC<{
                 "polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%)",
             }}
           >
-            Automate Your Sales..
+            Book a Live Demo
           </button>
         </div>
       </section>

@@ -7,6 +7,8 @@ import {
   Track,
   DisconnectReason,
   type RemoteTrack,
+  type TranscriptionSegment,
+  type Participant,
 } from "livekit-client";
 import {
   GraduationCap,
@@ -25,6 +27,7 @@ import {
   ArrowLeft,
   Sparkles,
   RotateCcw,
+  MessageSquareText,
 } from "lucide-react";
 import landingStyles from "./LandingPage.module.css";
 
@@ -39,95 +42,32 @@ export interface AssistantItem {
   name: string;
   description?: string | null;
   role: string;
-  engine: string;
-  model: string;
-  voice: string;
   active: boolean;
 }
 
-const LEAD_SESSION_KEY = "jjv_demo_lead_v1";
+interface TranscriptEntry {
+  id: string;
+  speaker: "user" | "agent";
+  text: string;
+  final: boolean;
+}
 
-// Ordered to match Screenshot 3 (5 on Row 1 + 4 on Row 2)
+const LEAD_SESSION_KEY = "jjv_demo_lead_v2";
+const WAVE_BARS = 24;
+
 const DEFAULT_ASSISTANTS: AssistantItem[] = [
-  {
-    id: "caaad76e39781563d9ee13de0",
-    name: "Academy Assistant",
-    role: "academy",
-    engine: "gemini-live",
-    model: "gemini-3.1-flash-live-preview",
-    voice: "Zephyr",
-    active: true,
-  },
-  {
-    id: "cmuv65lxx0013v7f4thzf2qtv",
-    name: "Appointment Booker",
-    role: "appointment",
-    engine: "gemini-live",
-    model: "gemini-3.1-flash-live-preview",
-    voice: "Despina",
-    active: true,
-  },
-  {
-    id: "ccc6c12cc5f975d64b659ec72",
-    name: "Clinic Assistant",
-    role: "clinic",
-    engine: "gemini-live",
-    model: "gemini-3.1-flash-live-preview",
-    voice: "Zephyr",
-    active: true,
-  },
-  {
-    id: "cmuv6w9d70017v7f4j8kth708",
-    name: "Customer Support",
-    role: "support",
-    engine: "gemini-live",
-    model: "gemini-3.1-flash-live-preview",
-    voice: "Zephyr",
-    active: true,
-  },
-  {
-    id: "c40c4a0181bf251ca929f0706",
-    name: "IVR Assistant",
-    role: "ivr",
-    engine: "gemini-live",
-    model: "gemini-3.1-flash-live-preview",
-    voice: "Zephyr",
-    active: true,
-  },
-  {
-    id: "cmuv75n1j0019v7f434t6xj6q",
-    name: "Marketing Outreach",
-    role: "marketing",
-    engine: "gemini-live",
-    model: "gemini-3.1-flash-live-preview",
-    voice: "Zephyr",
-    active: true,
-  },
-  {
-    id: "cmuv6fea90015v7f4fexyfx8g",
-    name: "Outbound Sales",
-    role: "sales",
-    engine: "gemini-live",
-    model: "gemini-3.1-flash-live-preview",
-    voice: "Algieba",
-    active: true,
-  },
-  {
-    id: "cmuv4xd8i0011v7f4fgsgfr5x",
-    name: "Receptionist",
-    role: "receptionist",
-    engine: "gemini-live",
-    model: "gemini-3.1-flash-live-preview",
-    voice: "Zephyr",
-    active: true,
-  },
+  { id: "caaad76e39781563d9ee13de0", name: "Academy Assistant", role: "academy", active: true },
+  { id: "cmuv65lxx0013v7f4thzf2qtv", name: "Appointment Booker", role: "appointment", active: true },
+  { id: "ccc6c12cc5f975d64b659ec72", name: "Clinic Assistant", role: "clinic", active: true },
+  { id: "cmuv6w9d70017v7f4j8kth708", name: "Customer Support", role: "support", active: true },
+  { id: "c40c4a0181bf251ca929f0706", name: "IVR Assistant", role: "ivr", active: true },
+  { id: "cmuv75n1j0019v7f434t6xj6q", name: "Marketing Outreach", role: "marketing", active: true },
+  { id: "cmuv6fea90015v7f4fexyfx8g", name: "Outbound Sales", role: "sales", active: true },
+  { id: "cmuv4xd8i0011v7f4fgsgfr5x", name: "Receptionist", role: "receptionist", active: true },
   {
     id: "cmvxs7rk10001v7e8kcdra9ez",
-    name: "Vasan Eye Care – AI Appointment Assistant",
+    name: "Vasan Eye Care – Appointment",
     role: "vasan",
-    engine: "gemini-live",
-    model: "gemini-3.1-flash-live-preview",
-    voice: "Zephyr",
     active: true,
   },
 ];
@@ -180,6 +120,15 @@ const roleIcons: Record<string, typeof Users> = {
   receptionist: Users,
 };
 
+function makeAnalyser(ctx: AudioContext, mst: MediaStreamTrack): AnalyserNode {
+  const src = ctx.createMediaStreamSource(new MediaStream([mst]));
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 256;
+  analyser.smoothingTimeConstant = 0.65;
+  src.connect(analyser);
+  return analyser;
+}
+
 export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   isOpen,
   onClose,
@@ -209,16 +158,48 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   const [errorMsg, setErrorMsg] = useState("");
   const [isMuted, setIsMuted] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
-  const [audioLevel, setAudioLevel] = useState(0);
+
+  // Dual-channel real-time voice wobbling state (User Mic + Agent Output)
+  const [waveBars, setWaveBars] = useState<number[]>(() => new Array(WAVE_BARS).fill(0.08));
+  const [agentLevel, setAgentLevel] = useState(0);
+  const [userLevel, setUserLevel] = useState(0);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
+  const [userSpeaking, setUserSpeaking] = useState(false);
+
+  // Live Real-Time Multilingual Transcript (User + Agent in spoken language)
+  const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
+  const transcriptBoxRef = useRef<HTMLDivElement | null>(null);
 
   const activeRoomRef = useRef<string | null>(null);
   const roomRef = useRef<Room | null>(null);
   const audioElementsRef = useRef<Set<HTMLAudioElement>>(new Set());
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const animFrameRef = useRef<number | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+
+  // Auto-scroll live transcript panel smoothly as words stream in
+  useEffect(() => {
+    if (transcriptBoxRef.current) {
+      transcriptBoxRef.current.scrollTop = transcriptBoxRef.current.scrollHeight;
+    }
+  }, [transcripts]);
+
+  const upsertTranscript = useCallback(
+    (id: string, speaker: "user" | "agent", text: string, isFinal: boolean) => {
+      const cleaned = text.trim();
+      if (!cleaned) return;
+      setTranscripts((prev) => {
+        const idx = prev.findIndex((item) => item.id === id);
+        if (idx !== -1) {
+          const updated = [...prev];
+          updated[idx] = { id, speaker, text: cleaned, final: isFinal };
+          return updated;
+        }
+        return [...prev, { id, speaker, text: cleaned, final: isFinal }];
+      });
+    },
+    []
+  );
 
   const cleanupCall = useCallback(() => {
     if (animFrameRef.current) {
@@ -234,6 +215,11 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       audioContextRef.current = null;
     }
     if (roomRef.current) {
+      try {
+        roomRef.current.unregisterTextStreamHandler("lk.transcription");
+      } catch {
+        // ignore
+      }
       try {
         roomRef.current.disconnect();
       } catch {
@@ -251,9 +237,11 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       }
     });
     audioElementsRef.current.clear();
-    analyserRef.current = null;
-    setAudioLevel(0);
+    setAgentLevel(0);
+    setUserLevel(0);
     setAgentSpeaking(false);
+    setUserSpeaking(false);
+    setWaveBars(new Array(WAVE_BARS).fill(0.08));
   }, []);
 
   const releaseActiveRoom = useCallback(async () => {
@@ -272,7 +260,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     }
   }, []);
 
-  // Ensure tab refresh/close immediately frees the active LiveKit room
   useEffect(() => {
     const onPageHide = () => {
       const roomToClose = activeRoomRef.current;
@@ -290,7 +277,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     return () => window.removeEventListener("pagehide", onPageHide);
   }, []);
 
-  // Fetch live assistants from DB when modal opens
   useEffect(() => {
     if (!isOpen) return;
     fetch("/api/demo/public")
@@ -303,7 +289,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       .catch(() => {});
   }, [isOpen]);
 
-  // Restore saved lead in session so user doesn't have to re-fill form repeatedly
   useEffect(() => {
     if (!isOpen) {
       cleanupCall();
@@ -330,7 +315,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     setStep("lead");
   }, [isOpen, cleanupCall, releaseActiveRoom]);
 
-  // Call duration timer
   useEffect(() => {
     if (callStatus === "connected") {
       setCallDuration(0);
@@ -345,44 +329,104 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     };
   }, [callStatus]);
 
-  const startAudioVisualizer = (remoteTrack: RemoteTrack) => {
+  // Start dual-channel Web Audio analyser for organic voice wobbling (both User & Agent)
+  const startDualAudioWobble = useCallback((lkRoom: Room) => {
     try {
-      const mediaStreamTrack = remoteTrack.mediaStreamTrack;
-      if (!mediaStreamTrack) return;
-
       const AudioContextClass =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new AudioContextClass();
+      void ctx.resume().catch(() => {});
       audioContextRef.current = ctx;
 
-      const mediaStream = new MediaStream([mediaStreamTrack]);
-      const source = ctx.createMediaStreamSource(mediaStream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 64;
-      analyser.smoothingTimeConstant = 0.6;
-      source.connect(analyser);
-      analyserRef.current = analyser;
+      let micAnalyser: AnalyserNode | null = null;
+      let agentAnalyser: AnalyserNode | null = null;
+      let micTrackId = "";
+      let agentTrackId = "";
+      const agentFreq = new Uint8Array(128);
+      const micFreq = new Uint8Array(128);
+      let lastTs = 0;
 
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const tick = (ts: number) => {
+        if (!roomRef.current) return;
+        animFrameRef.current = requestAnimationFrame(tick);
+        if (ts - lastTs < 36) return;
+        lastTs = ts;
 
-      const checkVolume = () => {
-        if (!analyserRef.current) return;
-        analyserRef.current.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          sum += dataArray[i];
+        // Bind local user mic track
+        const micPub = lkRoom.localParticipant?.getTrackPublication(Track.Source.Microphone);
+        const micMst = micPub?.track?.mediaStreamTrack ?? null;
+        if (micMst && micMst.id !== micTrackId) {
+          micTrackId = micMst.id;
+          try {
+            micAnalyser = makeAnalyser(ctx, micMst);
+          } catch {
+            micAnalyser = null;
+          }
         }
-        const avg = sum / dataArray.length;
-        setAudioLevel(avg);
-        setAgentSpeaking(avg > 10);
-        animFrameRef.current = requestAnimationFrame(checkVolume);
+
+        // Bind remote agent audio track
+        for (const p of lkRoom.remoteParticipants.values()) {
+          for (const pub of p.trackPublications.values()) {
+            const t = pub.track;
+            if (t && t.kind === Track.Kind.Audio && t.mediaStreamTrack) {
+              if (agentTrackId !== t.mediaStreamTrack.id) {
+                agentTrackId = t.mediaStreamTrack.id;
+                try {
+                  agentAnalyser = makeAnalyser(ctx, t.mediaStreamTrack);
+                } catch {
+                  agentAnalyser = null;
+                }
+              }
+            }
+          }
+        }
+
+        let aSum = 0;
+        if (agentAnalyser) {
+          agentAnalyser.getByteFrequencyData(agentFreq);
+          for (let i = 0; i < agentFreq.length; i++) aSum += agentFreq[i];
+        }
+        const aAvg = agentAnalyser ? aSum / agentFreq.length : 0;
+
+        let uSum = 0;
+        const muted = !!micPub?.isMuted;
+        if (micAnalyser && !muted) {
+          micAnalyser.getByteFrequencyData(micFreq);
+          for (let i = 0; i < micFreq.length; i++) uSum += micFreq[i];
+        }
+        const uAvg = micAnalyser && !muted ? uSum / micFreq.length : 0;
+
+        setAgentLevel(aAvg);
+        setUserLevel(uAvg);
+        const isAgentActive = aAvg > 9;
+        const isUserActive = uAvg > 12;
+        setAgentSpeaking(isAgentActive);
+        setUserSpeaking(!isAgentActive && isUserActive);
+
+        // Compute symmetrical wobbling waveform bars from whichever voice is stronger
+        const activeFreq = aAvg >= uAvg ? agentFreq : micFreq;
+        const hasSignal = isAgentActive || isUserActive;
+        const nextBars = new Array(WAVE_BARS);
+        const half = WAVE_BARS / 2;
+        for (let i = 0; i < WAVE_BARS; i++) {
+          const distFromCenter = Math.abs(i - (half - 0.5)) / half;
+          const envelope = Math.cos(distFromCenter * (Math.PI / 2));
+          const binIdx = Math.min(activeFreq.length - 1, Math.floor(distFromCenter * 48));
+          const raw = activeFreq[binIdx] / 255;
+          const idleRipple = 0.08 + 0.04 * Math.sin(ts / 240 + i * 0.55);
+          nextBars[i] = hasSignal
+            ? Math.max(0.1, Math.min(1, raw * envelope * 1.45 + 0.08))
+            : idleRipple;
+        }
+        setWaveBars(nextBars);
       };
-      checkVolume();
+
+      animFrameRef.current = requestAnimationFrame(tick);
     } catch {
-      // ignore visualizer errors
+      // ignore audio context errors
     }
-  };
+  }, []);
 
   const resolvedCity = formData.city === "Other" ? formData.customCity.trim() : formData.city;
 
@@ -426,7 +470,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     try {
       sessionStorage.setItem(LEAD_SESSION_KEY, JSON.stringify(formData));
     } catch {
-      // ignore storage quota
+      // ignore
     }
 
     try {
@@ -448,7 +492,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         }),
       });
     } catch {
-      // Lead persistence is best-effort so demo never blocks
+      // best effort
     } finally {
       setIsSubmittingLead(false);
       setStep("assistants");
@@ -459,10 +503,10 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     setSelectedAssistant(assistant);
     setStep("call");
     cleanupCall();
+    setTranscripts([]);
     setCallStatus("connecting");
     setErrorMsg("");
 
-    // Release any previous active demo room before requesting a new dispatch
     await releaseActiveRoom();
 
     try {
@@ -487,7 +531,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         body: JSON.stringify(payload),
       });
 
-      // If previous room was still tearing down on LiveKit Cloud (409/502), wait 1.5s and retry once
       if (!res.ok && (res.status === 409 || res.status === 502)) {
         await new Promise((r) => setTimeout(r, 1500));
         res = await fetch("/api/demo/public", {
@@ -499,7 +542,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || "Failed to initialize demo voice call.");
+        throw new Error(errorData.error || "Unable to connect voice session right now.");
       }
 
       const tokenData = await res.json();
@@ -507,7 +550,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       activeRoomRef.current = roomName || null;
 
       if (!token || !url) {
-        throw new Error("Invalid voice token received from service.");
+        throw new Error("Voice session credentials could not be created.");
       }
 
       const lkRoom = new Room({
@@ -516,6 +559,49 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       });
       roomRef.current = lkRoom;
 
+      // 1. Subscribe to LiveKit standard TranscriptionReceived events
+      lkRoom.on(
+        RoomEvent.TranscriptionReceived,
+        (segments: TranscriptionSegment[], participant?: Participant) => {
+          const isUser = participant?.identity === "demo-user";
+          for (const seg of segments) {
+            if (seg.text) {
+              upsertTranscript(seg.id, isUser ? "user" : "agent", seg.text, !!seg.final);
+            }
+          }
+        }
+      );
+
+      // 2. Subscribe to LiveKit Agents 1.x 'lk.transcription' real-time text streams
+      try {
+        lkRoom.registerTextStreamHandler("lk.transcription", async (reader, participantInfo) => {
+          const attrs = reader.info?.attributes || {};
+          const segId = attrs["lk.segment_id"] || reader.info?.id || `seg_${Date.now()}`;
+          const localMicSid = lkRoom.localParticipant?.getTrackPublication(
+            Track.Source.Microphone
+          )?.trackSid;
+          const transcribedTrackId = attrs["lk.transcribed_track_id"];
+          const isUser =
+            participantInfo?.identity === "demo-user" ||
+            (!!localMicSid && transcribedTrackId === localMicSid);
+
+          let accumulated = "";
+          try {
+            for await (const chunk of reader) {
+              accumulated += chunk;
+              upsertTranscript(segId, isUser ? "user" : "agent", accumulated, false);
+            }
+            const isFinal = attrs["lk.transcription_final"] !== "false";
+            upsertTranscript(segId, isUser ? "user" : "agent", accumulated, isFinal);
+          } catch {
+            // ignore stream close
+          }
+        });
+      } catch {
+        // handler already registered or unsupported
+      }
+
+      // 3. Subscribe to remote agent voice audio track
       lkRoom.on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => {
         if (track.kind === Track.Kind.Audio) {
           const el = track.attach() as HTMLAudioElement;
@@ -524,7 +610,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           document.body.appendChild(el);
           audioElementsRef.current.add(el);
           void el.play().catch(() => {});
-          startAudioVisualizer(track);
         }
       });
 
@@ -540,7 +625,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           ].includes(reason);
         setCallStatus(normal ? "ended" : "error");
         if (!normal) {
-          setErrorMsg("The voice call ended unexpectedly. Please click Call Again.");
+          setErrorMsg("Call ended unexpectedly. Click Call Again to reconnect.");
         }
       });
 
@@ -549,6 +634,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
 
       setCallStatus("connected");
       setIsMuted(false);
+      startDualAudioWobble(lkRoom);
     } catch (err) {
       cleanupCall();
       await releaseActiveRoom();
@@ -556,7 +642,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       setErrorMsg(
         err instanceof Error
           ? err.message
-          : "Could not connect to microphone or voice service."
+          : "Please allow microphone permission in your browser and try again."
       );
     }
   };
@@ -588,36 +674,27 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
 
   const modalWidthClass =
     step === "assistants"
-      ? "max-w-[1120px]"
+      ? "max-w-[980px]"
       : step === "call"
-      ? "max-w-xl"
-      : "max-w-[540px]";
+      ? "max-w-[880px]"
+      : "max-w-[660px]";
 
   const availableCities = formData.state ? STATE_CITIES[formData.state] || ["Other"] : [];
+  const combinedEnergy = Math.max(agentLevel, userLevel);
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-xl overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-black/85 backdrop-blur-xl"
       role="dialog"
       aria-modal="true"
     >
-      {/* Modal Card */}
+      {/* Unified Cyber-Emerald Brand Modal Card — Zero Inner Scroll Clutter */}
       <div
-        className={`relative w-full ${modalWidthClass} my-auto overflow-hidden rounded-3xl border shadow-[0_0_90px_rgba(112,68,255,0.28)] transition-all duration-300 ${
-          step === "assistants"
-            ? `${landingStyles.assistantGallerySurface} border-purple-200/80`
-            : `${landingStyles.darkModalSurface} border-[#262c52] bg-gradient-to-b from-[#12152a] to-[#0b0d1b]`
-        }`}
+        className={`relative w-full ${modalWidthClass} overflow-hidden rounded-2xl transition-all duration-300 ${landingStyles.cyberModalSurface}`}
       >
-        {/* Top Bar */}
-        <div
-          className={`flex items-center justify-between px-5 sm:px-7 py-3.5 border-b ${
-            step === "assistants"
-              ? "border-gray-200 bg-white/90 text-[#1e1b2e]"
-              : "border-[#1f2547] bg-[#0d1022]/90 text-white"
-          }`}
-        >
-          <div className="flex items-center gap-3 min-w-0">
+        {/* Top Header Bar */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[#9eff00]/20 bg-[#040902]/90">
+          <div className="flex items-center gap-2.5 min-w-0">
             {step !== "lead" && (
               <button
                 type="button"
@@ -629,45 +706,37 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                     setStep("lead");
                   }
                 }}
-                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                  step === "assistants"
-                    ? "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
-                    : "text-gray-300 hover:text-white hover:bg-white/10"
-                }`}
-                title={step === "call" ? "Back to Assistants" : "Edit Your Details"}
+                className="p-1.5 rounded-lg text-gray-300 hover:text-[#9eff00] hover:bg-[#9eff00]/10 transition-colors cursor-pointer"
+                title={step === "call" ? "Back to Voice Agents" : "Edit Details"}
               >
                 <ArrowLeft className="w-4 h-4" />
               </button>
             )}
 
             <div className="flex items-center gap-2 truncate">
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
-              <span
-                className={`text-xs font-semibold tracking-wider uppercase truncate ${
-                  step === "assistants" ? "text-purple-800" : "text-purple-300"
-                }`}
-              >
+              <span className="h-2 w-2 rounded-full bg-[#9eff00] shadow-[0_0_8px_#9eff00] animate-pulse flex-shrink-0" />
+              <span className="text-xs font-bold tracking-wider uppercase text-[#9eff00] truncate">
                 {step === "lead"
-                  ? "Book A Demo"
+                  ? "Experience Live AI Voice Demo"
                   : step === "assistants"
-                  ? "Choose Your AI Voice Assistant"
-                  : `Live Call • ${selectedAssistant?.name || "AI Agent"}`}
+                  ? "Select Your Industry Voice Agent"
+                  : `Live Session • ${selectedAssistant?.name || "AI Voice Agent"}`}
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
             {step === "assistants" && formData.fullName && (
               <button
                 type="button"
                 onClick={() => setStep("lead")}
-                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-900 hover:bg-purple-200 transition-colors cursor-pointer"
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold bg-[#9eff00]/12 border border-[#9eff00]/30 text-[#d8ff99] hover:bg-[#9eff00]/20 transition-colors cursor-pointer"
               >
                 <span>
                   {formData.fullName}
                   {formData.businessName ? ` • ${formData.businessName}` : ""}
                 </span>
-                <span className="underline ml-1">Edit</span>
+                <span className="underline text-[#9eff00] ml-1">Edit</span>
               </button>
             )}
 
@@ -678,11 +747,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                 await releaseActiveRoom();
                 onClose();
               }}
-              className={`rounded-full p-1.5 transition-colors cursor-pointer ${
-                step === "assistants"
-                  ? "text-gray-500 hover:bg-gray-200 hover:text-gray-900"
-                  : "text-gray-400 hover:bg-white/10 hover:text-white"
-              }`}
+              className="rounded-full p-1.5 text-gray-400 hover:bg-[#9eff00]/15 hover:text-[#9eff00] transition-colors cursor-pointer"
               aria-label="Close modal"
             >
               <X className="w-5 h-5" />
@@ -690,34 +755,34 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           </div>
         </div>
 
-        {/* ── STEP 1: LEAD CAPTURE FORM (Matches Screenshot 2) ─────────────────── */}
+        {/* ── STEP 1: COMPACT SINGLE-SCREEN LEAD CAPTURE (Cyber-Green Brand) ──── */}
         {step === "lead" && (
-          <div className="px-6 py-7 sm:px-9 sm:py-8">
-            {/* Glowing Purple Phone Badge */}
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-b from-[#7c5cff] to-[#6240f5] shadow-[0_0_28px_rgba(124,92,255,0.55)]">
-              <PhoneCall className="w-6 h-6 text-white" />
-            </div>
-
-            <div className="text-center mb-6">
-              <h2 className="text-2xl sm:text-[26px] font-extrabold tracking-tight text-white">
-                Start Your AI Agent Call
-              </h2>
-              <p className="text-xs sm:text-sm text-[#949bc0] mt-1.5">
-                Fill in your details and our Jill-Jill agent will connect with you instantly.
-              </p>
+          <div className="px-5 py-5 sm:px-7 sm:py-6">
+            <div className="flex items-center gap-3.5 mb-4">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#9eff00] text-black shadow-[0_0_24px_rgba(158,255,0,0.45)] flex-shrink-0">
+                <PhoneCall className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">
+                  Start Your Live AI Agent Call
+                </h2>
+                <p className="text-xs text-[#9cb097]">
+                  Enter your details once to test any of our specialized AI voice agents live.
+                </p>
+              </div>
             </div>
 
             {formError && (
-              <div className="mb-4 rounded-xl bg-red-500/15 border border-red-500/40 px-4 py-2.5 text-center text-xs text-red-300">
+              <div className="mb-3 rounded-xl bg-red-500/15 border border-red-500/40 px-3.5 py-2 text-xs text-red-300">
                 {formError}
               </div>
             )}
 
-            <form onSubmit={handleLeadSubmit} className="space-y-3.5">
-              {/* Row 1: FULL NAME * + PHONE NUMBER * side-by-side */}
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3.5">
+            <form onSubmit={handleLeadSubmit} className="space-y-3">
+              {/* Row 1: Full Name + Phone Number */}
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
                 <div className="sm:col-span-5">
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
                     FULL NAME *
                   </label>
                   <input
@@ -726,20 +791,20 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                     value={formData.fullName}
                     onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
                     placeholder="John Doe"
-                    className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none focus:ring-1 focus:ring-[#7c5cff]"
+                    className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm text-white focus:border-[#9eff00] focus:outline-none focus:ring-1 focus:ring-[#9eff00]"
                   />
                 </div>
 
                 <div className="sm:col-span-7">
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
                     PHONE NUMBER *
                   </label>
-                  <div className="flex items-center rounded-xl border border-[#283059] bg-[#161a34] focus-within:border-[#7c5cff] focus-within:ring-1 focus-within:ring-[#7c5cff] overflow-hidden">
+                  <div className="flex items-center rounded-xl border border-[#243d1c] bg-[#0b1508] focus-within:border-[#9eff00] focus-within:ring-1 focus-within:ring-[#9eff00] overflow-hidden">
                     <select
                       aria-label="Country code"
                       value={formData.countryCode}
                       onChange={(e) => setFormData({ ...formData, countryCode: e.target.value })}
-                      className="bg-[#161a34] pl-3 pr-2 py-2.5 text-xs font-bold text-white border-r border-[#283059] focus:outline-none cursor-pointer"
+                      className="pl-2.5 pr-1.5 py-2 text-xs font-bold border-r border-[#243d1c] focus:outline-none cursor-pointer"
                     >
                       <option value="+91">IN +91</option>
                       <option value="+1">US +1</option>
@@ -754,93 +819,94 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                       value={formData.phone}
                       onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                       placeholder="98765 43210"
-                      className="w-full bg-[#161a34] px-3 py-2.5 text-sm text-white placeholder-[#5e668c] focus:outline-none border-0"
+                      className="w-full px-3 py-2 text-sm focus:outline-none border-0"
                     />
                   </div>
                 </div>
               </div>
 
-              {/* EMAIL ADDRESS * */}
-              <div>
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
-                  EMAIL ADDRESS *
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  placeholder="john@company.com"
-                  className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none focus:ring-1 focus:ring-[#7c5cff]"
-                />
+              {/* Row 2: Email + Business Name */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
+                    EMAIL ADDRESS *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={formData.email}
+                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    placeholder="john@company.com"
+                    className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none focus:ring-1 focus:ring-[#9eff00]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
+                    BUSINESS NAME *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.businessName}
+                    onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
+                    placeholder="Acme Corp"
+                    className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none focus:ring-1 focus:ring-[#9eff00]"
+                  />
+                </div>
               </div>
 
-              {/* BUSINESS NAME * */}
-              <div>
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
-                  BUSINESS NAME *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formData.businessName}
-                  onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
-                  placeholder="Acme Corp"
-                  className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none focus:ring-1 focus:ring-[#7c5cff]"
-                />
+              {/* Row 3: Business Type + Country */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
+                    BUSINESS TYPE *
+                  </label>
+                  <select
+                    required
+                    value={formData.businessType}
+                    onChange={(e) => setFormData({ ...formData, businessType: e.target.value })}
+                    className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none cursor-pointer"
+                  >
+                    <option value="">Select type</option>
+                    <option value="Healthcare & Clinic">Healthcare & Clinic</option>
+                    <option value="Education & Academy">Education & Academy</option>
+                    <option value="Real Estate">Real Estate</option>
+                    <option value="E-Commerce & Retail">E-Commerce & Retail</option>
+                    <option value="Banking & Finance">Banking & Finance</option>
+                    <option value="Customer Support / IVR">Customer Support / IVR</option>
+                    <option value="IT & SaaS">IT & SaaS</option>
+                    <option value="Hospitality & Travel">Hospitality & Travel</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
+                    COUNTRY *
+                  </label>
+                  <select
+                    value={formData.country}
+                    onChange={(e) =>
+                      setFormData({ ...formData, country: e.target.value, state: "", city: "" })
+                    }
+                    className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none cursor-pointer"
+                  >
+                    <option value="IN India">IN India</option>
+                    <option value="US United States">US United States</option>
+                    <option value="AE United Arab Emirates">AE United Arab Emirates</option>
+                    <option value="GB United Kingdom">GB United Kingdom</option>
+                    <option value="SG Singapore">SG Singapore</option>
+                    <option value="AU Australia">AU Australia</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
               </div>
 
-              {/* BUSINESS TYPE * */}
-              <div>
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
-                  BUSINESS TYPE *
-                </label>
-                <select
-                  required
-                  value={formData.businessType}
-                  onChange={(e) => setFormData({ ...formData, businessType: e.target.value })}
-                  className="w-full sm:w-3/5 rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white focus:border-[#7c5cff] focus:outline-none cursor-pointer"
-                >
-                  <option value="">Select type</option>
-                  <option value="Healthcare & Clinic">Healthcare & Clinic</option>
-                  <option value="Education & Academy">Education & Academy</option>
-                  <option value="Real Estate">Real Estate</option>
-                  <option value="E-Commerce & Retail">E-Commerce & Retail</option>
-                  <option value="Banking & Finance">Banking & Finance</option>
-                  <option value="Customer Support / IVR">Customer Support / IVR</option>
-                  <option value="IT & SaaS">IT & SaaS</option>
-                  <option value="Hospitality & Travel">Hospitality & Travel</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
-
-              {/* COUNTRY * */}
-              <div>
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
-                  COUNTRY *
-                </label>
-                <select
-                  value={formData.country}
-                  onChange={(e) =>
-                    setFormData({ ...formData, country: e.target.value, state: "", city: "" })
-                  }
-                  className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white focus:border-[#7c5cff] focus:outline-none cursor-pointer"
-                >
-                  <option value="IN India">IN India</option>
-                  <option value="US United States">US United States</option>
-                  <option value="AE United Arab Emirates">AE United Arab Emirates</option>
-                  <option value="GB United Kingdom">GB United Kingdom</option>
-                  <option value="SG Singapore">SG Singapore</option>
-                  <option value="AU Australia">AU Australia</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
-
-              {/* STATE * & CITY * side-by-side */}
+              {/* Row 4: State + City */}
               {formData.country === "IN India" ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
                       STATE *
                     </label>
                     <select
@@ -849,7 +915,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                       onChange={(e) =>
                         setFormData({ ...formData, state: e.target.value, city: "", customCity: "" })
                       }
-                      className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white focus:border-[#7c5cff] focus:outline-none cursor-pointer"
+                      className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none cursor-pointer"
                     >
                       <option value="">Select state</option>
                       {Object.keys(STATE_CITIES).map((st) => (
@@ -861,7 +927,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
                       CITY *
                     </label>
                     {formData.city === "Other" ? (
@@ -870,8 +936,8 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                         required
                         value={formData.customCity}
                         onChange={(e) => setFormData({ ...formData, customCity: e.target.value })}
-                        placeholder="Enter your city"
-                        className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none"
+                        placeholder="Enter city"
+                        className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none"
                       />
                     ) : (
                       <select
@@ -879,7 +945,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                         disabled={!formData.state}
                         value={formData.city}
                         onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                        className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white disabled:opacity-60 focus:border-[#7c5cff] focus:outline-none cursor-pointer"
+                        className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm disabled:opacity-60 focus:border-[#9eff00] focus:outline-none cursor-pointer"
                       >
                         <option value="">
                           {formData.state ? "Select city" : "Select a state first"}
@@ -894,21 +960,21 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
                       STATE / REGION
                     </label>
                     <input
                       type="text"
                       value={formData.state}
                       onChange={(e) => setFormData({ ...formData, state: e.target.value })}
-                      placeholder="State / Province"
-                      className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none"
+                      placeholder="State / Region"
+                      className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none"
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
                       CITY
                     </label>
                     <input
@@ -916,39 +982,38 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                       value={formData.city}
                       onChange={(e) => setFormData({ ...formData, city: e.target.value })}
                       placeholder="City"
-                      className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none"
+                      className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none"
                     />
                   </div>
                 </div>
               )}
 
-              {/* DESCRIPTION (OPTIONAL) */}
+              {/* Row 5: Compact Description (Optional) */}
               <div>
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
-                  DESCRIPTION <span className="text-[#6c759e] font-normal">(OPTIONAL)</span>
+                <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
+                  DESCRIPTION <span className="text-[#6c8266] font-normal">(OPTIONAL)</span>
                 </label>
-                <textarea
-                  rows={2}
+                <input
+                  type="text"
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Optional: Tell us briefly about your use case..."
-                  className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none"
+                  placeholder="Optional: Custom workflow or call goal..."
+                  className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none"
                 />
               </div>
 
-              {/* Submit Button */}
-              <div className="pt-2">
+              <div className="pt-1.5">
                 <button
                   type="submit"
                   disabled={isSubmittingLead}
-                  className="w-full flex items-center justify-center gap-2.5 rounded-xl bg-gradient-to-r from-[#6549f7] via-[#7547f9] to-[#8048fb] py-3.5 px-6 font-bold text-sm sm:text-base text-white shadow-[0_8px_30px_rgba(117,71,249,0.5)] hover:shadow-[0_10px_38px_rgba(117,71,249,0.7)] hover:brightness-110 transition-all disabled:opacity-60 cursor-pointer"
+                  className="w-full flex items-center justify-center gap-2.5 rounded-xl bg-[#9eff00] hover:bg-[#bfff40] py-3 px-6 font-extrabold text-sm uppercase tracking-wider text-black shadow-[0_0_28px_rgba(158,255,0,0.4)] hover:shadow-[0_0_36px_rgba(158,255,0,0.65)] transition-all disabled:opacity-60 cursor-pointer"
                 >
                   {isSubmittingLead ? (
-                    <LoaderCircle className="w-5 h-5 animate-spin" />
+                    <LoaderCircle className="w-5 h-5 animate-spin text-black" />
                   ) : (
                     <>
-                      <PhoneCall className="w-5 h-5" />
-                      <span>TEST WITH AI Call</span>
+                      <PhoneCall className="w-4 h-4 text-black" />
+                      <span>TEST WITH AI CALL</span>
                     </>
                   )}
                 </button>
@@ -957,16 +1022,15 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           </div>
         )}
 
-        {/* ── STEP 2: 9 ASSISTANT ORB STATIONS (Matches Screenshot 3) ─────────── */}
+        {/* ── STEP 2: 9 CYBER-EMERALD ASSISTANT ORBS (Zero Scroll, Zero Model/Voice Names) ─ */}
         {step === "assistants" && (
-          <div className="px-4 sm:px-8 py-6 sm:py-8 max-h-[82vh] overflow-y-auto">
-            <div className="text-center mb-2">
-              <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-[#1c1830]">
-                Select an AI Assistant to Start Live Call
+          <div className="px-4 sm:px-7 py-4 sm:py-5">
+            <div className="text-center mb-3">
+              <h2 className="text-lg sm:text-2xl font-extrabold tracking-tight text-white">
+                Choose an AI Voice Agent to Speak Live
               </h2>
-              <p className="text-xs sm:text-sm text-[#5b5675] mt-1">
-                Click any assistant below to speak live in English, Tamil, or Tanglish — powered by{" "}
-                <strong className="text-[#5b34c9]">Gemini 3.1 Flash Live</strong>.
+              <p className="text-xs text-[#9cb097] mt-0.5">
+                Click any specialized agent below — speaks naturally in your language with real-time live captions.
               </p>
             </div>
 
@@ -985,11 +1049,11 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                       type="button"
                       onClick={() => handleStartCall(assistant)}
                       className={landingStyles.orbButton}
-                      aria-label={`Start demo call with ${assistant.name}`}
+                      aria-label={`Start live call with ${assistant.name}`}
                     >
                       <Icon
-                        size={36}
-                        strokeWidth={1.6}
+                        size={28}
+                        strokeWidth={1.7}
                         aria-hidden="true"
                         className={landingStyles.orbIcon}
                       />
@@ -1000,7 +1064,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                       </span>
                     </button>
                     <span className={landingStyles.orbPlinth} aria-hidden="true" />
-                    <span className={landingStyles.orbVoice}>{assistant.voice}</span>
                     <button
                       type="button"
                       onClick={() => handleStartCall(assistant)}
@@ -1008,15 +1071,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                     >
                       Try Demo
                     </button>
-                    {assistant.role === "ivr" && (
-                      <button
-                        type="button"
-                        onClick={() => handleStartCall(assistant)}
-                        className={landingStyles.testTransferBtn}
-                      >
-                        Test transfer
-                      </button>
-                    )}
                   </article>
                 );
               })}
@@ -1024,163 +1078,238 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           </div>
         )}
 
-        {/* ── STEP 3: LIVE WEBRTC VOICE CALL ─────────────────────────────────── */}
+        {/* ── STEP 3: LIVE VOICE STUDIO — WOBBLING ORB + REAL-TIME MULTILINGUAL TRANSCRIPT ─ */}
         {step === "call" && selectedAssistant && (
-          <div className="px-6 py-9 sm:px-10 sm:py-11 text-center">
-            {/* Pulsating 3D Orb */}
-            <div className="relative mx-auto my-4 flex h-40 w-40 items-center justify-center">
-              <div
-                className="absolute inset-0 rounded-full bg-gradient-to-tr from-purple-500/35 to-[#9eff00]/35 blur-xl transition-all duration-150"
-                style={{
-                  transform: `scale(${1 + (audioLevel / 100) * 0.75})`,
-                  opacity: callStatus === "connected" ? 0.8 : 0.25,
-                }}
-              />
-              <div
-                className={`relative flex h-32 w-32 items-center justify-center rounded-full border-2 transition-all duration-200 ${
-                  agentSpeaking
-                    ? "border-[#9eff00] shadow-[0_0_50px_rgba(158,255,0,0.45)] bg-gradient-to-br from-[#5b477b] to-[#1e133d]"
-                    : "border-purple-400/60 shadow-[0_0_32px_rgba(168,85,247,0.35)] bg-gradient-to-br from-[#483666] to-[#19132e]"
-                }`}
-                style={{
-                  transform: agentSpeaking ? "scale(1.06)" : "scale(1)",
-                }}
-              >
-                {(() => {
-                  const RoleIcon = roleIcons[selectedAssistant.role] || Users;
-                  return (
-                    <RoleIcon
-                      className={`w-14 h-14 transition-colors duration-200 ${
-                        agentSpeaking ? "text-[#9eff00]" : "text-purple-200"
-                      }`}
-                    />
-                  );
-                })()}
+          <div className="p-5 sm:p-6 grid grid-cols-1 md:grid-cols-12 gap-5 items-stretch">
+            {/* Left Column: Reactive Wobbling Voice Orb + Waveform + Call Controls */}
+            <div className="md:col-span-5 flex flex-col items-center justify-between rounded-2xl border border-[#9eff00]/20 bg-[#071104]/85 p-5 text-center">
+              <div className="w-full">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider bg-[#9eff00]/12 border border-[#9eff00]/30 text-[#9eff00]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#9eff00] animate-ping" />
+                  Live AI Agent
+                </span>
+                <h3 className="text-xl sm:text-2xl font-extrabold text-white mt-2.5">
+                  {selectedAssistant.name}
+                </h3>
+                {formData.fullName && (
+                  <p className="text-xs text-[#9cb097] mt-1">
+                    Caller: <strong className="text-white">{formData.fullName}</strong>
+                    {formData.businessName ? ` • ${formData.businessName}` : ""}
+                  </p>
+                )}
               </div>
-            </div>
 
-            <h3 className="text-2xl font-bold text-white mb-2">
-              {selectedAssistant.name}
-            </h3>
-
-            <div className="flex flex-wrap items-center justify-center gap-2 text-xs mb-3">
-              <span className="px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-200 border border-purple-400/30">
-                Voice: {selectedAssistant.voice}
-              </span>
-              <span className="px-2.5 py-0.5 rounded-full bg-[#9eff00]/15 text-[#9eff00] border border-[#9eff00]/35 font-semibold">
-                Gemini 3.1 Flash Live
-              </span>
-            </div>
-
-            {formData.fullName && (
-              <p className="text-xs text-[#9ba3c7] mb-5">
-                Caller: <strong className="text-white">{formData.fullName}</strong>
-                {formData.businessName ? ` • ${formData.businessName}` : ""}
-              </p>
-            )}
-
-            {callStatus === "connecting" && (
-              <div className="flex items-center justify-center gap-2 text-sm text-amber-300 mb-7">
-                <LoaderCircle className="w-4 h-4 animate-spin" />
-                <span>Connecting real-time voice session...</span>
-              </div>
-            )}
-
-            {callStatus === "connected" && (
-              <div className="mb-5 space-y-1">
-                <div className="text-3xl font-mono font-bold text-white tracking-widest">
-                  {formatTimer(callDuration)}
-                </div>
-                <p className="text-xs">
-                  {agentSpeaking ? (
-                    <span className="text-[#9eff00] font-semibold animate-pulse">
-                      ● Assistant is speaking...
-                    </span>
-                  ) : (
-                    <span className="text-[#a5add0]">Listening — speak naturally in English or Tamil...</span>
-                  )}
-                </p>
-              </div>
-            )}
-
-            {callStatus === "ended" && (
-              <div className="mb-6">
-                <p className="text-sm font-semibold text-gray-200">Call Ended</p>
-                <p className="text-xs text-[#8f97bd] mt-0.5">Duration: {formatTimer(callDuration)}</p>
-              </div>
-            )}
-
-            {callStatus === "error" && (
-              <div className="mb-6 rounded-xl bg-red-500/15 border border-red-500/40 p-3.5 max-w-md mx-auto text-xs text-red-300">
-                {errorMsg || "Connection failed. Please check microphone permissions and try again."}
-              </div>
-            )}
-
-            {callStatus === "connected" && (
-              <div className="flex items-center justify-center gap-1.5 h-8 mb-7">
-                {[...Array(9)].map((_, i) => {
-                  const factor = Math.sin((i / 8) * Math.PI);
-                  const barHeight = Math.max(6, Math.min(32, (audioLevel / 2) * factor + 6));
-                  return (
-                    <div
-                      key={i}
-                      className="w-1.5 rounded-full transition-all duration-75"
-                      style={{
-                        height: `${barHeight}px`,
-                        backgroundColor: agentSpeaking ? "#9eff00" : "#a855f7",
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Call Controls */}
-            <div className="flex flex-wrap items-center justify-center gap-3.5">
-              {callStatus === "connected" && (
-                <button
-                  type="button"
-                  onClick={toggleMute}
-                  className={`flex items-center gap-2 px-5 py-3 rounded-2xl border font-semibold text-sm transition-all cursor-pointer ${
-                    isMuted
-                      ? "bg-red-500/20 border-red-500/50 text-red-200 hover:bg-red-500/30"
-                      : "bg-white/10 border-white/20 text-white hover:bg-white/20"
+              {/* Organic Wobbling Voice Sphere */}
+              <div className="relative my-5 flex h-36 w-36 items-center justify-center">
+                {/* Outer reactive aura */}
+                <div
+                  className="absolute inset-0 rounded-full bg-[#9eff00]/25 blur-2xl transition-transform duration-100 pointer-events-none"
+                  style={{
+                    transform: `scale(${1 + (combinedEnergy / 100) * 0.85})`,
+                    opacity: callStatus === "connected" ? 0.85 : 0.25,
+                  }}
+                />
+                {/* Secondary sonic ring */}
+                <div
+                  className="absolute inset-2 rounded-full border border-[#9eff00]/40 transition-transform duration-100 pointer-events-none"
+                  style={{
+                    transform: `scale(${1 + (combinedEnergy / 120) * 0.5})`,
+                  }}
+                />
+                {/* Core wobbling 3D orb */}
+                <div
+                  className={`relative flex h-28 w-28 items-center justify-center border-2 transition-all duration-150 ${
+                    agentSpeaking || userSpeaking ? landingStyles.wobbleActive : "rounded-full"
+                  } ${
+                    agentSpeaking
+                      ? "border-[#9eff00] shadow-[0_0_42px_rgba(158,255,0,0.55)] bg-gradient-to-br from-[#234712] to-[#0a1605]"
+                      : userSpeaking
+                      ? "border-[#ffd600] shadow-[0_0_36px_rgba(255,214,0,0.45)] bg-gradient-to-br from-[#38330d] to-[#0c1406]"
+                      : "border-[#9eff00]/45 shadow-[0_0_24px_rgba(158,255,0,0.2)] bg-gradient-to-br from-[#162b0d] to-[#081105]"
                   }`}
+                  style={{
+                    transform: `scale(${1 + (combinedEnergy / 220) * 0.22})`,
+                  }}
                 >
-                  {isMuted ? <MicOff className="w-4 h-4 text-red-300" /> : <Mic className="w-4 h-4" />}
-                  <span>{isMuted ? "Unmute" : "Mute"}</span>
-                </button>
-              )}
+                  {(() => {
+                    const RoleIcon = roleIcons[selectedAssistant.role] || Users;
+                    return (
+                      <RoleIcon
+                        className={`w-12 h-12 transition-colors duration-150 ${
+                          agentSpeaking
+                            ? "text-[#9eff00]"
+                            : userSpeaking
+                            ? "text-[#ffd600]"
+                            : "text-[#c8f780]"
+                        }`}
+                      />
+                    );
+                  })()}
+                </div>
+              </div>
 
-              {callStatus === "connected" || callStatus === "connecting" ? (
-                <button
-                  type="button"
-                  onClick={handleEndCall}
-                  className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-red-600 hover:bg-red-700 text-white font-semibold text-sm shadow-[0_0_24px_rgba(220,38,38,0.45)] transition-all cursor-pointer"
-                >
-                  <PhoneOff className="w-4 h-4" />
-                  <span>End Call</span>
-                </button>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => handleStartCall(selectedAssistant)}
-                    className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold text-sm transition-all cursor-pointer"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    <span>Call Again</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setStep("assistants")}
-                    className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-gradient-to-r from-[#6549f7] to-[#8048fb] text-white font-semibold text-sm shadow-[0_0_24px_rgba(117,71,249,0.45)] hover:brightness-110 transition-all cursor-pointer"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    <span>All 9 Assistants</span>
-                  </button>
-                </>
-              )}
+              {/* Dynamic Voice Wobble Bars + Status + Timer */}
+              <div className="w-full space-y-3">
+                {callStatus === "connecting" && (
+                  <div className="flex items-center justify-center gap-2 text-xs font-semibold text-[#ffd600]">
+                    <LoaderCircle className="w-4 h-4 animate-spin" />
+                    <span>Connecting instant voice channel...</span>
+                  </div>
+                )}
+
+                {callStatus === "connected" && (
+                  <>
+                    <div className="flex items-center justify-center gap-[3px] h-9 px-2">
+                      {waveBars.map((val, idx) => (
+                        <div
+                          key={idx}
+                          className="w-1.5 rounded-full transition-all duration-75"
+                          style={{
+                            height: `${Math.max(5, Math.round(val * 34))}px`,
+                            backgroundColor: agentSpeaking
+                              ? "#9eff00"
+                              : userSpeaking
+                              ? "#ffd600"
+                              : "rgba(158, 255, 0, 0.35)",
+                          }}
+                        />
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-center gap-3">
+                      <span className="text-2xl font-mono font-extrabold text-white tracking-widest">
+                        {formatTimer(callDuration)}
+                      </span>
+                      <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-white/5 border border-white/10">
+                        {agentSpeaking ? (
+                          <span className="text-[#9eff00]">● Agent Speaking</span>
+                        ) : userSpeaking ? (
+                          <span className="text-[#ffd600]">● You Are Speaking</span>
+                        ) : isMuted ? (
+                          <span className="text-red-400">● Mic Muted</span>
+                        ) : (
+                          <span className="text-[#b5c7b0]">● Listening...</span>
+                        )}
+                      </span>
+                    </div>
+                  </>
+                )}
+
+                {callStatus === "ended" && (
+                  <div>
+                    <p className="text-sm font-bold text-white">Session Completed</p>
+                    <p className="text-xs text-[#9cb097]">Duration: {formatTimer(callDuration)}</p>
+                  </div>
+                )}
+
+                {callStatus === "error" && (
+                  <div className="rounded-xl bg-red-500/15 border border-red-500/40 p-2.5 text-xs text-red-300">
+                    {errorMsg}
+                  </div>
+                )}
+
+                {/* Controls */}
+                <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                  {callStatus === "connected" && (
+                    <button
+                      type="button"
+                      onClick={toggleMute}
+                      className={`flex items-center gap-1.5 px-4 py-2.5 rounded-xl border font-bold text-xs uppercase tracking-wider transition-all cursor-pointer ${
+                        isMuted
+                          ? "bg-red-500/20 border-red-500/50 text-red-200"
+                          : "bg-[#12240b] border-[#9eff00]/30 text-white hover:border-[#9eff00]"
+                      }`}
+                    >
+                      {isMuted ? <MicOff className="w-4 h-4 text-red-400" /> : <Mic className="w-4 h-4 text-[#9eff00]" />}
+                      <span>{isMuted ? "Unmute" : "Mute"}</span>
+                    </button>
+                  )}
+
+                  {callStatus === "connected" || callStatus === "connecting" ? (
+                    <button
+                      type="button"
+                      onClick={handleEndCall}
+                      className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs uppercase tracking-wider shadow-[0_0_20px_rgba(220,38,38,0.4)] transition-all cursor-pointer"
+                    >
+                      <PhoneOff className="w-4 h-4" />
+                      <span>End Call</span>
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleStartCall(selectedAssistant)}
+                        className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#12240b] hover:bg-[#1a3310] border border-[#9eff00]/35 text-white font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 text-[#9eff00]" />
+                        <span>Call Again</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStep("assistants")}
+                        className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#9eff00] hover:bg-[#bfff40] text-black font-extrabold text-xs uppercase tracking-wider transition-all cursor-pointer"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-black" />
+                        <span>All Agents</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Right Column: Live Real-Time Multilingual Conversation Transcript */}
+            <div className="md:col-span-7 flex flex-col rounded-2xl border border-[#9eff00]/20 bg-[#060e04]/90 overflow-hidden h-[340px] sm:h-[370px]">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-[#9eff00]/15 bg-[#091506]">
+                <div className="flex items-center gap-2">
+                  <MessageSquareText className="w-4 h-4 text-[#9eff00]" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-white">
+                    Live Conversation Transcript
+                  </span>
+                </div>
+                <span className="text-[11px] text-[#9cb097]">
+                  Auto-detects spoken language
+                </span>
+              </div>
+
+              <div
+                ref={transcriptBoxRef}
+                className="flex-1 overflow-y-auto p-4 space-y-3 scroll-smooth"
+              >
+                {transcripts.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center px-6">
+                    <p className="text-xs sm:text-sm text-[#9cb097] leading-relaxed">
+                      {callStatus === "connecting"
+                        ? "Preparing live transcript stream..."
+                        : "Start speaking in English, Tamil, Tanglish, or Hindi — real-time captions for both you and the AI agent will appear here."}
+                    </p>
+                  </div>
+                ) : (
+                  transcripts.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className={`flex flex-col ${
+                        entry.speaker === "user" ? "items-end" : "items-start"
+                      }`}
+                    >
+                      <span className="text-[10px] font-bold uppercase tracking-wider mb-1 px-1 text-[#8ea688]">
+                        {entry.speaker === "user"
+                          ? formData.fullName || "You"
+                          : selectedAssistant.name}
+                      </span>
+                      <div
+                        className={`max-w-[86%] rounded-2xl px-3.5 py-2.5 text-xs sm:text-sm leading-relaxed ${
+                          entry.speaker === "user"
+                            ? "bg-[#9eff00] text-black font-semibold rounded-br-sm"
+                            : "bg-[#11220c] border border-[#9eff00]/25 text-[#f1f5f0] rounded-bl-sm"
+                        }`}
+                      >
+                        {entry.text}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         )}
