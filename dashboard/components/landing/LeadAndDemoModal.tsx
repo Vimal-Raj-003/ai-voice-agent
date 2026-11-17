@@ -7,6 +7,8 @@ import {
   Track,
   DisconnectReason,
   type RemoteTrack,
+  type TranscriptionSegment,
+  type Participant,
 } from "livekit-client";
 import {
   GraduationCap,
@@ -640,33 +642,18 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       });
       roomRef.current = lkRoom;
 
-      try {
-        lkRoom.registerTextStreamHandler("lk.transcription", async (reader, participantInfo) => {
-          const attrs = reader.info?.attributes || {};
-          const segId = attrs["lk.segment_id"] || reader.info?.id || `seg_${Date.now()}`;
-          const localMicSid = lkRoom.localParticipant?.getTrackPublication(
-            Track.Source.Microphone
-          )?.trackSid;
-          const transcribedTrackId = attrs["lk.transcribed_track_id"];
-          const isUser =
-            participantInfo?.identity === "demo-user" ||
-            (!!localMicSid && transcribedTrackId === localMicSid);
-
-          let accumulated = "";
-          try {
-            for await (const chunk of reader) {
-              accumulated += chunk;
-              upsertTranscript(segId, isUser ? "user" : "agent", accumulated, false);
+      // Single authoritative LiveKit TranscriptionReceived channel (eliminates dual-stream duplication)
+      lkRoom.on(
+        RoomEvent.TranscriptionReceived,
+        (segments: TranscriptionSegment[], participant?: Participant) => {
+          const isUser = participant?.identity === "demo-user";
+          for (const seg of segments) {
+            if (seg.text) {
+              upsertTranscript(seg.id, isUser ? "user" : "agent", seg.text, !!seg.final);
             }
-            const isFinal = attrs["lk.transcription_final"] !== "false";
-            upsertTranscript(segId, isUser ? "user" : "agent", accumulated, isFinal);
-          } catch {
-            // ignore
           }
-        });
-      } catch {
-        // ignore
-      }
+        }
+      );
 
       lkRoom.on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => {
         if (track.kind === Track.Kind.Audio) {
