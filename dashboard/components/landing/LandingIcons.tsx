@@ -4,6 +4,7 @@ import React from 'react';
 
 type IconProps = {
   className?: string;
+  style?: React.CSSProperties;
 };
 
 export const LayoutDashboardIcon: React.FC<IconProps> = (props) => (

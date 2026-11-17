@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Room,
   RoomEvent,
@@ -24,13 +24,14 @@ import {
   X,
   ArrowLeft,
   Sparkles,
+  RotateCcw,
 } from "lucide-react";
-import styles from "../AssistantLibrary.module.css";
+import landingStyles from "./LandingPage.module.css";
 
 interface LeadAndDemoModalProps {
   isOpen: boolean;
   onClose: () => void;
-  preselectedAssistantId?: string;
+  preselectedRole?: string | null;
 }
 
 export interface AssistantItem {
@@ -44,6 +45,9 @@ export interface AssistantItem {
   active: boolean;
 }
 
+const LEAD_SESSION_KEY = "jjv_demo_lead_v1";
+
+// Ordered to match Screenshot 3 (5 on Row 1 + 4 on Row 2)
 const DEFAULT_ASSISTANTS: AssistantItem[] = [
   {
     id: "caaad76e39781563d9ee13de0",
@@ -128,6 +132,42 @@ const DEFAULT_ASSISTANTS: AssistantItem[] = [
   },
 ];
 
+const PREFERRED_ORDER = [
+  "academy",
+  "appointment",
+  "clinic",
+  "support",
+  "ivr",
+  "marketing",
+  "sales",
+  "receptionist",
+  "vasan",
+];
+
+function sortAssistantsForGallery(list: AssistantItem[]): AssistantItem[] {
+  return [...list].sort((a, b) => {
+    const ia = PREFERRED_ORDER.indexOf(a.role);
+    const ib = PREFERRED_ORDER.indexOf(b.role);
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+const STATE_CITIES: Record<string, string[]> = {
+  "Tamil Nadu": ["Chennai", "Coimbatore", "Madurai", "Tiruchirappalli", "Salem", "Tirunelveli", "Vellore", "Erode", "Other"],
+  "Karnataka": ["Bengaluru", "Mysuru", "Mangaluru", "Hubballi", "Belagavi", "Other"],
+  "Maharashtra": ["Mumbai", "Pune", "Nagpur", "Nashik", "Thane", "Other"],
+  "Delhi NCR": ["New Delhi", "Noida", "Gurugram", "Faridabad", "Ghaziabad", "Other"],
+  "Telangana": ["Hyderabad", "Warangal", "Nizamabad", "Karimnagar", "Other"],
+  "Kerala": ["Kochi", "Thiruvananthapuram", "Kozhikode", "Thrissur", "Other"],
+  "Andhra Pradesh": ["Visakhapatnam", "Vijayawada", "Guntur", "Tirupati", "Other"],
+  "Gujarat": ["Ahmedabad", "Surat", "Vadodara", "Rajkot", "Other"],
+  "West Bengal": ["Kolkata", "Howrah", "Siliguri", "Durgapur", "Other"],
+  "Other": ["Other"],
+};
+
 const roleIcons: Record<string, typeof Users> = {
   academy: GraduationCap,
   clinic: HeartPulse,
@@ -143,37 +183,36 @@ const roleIcons: Record<string, typeof Users> = {
 export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   isOpen,
   onClose,
-  preselectedAssistantId,
+  preselectedRole,
 }) => {
   const [step, setStep] = useState<"lead" | "assistants" | "call">("lead");
   const [assistants, setAssistants] = useState<AssistantItem[]>(DEFAULT_ASSISTANTS);
   const [selectedAssistant, setSelectedAssistant] = useState<AssistantItem | null>(null);
 
-  // Form State
   const [formData, setFormData] = useState({
     fullName: "",
     countryCode: "+91",
     phone: "",
     email: "",
     businessName: "",
-    businessType: "Select type",
+    businessType: "",
     country: "IN India",
-    state: "Tamil Nadu",
-    city: "Chennai",
+    state: "",
+    city: "",
+    customCity: "",
     description: "",
   });
   const [formError, setFormError] = useState("");
   const [isSubmittingLead, setIsSubmittingLead] = useState(false);
 
-  // Call & WebRTC State
   const [callStatus, setCallStatus] = useState<"idle" | "connecting" | "connected" | "ended" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [isMuted, setIsMuted] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
-  const [activeRoomName, setActiveRoomName] = useState<string | null>(null);
 
+  const activeRoomRef = useRef<string | null>(null);
   const roomRef = useRef<Room | null>(null);
   const audioElementsRef = useRef<Set<HTMLAudioElement>>(new Set());
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -181,56 +220,14 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // Fetch available assistants dynamically from API
-  useEffect(() => {
-    if (!isOpen) return;
-    fetch("/api/demo/public")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.assistants && Array.isArray(data.assistants) && data.assistants.length > 0) {
-          setAssistants(data.assistants);
-        }
-      })
-      .catch((e) => console.warn("Could not fetch remote assistants list, using defaults:", e));
-  }, [isOpen]);
-
-  // Reset or cleanup on open/close
-  useEffect(() => {
-    if (!isOpen) {
-      cleanupCall();
-      setCallStatus("idle");
-      setCallDuration(0);
-      setErrorMsg("");
-      setStep("lead");
-    } else if (preselectedAssistantId) {
-      const match = assistants.find((a) => a.id === preselectedAssistantId);
-      if (match) setSelectedAssistant(match);
-    }
-  }, [isOpen, preselectedAssistantId]);
-
-  // Timer counter when connected
-  useEffect(() => {
-    if (callStatus === "connected") {
-      setCallDuration(0);
-      timerRef.current = setInterval(() => {
-        setCallDuration((prev) => prev + 1);
-      }, 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [callStatus]);
-
-  const cleanupCall = () => {
+  const cleanupCall = useCallback(() => {
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = null;
     }
     if (audioContextRef.current && audioContextRef.current.state !== "closed") {
       try {
-        audioContextRef.current.close();
+        void audioContextRef.current.close();
       } catch {
         // ignore
       }
@@ -254,9 +251,99 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       }
     });
     audioElementsRef.current.clear();
+    analyserRef.current = null;
     setAudioLevel(0);
     setAgentSpeaking(false);
-  };
+  }, []);
+
+  const releaseActiveRoom = useCallback(async () => {
+    const roomToClose = activeRoomRef.current;
+    activeRoomRef.current = null;
+    if (!roomToClose) return;
+    try {
+      await fetch("/api/demo/end", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ room: roomToClose }),
+        keepalive: true,
+      });
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Ensure tab refresh/close immediately frees the active LiveKit room
+  useEffect(() => {
+    const onPageHide = () => {
+      const roomToClose = activeRoomRef.current;
+      if (roomToClose) {
+        activeRoomRef.current = null;
+        fetch("/api/demo/end", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ room: roomToClose }),
+          keepalive: true,
+        }).catch(() => {});
+      }
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, []);
+
+  // Fetch live assistants from DB when modal opens
+  useEffect(() => {
+    if (!isOpen) return;
+    fetch("/api/demo/public")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.assistants && Array.isArray(data.assistants) && data.assistants.length > 0) {
+          setAssistants(sortAssistantsForGallery(data.assistants));
+        }
+      })
+      .catch(() => {});
+  }, [isOpen]);
+
+  // Restore saved lead in session so user doesn't have to re-fill form repeatedly
+  useEffect(() => {
+    if (!isOpen) {
+      cleanupCall();
+      void releaseActiveRoom();
+      setCallStatus("idle");
+      setCallDuration(0);
+      setErrorMsg("");
+      return;
+    }
+
+    try {
+      const cached = sessionStorage.getItem(LEAD_SESSION_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed?.fullName && parsed?.phone && parsed?.email) {
+          setFormData((prev) => ({ ...prev, ...parsed }));
+          setStep("assistants");
+          return;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    setStep("lead");
+  }, [isOpen, cleanupCall, releaseActiveRoom]);
+
+  // Call duration timer
+  useEffect(() => {
+    if (callStatus === "connected") {
+      setCallDuration(0);
+      timerRef.current = setInterval(() => {
+        setCallDuration((prev) => prev + 1);
+      }, 1000);
+    } else if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [callStatus]);
 
   const startAudioVisualizer = (remoteTrack: RemoteTrack) => {
     try {
@@ -292,10 +379,12 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         animFrameRef.current = requestAnimationFrame(checkVolume);
       };
       checkVolume();
-    } catch (e) {
-      console.warn("Audio visualizer init error:", e);
+    } catch {
+      // ignore visualizer errors
     }
   };
+
+  const resolvedCity = formData.city === "Other" ? formData.customCity.trim() : formData.city;
 
   const handleLeadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -303,7 +392,8 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       setFormError("Please enter your full name.");
       return;
     }
-    if (!formData.phone.trim() || formData.phone.trim().length < 7) {
+    const digitsOnly = formData.phone.replace(/\D/g, "");
+    if (digitsOnly.length < 7) {
       setFormError("Please enter a valid phone number.");
       return;
     }
@@ -311,31 +401,54 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       setFormError("Please enter a valid email address.");
       return;
     }
+    if (!formData.businessName.trim()) {
+      setFormError("Please enter your business name.");
+      return;
+    }
+    if (!formData.businessType) {
+      setFormError("Please select your business type.");
+      return;
+    }
+    if (formData.country === "IN India") {
+      if (!formData.state) {
+        setFormError("Please select your state.");
+        return;
+      }
+      if (!resolvedCity) {
+        setFormError("Please select or enter your city.");
+        return;
+      }
+    }
 
     setFormError("");
     setIsSubmittingLead(true);
 
     try {
-      // Save lead to database
+      sessionStorage.setItem(LEAD_SESSION_KEY, JSON.stringify(formData));
+    } catch {
+      // ignore storage quota
+    }
+
+    try {
       await fetch("/api/demo/public", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           lead: {
-            fullName: formData.fullName,
-            phone: `${formData.countryCode} ${formData.phone}`,
-            email: formData.email,
-            businessName: formData.businessName,
-            businessType: formData.businessType !== "Select type" ? formData.businessType : undefined,
+            fullName: formData.fullName.trim(),
+            phone: `${formData.countryCode} ${formData.phone.trim()}`,
+            email: formData.email.trim(),
+            businessName: formData.businessName.trim(),
+            businessType: formData.businessType,
             country: formData.country,
-            state: formData.state,
-            city: formData.city,
-            description: formData.description,
+            state: formData.state || undefined,
+            city: resolvedCity || undefined,
+            description: formData.description.trim() || undefined,
           },
         }),
       });
-    } catch (err) {
-      console.warn("Lead record notice:", err);
+    } catch {
+      // Lead persistence is best-effort so demo never blocks
     } finally {
       setIsSubmittingLead(false);
       setStep("assistants");
@@ -349,24 +462,40 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     setCallStatus("connecting");
     setErrorMsg("");
 
+    // Release any previous active demo room before requesting a new dispatch
+    await releaseActiveRoom();
+
     try {
-      const res = await fetch("/api/demo/public", {
+      const payload = {
+        assistantId: assistant.id,
+        lead: {
+          fullName: formData.fullName.trim(),
+          phone: `${formData.countryCode} ${formData.phone.trim()}`,
+          email: formData.email.trim(),
+          businessName: formData.businessName.trim(),
+          businessType: formData.businessType,
+          country: formData.country,
+          state: formData.state,
+          city: resolvedCity,
+          description: formData.description.trim() || undefined,
+        },
+      };
+
+      let res = await fetch("/api/demo/public", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          assistantId: assistant.id,
-          lead: {
-            fullName: formData.fullName,
-            phone: `${formData.countryCode} ${formData.phone}`,
-            email: formData.email,
-            businessName: formData.businessName,
-            businessType: formData.businessType,
-            country: formData.country,
-            state: formData.state,
-            city: formData.city,
-          },
-        }),
+        body: JSON.stringify(payload),
       });
+
+      // If previous room was still tearing down on LiveKit Cloud (409/502), wait 1.5s and retry once
+      if (!res.ok && (res.status === 409 || res.status === 502)) {
+        await new Promise((r) => setTimeout(r, 1500));
+        res = await fetch("/api/demo/public", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
@@ -375,13 +504,12 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
 
       const tokenData = await res.json();
       const { token, url, room: roomName } = tokenData;
-      setActiveRoomName(roomName || null);
+      activeRoomRef.current = roomName || null;
 
       if (!token || !url) {
         throw new Error("Invalid voice token received from service.");
       }
 
-      // Connect to LiveKit Room
       const lkRoom = new Room({
         adaptiveStream: true,
         dynacast: true,
@@ -395,13 +523,14 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           el.autoplay = true;
           document.body.appendChild(el);
           audioElementsRef.current.add(el);
-          void el.play().catch((err) => console.warn("Audio playback notice:", err));
+          void el.play().catch(() => {});
           startAudioVisualizer(track);
         }
       });
 
       lkRoom.on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
         cleanupCall();
+        void releaseActiveRoom();
         const normal =
           reason === undefined ||
           [
@@ -411,7 +540,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           ].includes(reason);
         setCallStatus(normal ? "ended" : "error");
         if (!normal) {
-          setErrorMsg("The voice call was ended unexpectedly. Please try again.");
+          setErrorMsg("The voice call ended unexpectedly. Please click Call Again.");
         }
       });
 
@@ -421,8 +550,8 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       setCallStatus("connected");
       setIsMuted(false);
     } catch (err) {
-      console.error("Call error:", err);
       cleanupCall();
+      await releaseActiveRoom();
       setCallStatus("error");
       setErrorMsg(
         err instanceof Error
@@ -433,22 +562,9 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   };
 
   const handleEndCall = async () => {
-    const currentRoom = activeRoomName;
     cleanupCall();
     setCallStatus("ended");
-
-    if (currentRoom) {
-      try {
-        await fetch("/api/demo/end", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ room: currentRoom }),
-        });
-      } catch (err) {
-        console.warn("End call release error:", err);
-      }
-      setActiveRoomName(null);
-    }
+    await releaseActiveRoom();
   };
 
   const toggleMute = async () => {
@@ -457,8 +573,8 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     try {
       await roomRef.current.localParticipant.setMicrophoneEnabled(!nextMuted);
       setIsMuted(nextMuted);
-    } catch (e) {
-      console.warn("Mute error:", e);
+    } catch {
+      // ignore
     }
   };
 
@@ -470,131 +586,183 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
 
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-xl animate-fade-in overflow-y-auto">
-      {/* Background glow effects */}
-      <div className="fixed -top-40 -right-40 w-96 h-96 bg-purple-600/20 rounded-full blur-[120px] pointer-events-none" />
-      <div className="fixed -bottom-40 -left-40 w-96 h-96 bg-blue-600/20 rounded-full blur-[120px] pointer-events-none" />
+  const modalWidthClass =
+    step === "assistants"
+      ? "max-w-[1120px]"
+      : step === "call"
+      ? "max-w-xl"
+      : "max-w-[540px]";
 
-      {/* Main Container */}
-      <div className="relative w-full max-w-4xl my-auto overflow-hidden rounded-3xl border border-[#2d3460] bg-[#0c0e1e]/95 text-white shadow-[0_0_80px_rgba(112,68,255,0.22)] transition-all">
-        {/* Top Header Bar */}
-        <div className="flex items-center justify-between border-b border-[#21274a] px-6 py-4">
-          <div className="flex items-center gap-3">
+  const availableCities = formData.state ? STATE_CITIES[formData.state] || ["Other"] : [];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-xl overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+    >
+      {/* Modal Card */}
+      <div
+        className={`relative w-full ${modalWidthClass} my-auto overflow-hidden rounded-3xl border shadow-[0_0_90px_rgba(112,68,255,0.28)] transition-all duration-300 ${
+          step === "assistants"
+            ? `${landingStyles.assistantGallerySurface} border-purple-200/80`
+            : `${landingStyles.darkModalSurface} border-[#262c52] bg-gradient-to-b from-[#12152a] to-[#0b0d1b]`
+        }`}
+      >
+        {/* Top Bar */}
+        <div
+          className={`flex items-center justify-between px-5 sm:px-7 py-3.5 border-b ${
+            step === "assistants"
+              ? "border-gray-200 bg-white/90 text-[#1e1b2e]"
+              : "border-[#1f2547] bg-[#0d1022]/90 text-white"
+          }`}
+        >
+          <div className="flex items-center gap-3 min-w-0">
             {step !== "lead" && (
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   if (step === "call") {
-                    handleEndCall();
+                    await handleEndCall();
+                    setStep("assistants");
+                  } else {
+                    setStep("lead");
                   }
-                  setStep("assistants");
                 }}
-                className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
-                title="Back to Assistants"
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                  step === "assistants"
+                    ? "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
+                    : "text-gray-300 hover:text-white hover:bg-white/10"
+                }`}
+                title={step === "call" ? "Back to Assistants" : "Edit Your Details"}
               >
-                <ArrowLeft className="w-5 h-5" />
+                <ArrowLeft className="w-4 h-4" />
               </button>
             )}
-            <div className="flex items-center gap-2">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#9eff00] animate-pulse" />
-              <span className="text-xs font-mono font-semibold tracking-wider text-[#9eff00] uppercase">
+
+            <div className="flex items-center gap-2 truncate">
+              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+              <span
+                className={`text-xs font-semibold tracking-wider uppercase truncate ${
+                  step === "assistants" ? "text-purple-800" : "text-purple-300"
+                }`}
+              >
                 {step === "lead"
-                  ? "Book A Demo • Step 1 of 2"
+                  ? "Book A Demo"
                   : step === "assistants"
-                  ? "Select AI Assistant • Step 2 of 2"
-                  : `Live Call: ${selectedAssistant?.name || "Assistant"}`}
+                  ? "Choose Your AI Voice Assistant"
+                  : `Live Call • ${selectedAssistant?.name || "AI Agent"}`}
               </span>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              cleanupCall();
-              if (activeRoomName) {
-                fetch("/api/demo/end", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ room: activeRoomName }),
-                }).catch(() => {});
-              }
-              onClose();
-            }}
-            className="rounded-full p-2 text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
-            aria-label="Close"
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          <div className="flex items-center gap-3">
+            {step === "assistants" && formData.fullName && (
+              <button
+                type="button"
+                onClick={() => setStep("lead")}
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-900 hover:bg-purple-200 transition-colors cursor-pointer"
+              >
+                <span>
+                  {formData.fullName}
+                  {formData.businessName ? ` • ${formData.businessName}` : ""}
+                </span>
+                <span className="underline ml-1">Edit</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={async () => {
+                cleanupCall();
+                await releaseActiveRoom();
+                onClose();
+              }}
+              className={`rounded-full p-1.5 transition-colors cursor-pointer ${
+                step === "assistants"
+                  ? "text-gray-500 hover:bg-gray-200 hover:text-gray-900"
+                  : "text-gray-400 hover:bg-white/10 hover:text-white"
+              }`}
+              aria-label="Close modal"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        {/* ── STEP 1: LEAD FORM (Image 1 Style) ─────────────────────────────────── */}
+        {/* ── STEP 1: LEAD CAPTURE FORM (Matches Screenshot 2) ─────────────────── */}
         {step === "lead" && (
-          <div className="p-6 sm:p-10 max-w-xl mx-auto">
-            {/* Top Phone Icon Icon */}
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 shadow-[0_0_30px_rgba(124,58,237,0.5)]">
-              <PhoneCall className="w-7 h-7 text-white" />
+          <div className="px-6 py-7 sm:px-9 sm:py-8">
+            {/* Glowing Purple Phone Badge */}
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-b from-[#7c5cff] to-[#6240f5] shadow-[0_0_28px_rgba(124,92,255,0.55)]">
+              <PhoneCall className="w-6 h-6 text-white" />
             </div>
 
-            <div className="text-center mb-8">
-              <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
+            <div className="text-center mb-6">
+              <h2 className="text-2xl sm:text-[26px] font-extrabold tracking-tight text-white">
                 Start Your AI Agent Call
               </h2>
-              <p className="text-sm text-gray-400 mt-2">
-                Fill in your details and our Jill-Jill AI voice agent will connect with you instantly.
+              <p className="text-xs sm:text-sm text-[#949bc0] mt-1.5">
+                Fill in your details and our Jill-Jill agent will connect with you instantly.
               </p>
             </div>
 
             {formError && (
-              <div className="mb-6 rounded-xl bg-red-500/10 border border-red-500/30 p-3 text-center text-xs text-red-400">
+              <div className="mb-4 rounded-xl bg-red-500/15 border border-red-500/40 px-4 py-2.5 text-center text-xs text-red-300">
                 {formError}
               </div>
             )}
 
-            <form onSubmit={handleLeadSubmit} className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-300 mb-1.5">
-                  FULL NAME *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formData.fullName}
-                  onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
-                  placeholder="John Doe"
-                  className="w-full rounded-xl border border-[#2d3563] bg-[#161a34] px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-300 mb-1.5">
-                  PHONE NUMBER *
-                </label>
-                <div className="flex gap-2">
-                  <select
-                    value={formData.countryCode}
-                    onChange={(e) => setFormData({ ...formData, countryCode: e.target.value })}
-                    className="w-28 rounded-xl border border-[#2d3563] bg-[#161a34] px-3 py-3 text-sm text-white focus:border-purple-500 focus:outline-none transition-all"
-                  >
-                    <option value="+91">IN +91</option>
-                    <option value="+1">US +1</option>
-                    <option value="+44">UK +44</option>
-                    <option value="+971">AE +971</option>
-                    <option value="+65">SG +65</option>
-                    <option value="+61">AU +61</option>
-                  </select>
+            <form onSubmit={handleLeadSubmit} className="space-y-3.5">
+              {/* Row 1: FULL NAME * + PHONE NUMBER * side-by-side */}
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3.5">
+                <div className="sm:col-span-5">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                    FULL NAME *
+                  </label>
                   <input
-                    type="tel"
+                    type="text"
                     required
-                    value={formData.phone}
-                    onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                    placeholder="98765 43210"
-                    className="flex-1 rounded-xl border border-[#2d3563] bg-[#161a34] px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all"
+                    value={formData.fullName}
+                    onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
+                    placeholder="John Doe"
+                    className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none focus:ring-1 focus:ring-[#7c5cff]"
                   />
+                </div>
+
+                <div className="sm:col-span-7">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                    PHONE NUMBER *
+                  </label>
+                  <div className="flex items-center rounded-xl border border-[#283059] bg-[#161a34] focus-within:border-[#7c5cff] focus-within:ring-1 focus-within:ring-[#7c5cff] overflow-hidden">
+                    <select
+                      aria-label="Country code"
+                      value={formData.countryCode}
+                      onChange={(e) => setFormData({ ...formData, countryCode: e.target.value })}
+                      className="bg-[#161a34] pl-3 pr-2 py-2.5 text-xs font-bold text-white border-r border-[#283059] focus:outline-none cursor-pointer"
+                    >
+                      <option value="+91">IN +91</option>
+                      <option value="+1">US +1</option>
+                      <option value="+44">UK +44</option>
+                      <option value="+971">AE +971</option>
+                      <option value="+65">SG +65</option>
+                      <option value="+61">AU +61</option>
+                    </select>
+                    <input
+                      type="tel"
+                      required
+                      value={formData.phone}
+                      onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                      placeholder="98765 43210"
+                      className="w-full bg-[#161a34] px-3 py-2.5 text-sm text-white placeholder-[#5e668c] focus:outline-none border-0"
+                    />
+                  </div>
                 </div>
               </div>
 
+              {/* EMAIL ADDRESS * */}
               <div>
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-300 mb-1.5">
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
                   EMAIL ADDRESS *
                 </label>
                 <input
@@ -603,12 +771,13 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                   value={formData.email}
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   placeholder="john@company.com"
-                  className="w-full rounded-xl border border-[#2d3563] bg-[#161a34] px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all"
+                  className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none focus:ring-1 focus:ring-[#7c5cff]"
                 />
               </div>
 
+              {/* BUSINESS NAME * */}
               <div>
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-300 mb-1.5">
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
                   BUSINESS NAME *
                 </label>
                 <input
@@ -617,106 +786,162 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                   value={formData.businessName}
                   onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
                   placeholder="Acme Corp"
-                  className="w-full rounded-xl border border-[#2d3563] bg-[#161a34] px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all"
+                  className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none focus:ring-1 focus:ring-[#7c5cff]"
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-300 mb-1.5">
-                    BUSINESS TYPE *
-                  </label>
-                  <select
-                    value={formData.businessType}
-                    onChange={(e) => setFormData({ ...formData, businessType: e.target.value })}
-                    className="w-full rounded-xl border border-[#2d3563] bg-[#161a34] px-4 py-3 text-sm text-white focus:border-purple-500 focus:outline-none transition-all"
-                  >
-                    <option value="Select type">Select type</option>
-                    <option value="Healthcare & Clinics">Healthcare & Clinics</option>
-                    <option value="Education & Academy">Education & Academy</option>
-                    <option value="Real Estate">Real Estate</option>
-                    <option value="E-Commerce">E-Commerce</option>
-                    <option value="Financial Services">Financial Services</option>
-                    <option value="Customer Support / IVR">Customer Support / IVR</option>
-                    <option value="IT & SaaS">IT & SaaS</option>
-                    <option value="Hospitality">Hospitality</option>
-                    <option value="Other">Other</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-300 mb-1.5">
-                    COUNTRY *
-                  </label>
-                  <select
-                    value={formData.country}
-                    onChange={(e) => setFormData({ ...formData, country: e.target.value })}
-                    className="w-full rounded-xl border border-[#2d3563] bg-[#161a34] px-4 py-3 text-sm text-white focus:border-purple-500 focus:outline-none transition-all"
-                  >
-                    <option value="IN India">IN India</option>
-                    <option value="US United States">US United States</option>
-                    <option value="AE United Arab Emirates">AE United Arab Emirates</option>
-                    <option value="GB United Kingdom">GB United Kingdom</option>
-                    <option value="SG Singapore">SG Singapore</option>
-                    <option value="Other">Other</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-300 mb-1.5">
-                    STATE *
-                  </label>
-                  <select
-                    value={formData.state}
-                    onChange={(e) => setFormData({ ...formData, state: e.target.value })}
-                    className="w-full rounded-xl border border-[#2d3563] bg-[#161a34] px-4 py-3 text-sm text-white focus:border-purple-500 focus:outline-none transition-all"
-                  >
-                    <option value="Tamil Nadu">Tamil Nadu</option>
-                    <option value="Karnataka">Karnataka</option>
-                    <option value="Maharashtra">Maharashtra</option>
-                    <option value="Delhi">Delhi</option>
-                    <option value="Kerala">Kerala</option>
-                    <option value="Telangana">Telangana</option>
-                    <option value="Andhra Pradesh">Andhra Pradesh</option>
-                    <option value="Other">Other</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-300 mb-1.5">
-                    CITY *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.city}
-                    onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                    placeholder="Chennai"
-                    className="w-full rounded-xl border border-[#2d3563] bg-[#161a34] px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all"
-                  />
-                </div>
-              </div>
-
+              {/* BUSINESS TYPE * */}
               <div>
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-300 mb-1.5">
-                  DESCRIPTION (OPTIONAL)
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                  BUSINESS TYPE *
+                </label>
+                <select
+                  required
+                  value={formData.businessType}
+                  onChange={(e) => setFormData({ ...formData, businessType: e.target.value })}
+                  className="w-full sm:w-3/5 rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white focus:border-[#7c5cff] focus:outline-none cursor-pointer"
+                >
+                  <option value="">Select type</option>
+                  <option value="Healthcare & Clinic">Healthcare & Clinic</option>
+                  <option value="Education & Academy">Education & Academy</option>
+                  <option value="Real Estate">Real Estate</option>
+                  <option value="E-Commerce & Retail">E-Commerce & Retail</option>
+                  <option value="Banking & Finance">Banking & Finance</option>
+                  <option value="Customer Support / IVR">Customer Support / IVR</option>
+                  <option value="IT & SaaS">IT & SaaS</option>
+                  <option value="Hospitality & Travel">Hospitality & Travel</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+
+              {/* COUNTRY * */}
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                  COUNTRY *
+                </label>
+                <select
+                  value={formData.country}
+                  onChange={(e) =>
+                    setFormData({ ...formData, country: e.target.value, state: "", city: "" })
+                  }
+                  className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white focus:border-[#7c5cff] focus:outline-none cursor-pointer"
+                >
+                  <option value="IN India">IN India</option>
+                  <option value="US United States">US United States</option>
+                  <option value="AE United Arab Emirates">AE United Arab Emirates</option>
+                  <option value="GB United Kingdom">GB United Kingdom</option>
+                  <option value="SG Singapore">SG Singapore</option>
+                  <option value="AU Australia">AU Australia</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+
+              {/* STATE * & CITY * side-by-side */}
+              {formData.country === "IN India" ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                      STATE *
+                    </label>
+                    <select
+                      required
+                      value={formData.state}
+                      onChange={(e) =>
+                        setFormData({ ...formData, state: e.target.value, city: "", customCity: "" })
+                      }
+                      className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white focus:border-[#7c5cff] focus:outline-none cursor-pointer"
+                    >
+                      <option value="">Select state</option>
+                      {Object.keys(STATE_CITIES).map((st) => (
+                        <option key={st} value={st}>
+                          {st}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                      CITY *
+                    </label>
+                    {formData.city === "Other" ? (
+                      <input
+                        type="text"
+                        required
+                        value={formData.customCity}
+                        onChange={(e) => setFormData({ ...formData, customCity: e.target.value })}
+                        placeholder="Enter your city"
+                        className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none"
+                      />
+                    ) : (
+                      <select
+                        required
+                        disabled={!formData.state}
+                        value={formData.city}
+                        onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                        className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white disabled:opacity-60 focus:border-[#7c5cff] focus:outline-none cursor-pointer"
+                      >
+                        <option value="">
+                          {formData.state ? "Select city" : "Select a state first"}
+                        </option>
+                        {availableCities.map((ct) => (
+                          <option key={ct} value={ct}>
+                            {ct}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                      STATE / REGION
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.state}
+                      onChange={(e) => setFormData({ ...formData, state: e.target.value })}
+                      placeholder="State / Province"
+                      className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                      CITY
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.city}
+                      onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                      placeholder="City"
+                      className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2.5 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* DESCRIPTION (OPTIONAL) */}
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9ba3c7] mb-1.5">
+                  DESCRIPTION <span className="text-[#6c759e] font-normal">(OPTIONAL)</span>
                 </label>
                 <textarea
                   rows={2}
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Tell us what you want your AI voice agent to handle..."
-                  className="w-full rounded-xl border border-[#2d3563] bg-[#161a34] px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all"
+                  placeholder="Optional: Tell us briefly about your use case..."
+                  className="w-full rounded-xl border border-[#283059] bg-[#161a34] px-3.5 py-2 text-sm text-white placeholder-[#5e668c] focus:border-[#7c5cff] focus:outline-none"
                 />
               </div>
 
-              <div className="pt-3">
+              {/* Submit Button */}
+              <div className="pt-2">
                 <button
                   type="submit"
                   disabled={isSubmittingLead}
-                  className="w-full flex items-center justify-center gap-2.5 rounded-xl bg-gradient-to-r from-[#6366f1] via-[#7c3aed] to-[#8b5cf6] py-3.5 px-6 font-semibold text-white shadow-[0_0_30px_rgba(124,58,237,0.4)] hover:shadow-[0_0_40px_rgba(124,58,237,0.6)] hover:scale-[1.01] transition-all disabled:opacity-60 cursor-pointer"
+                  className="w-full flex items-center justify-center gap-2.5 rounded-xl bg-gradient-to-r from-[#6549f7] via-[#7547f9] to-[#8048fb] py-3.5 px-6 font-bold text-sm sm:text-base text-white shadow-[0_8px_30px_rgba(117,71,249,0.5)] hover:shadow-[0_10px_38px_rgba(117,71,249,0.7)] hover:brightness-110 transition-all disabled:opacity-60 cursor-pointer"
                 >
                   {isSubmittingLead ? (
                     <LoaderCircle className="w-5 h-5 animate-spin" />
@@ -732,43 +957,54 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           </div>
         )}
 
-        {/* ── STEP 2: ASSISTANT SELECTION (Image 2 Style) ───────────────────────── */}
+        {/* ── STEP 2: 9 ASSISTANT ORB STATIONS (Matches Screenshot 3) ─────────── */}
         {step === "assistants" && (
-          <div className="p-6 sm:p-8 max-h-[80vh] overflow-y-auto">
-            <div className="text-center mb-8">
-              <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
-                Choose Your Voice Assistant
+          <div className="px-4 sm:px-8 py-6 sm:py-8 max-h-[82vh] overflow-y-auto">
+            <div className="text-center mb-2">
+              <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-[#1c1830]">
+                Select an AI Assistant to Start Live Call
               </h2>
-              <p className="text-sm text-gray-400 mt-2 max-w-lg mx-auto">
-                Select an assistant station below to test live real-time voice calls powered by{" "}
-                <span className="text-[#a78bfa] font-semibold">Gemini 3.1 Flash Live</span>.
+              <p className="text-xs sm:text-sm text-[#5b5675] mt-1">
+                Click any assistant below to speak live in English, Tamil, or Tanglish — powered by{" "}
+                <strong className="text-[#5b34c9]">Gemini 3.1 Flash Live</strong>.
               </p>
             </div>
 
-            <div className={styles.stage}>
+            <div className={landingStyles.orbGrid}>
               {assistants.map((assistant) => {
                 const Icon = roleIcons[assistant.role] || Users;
+                const isHighlighted = preselectedRole === assistant.role;
                 return (
-                  <article key={assistant.id} className={styles.station}>
+                  <article
+                    key={assistant.id}
+                    className={`${landingStyles.orbStation} ${
+                      isHighlighted ? landingStyles.orbHighlighted : ""
+                    }`}
+                  >
                     <button
                       type="button"
                       onClick={() => handleStartCall(assistant)}
-                      className={styles.orb}
-                      aria-label={`Select ${assistant.name}`}
+                      className={landingStyles.orbButton}
+                      aria-label={`Start demo call with ${assistant.name}`}
                     >
-                      <Icon size={36} strokeWidth={1.6} aria-hidden="true" />
-                      <h2>{assistant.name}</h2>
-                      <span className={styles.status}>
-                        <i data-active="true" />
+                      <Icon
+                        size={36}
+                        strokeWidth={1.6}
+                        aria-hidden="true"
+                        className={landingStyles.orbIcon}
+                      />
+                      <h3 className={landingStyles.orbTitle}>{assistant.name}</h3>
+                      <span className={landingStyles.orbStatus}>
+                        <i className={landingStyles.orbStatusDot} />
                         Active
                       </span>
                     </button>
-                    <span className={styles.plinth} aria-hidden="true" />
-                    <span className={styles.voice}>{assistant.voice}</span>
+                    <span className={landingStyles.orbPlinth} aria-hidden="true" />
+                    <span className={landingStyles.orbVoice}>{assistant.voice}</span>
                     <button
                       type="button"
                       onClick={() => handleStartCall(assistant)}
-                      className={styles.listen}
+                      className={landingStyles.tryDemoBtn}
                     >
                       Try Demo
                     </button>
@@ -776,7 +1012,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleStartCall(assistant)}
-                        className="mt-2 text-xs text-[#a78bfa] underline underline-offset-4 hover:text-white"
+                        className={landingStyles.testTransferBtn}
                       >
                         Test transfer
                       </button>
@@ -788,36 +1024,34 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           </div>
         )}
 
-        {/* ── STEP 3: LIVE WEBRTC CALL ────────────────────────────────────────── */}
+        {/* ── STEP 3: LIVE WEBRTC VOICE CALL ─────────────────────────────────── */}
         {step === "call" && selectedAssistant && (
-          <div className="p-6 sm:p-12 text-center">
-            {/* Pulsating Voice Orb / Avatar */}
-            <div className="relative mx-auto my-6 flex h-40 w-40 items-center justify-center">
-              {/* Outer pulsing ripples */}
+          <div className="px-6 py-9 sm:px-10 sm:py-11 text-center">
+            {/* Pulsating 3D Orb */}
+            <div className="relative mx-auto my-4 flex h-40 w-40 items-center justify-center">
               <div
-                className="absolute inset-0 rounded-full bg-gradient-to-tr from-purple-500/30 to-[#9eff00]/30 blur-xl transition-all duration-300"
+                className="absolute inset-0 rounded-full bg-gradient-to-tr from-purple-500/35 to-[#9eff00]/35 blur-xl transition-all duration-150"
                 style={{
-                  transform: `scale(${1 + (audioLevel / 100) * 0.8})`,
-                  opacity: callStatus === "connected" ? 0.7 : 0.2,
+                  transform: `scale(${1 + (audioLevel / 100) * 0.75})`,
+                  opacity: callStatus === "connected" ? 0.8 : 0.25,
                 }}
               />
-              {/* Orb sphere */}
               <div
-                className={`relative flex h-32 w-32 items-center justify-center rounded-full border-2 transition-all duration-300 ${
+                className={`relative flex h-32 w-32 items-center justify-center rounded-full border-2 transition-all duration-200 ${
                   agentSpeaking
-                    ? "border-[#9eff00] shadow-[0_0_50px_rgba(158,255,0,0.5)] bg-gradient-to-br from-[#4c2889] to-[#1e133d]"
-                    : "border-purple-500/50 shadow-[0_0_30px_rgba(168,85,247,0.3)] bg-gradient-to-br from-[#2a1c4b] to-[#120d24]"
+                    ? "border-[#9eff00] shadow-[0_0_50px_rgba(158,255,0,0.45)] bg-gradient-to-br from-[#5b477b] to-[#1e133d]"
+                    : "border-purple-400/60 shadow-[0_0_32px_rgba(168,85,247,0.35)] bg-gradient-to-br from-[#483666] to-[#19132e]"
                 }`}
                 style={{
-                  transform: agentSpeaking ? "scale(1.05)" : "scale(1)",
+                  transform: agentSpeaking ? "scale(1.06)" : "scale(1)",
                 }}
               >
                 {(() => {
                   const RoleIcon = roleIcons[selectedAssistant.role] || Users;
                   return (
                     <RoleIcon
-                      className={`w-14 h-14 transition-colors duration-300 ${
-                        agentSpeaking ? "text-[#9eff00]" : "text-purple-300"
+                      className={`w-14 h-14 transition-colors duration-200 ${
+                        agentSpeaking ? "text-[#9eff00]" : "text-purple-200"
                       }`}
                     />
                   );
@@ -825,39 +1059,45 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
               </div>
             </div>
 
-            {/* Title & Status */}
-            <h3 className="text-2xl font-bold text-white mb-1">
+            <h3 className="text-2xl font-bold text-white mb-2">
               {selectedAssistant.name}
             </h3>
-            <div className="flex items-center justify-center gap-2 text-xs text-gray-400 mb-4">
-              <span className="px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+
+            <div className="flex flex-wrap items-center justify-center gap-2 text-xs mb-3">
+              <span className="px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-200 border border-purple-400/30">
                 Voice: {selectedAssistant.voice}
               </span>
-              <span className="px-2.5 py-0.5 rounded-full bg-[#9eff00]/10 text-[#9eff00] border border-[#9eff00]/30 font-medium">
+              <span className="px-2.5 py-0.5 rounded-full bg-[#9eff00]/15 text-[#9eff00] border border-[#9eff00]/35 font-semibold">
                 Gemini 3.1 Flash Live
               </span>
             </div>
 
-            {/* Live Call Duration & Status */}
+            {formData.fullName && (
+              <p className="text-xs text-[#9ba3c7] mb-5">
+                Caller: <strong className="text-white">{formData.fullName}</strong>
+                {formData.businessName ? ` • ${formData.businessName}` : ""}
+              </p>
+            )}
+
             {callStatus === "connecting" && (
-              <div className="flex items-center justify-center gap-2 text-sm text-yellow-400 mb-6">
+              <div className="flex items-center justify-center gap-2 text-sm text-amber-300 mb-7">
                 <LoaderCircle className="w-4 h-4 animate-spin" />
-                <span>Connecting live audio session...</span>
+                <span>Connecting real-time voice session...</span>
               </div>
             )}
 
             {callStatus === "connected" && (
-              <div className="mb-6 space-y-1">
+              <div className="mb-5 space-y-1">
                 <div className="text-3xl font-mono font-bold text-white tracking-widest">
                   {formatTimer(callDuration)}
                 </div>
-                <p className="text-xs text-gray-400">
+                <p className="text-xs">
                   {agentSpeaking ? (
                     <span className="text-[#9eff00] font-semibold animate-pulse">
-                      ● Agent is speaking...
+                      ● Assistant is speaking...
                     </span>
                   ) : (
-                    <span className="text-gray-400">Listening to your microphone...</span>
+                    <span className="text-[#a5add0]">Listening — speak naturally in English or Tamil...</span>
                   )}
                 </p>
               </div>
@@ -865,20 +1105,19 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
 
             {callStatus === "ended" && (
               <div className="mb-6">
-                <p className="text-sm font-semibold text-gray-300">Call Completed</p>
-                <p className="text-xs text-gray-500">Duration: {formatTimer(callDuration)}</p>
+                <p className="text-sm font-semibold text-gray-200">Call Ended</p>
+                <p className="text-xs text-[#8f97bd] mt-0.5">Duration: {formatTimer(callDuration)}</p>
               </div>
             )}
 
             {callStatus === "error" && (
-              <div className="mb-6 rounded-xl bg-red-500/10 border border-red-500/30 p-3 max-w-md mx-auto text-xs text-red-400">
-                {errorMsg || "Connection failed. Please ensure microphone permissions are granted."}
+              <div className="mb-6 rounded-xl bg-red-500/15 border border-red-500/40 p-3.5 max-w-md mx-auto text-xs text-red-300">
+                {errorMsg || "Connection failed. Please check microphone permissions and try again."}
               </div>
             )}
 
-            {/* Audio Wave Visualizer Bars */}
             {callStatus === "connected" && (
-              <div className="flex items-center justify-center gap-1.5 h-8 mb-8">
+              <div className="flex items-center justify-center gap-1.5 h-8 mb-7">
                 {[...Array(9)].map((_, i) => {
                   const factor = Math.sin((i / 8) * Math.PI);
                   const barHeight = Math.max(6, Math.min(32, (audioLevel / 2) * factor + 6));
@@ -896,19 +1135,19 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
               </div>
             )}
 
-            {/* Action Buttons */}
-            <div className="flex items-center justify-center gap-4">
+            {/* Call Controls */}
+            <div className="flex flex-wrap items-center justify-center gap-3.5">
               {callStatus === "connected" && (
                 <button
                   type="button"
                   onClick={toggleMute}
-                  className={`flex items-center gap-2 px-5 py-3 rounded-2xl border font-semibold text-sm transition-all ${
+                  className={`flex items-center gap-2 px-5 py-3 rounded-2xl border font-semibold text-sm transition-all cursor-pointer ${
                     isMuted
-                      ? "bg-red-500/20 border-red-500/50 text-red-300 hover:bg-red-500/30"
+                      ? "bg-red-500/20 border-red-500/50 text-red-200 hover:bg-red-500/30"
                       : "bg-white/10 border-white/20 text-white hover:bg-white/20"
                   }`}
                 >
-                  {isMuted ? <MicOff className="w-5 h-5 text-red-400" /> : <Mic className="w-5 h-5" />}
+                  {isMuted ? <MicOff className="w-4 h-4 text-red-300" /> : <Mic className="w-4 h-4" />}
                   <span>{isMuted ? "Unmute" : "Mute"}</span>
                 </button>
               )}
@@ -917,20 +1156,30 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                 <button
                   type="button"
                   onClick={handleEndCall}
-                  className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-red-600 hover:bg-red-700 text-white font-semibold text-sm shadow-[0_0_20px_rgba(220,38,38,0.4)] transition-all cursor-pointer"
+                  className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-red-600 hover:bg-red-700 text-white font-semibold text-sm shadow-[0_0_24px_rgba(220,38,38,0.45)] transition-all cursor-pointer"
                 >
-                  <PhoneOff className="w-5 h-5" />
+                  <PhoneOff className="w-4 h-4" />
                   <span>End Call</span>
                 </button>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => setStep("assistants")}
-                  className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold text-sm shadow-[0_0_20px_rgba(124,58,237,0.4)] hover:shadow-[0_0_30px_rgba(124,58,237,0.6)] transition-all cursor-pointer"
-                >
-                  <Sparkles className="w-5 h-5" />
-                  <span>Try Another Assistant</span>
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => handleStartCall(selectedAssistant)}
+                    className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold text-sm transition-all cursor-pointer"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    <span>Call Again</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStep("assistants")}
+                    className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-gradient-to-r from-[#6549f7] to-[#8048fb] text-white font-semibold text-sm shadow-[0_0_24px_rgba(117,71,249,0.45)] hover:brightness-110 transition-all cursor-pointer"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span>All 9 Assistants</span>
+                  </button>
+                </>
               )}
             </div>
           </div>

@@ -1,0 +1,341 @@
+/* Scoped Jill-Jill Landing Page & Demo Modal Styles */
+
+.landingRoot {
+  --jj-bg: #030a01;
+  --jj-primary: rgba(10, 10, 10, 0.88);
+  --jj-header: rgba(10, 10, 10, 0.84);
+  --jj-secondary: rgba(17, 17, 17, 0.88);
+  --jj-surface: rgba(38, 38, 38, 0.55);
+  --jj-accent: #9eff00;
+  --jj-accent-hover: #bfff40;
+  --jj-accent-soft: rgba(158, 255, 0, 0.14);
+  --jj-logo: #ffd600;
+  --jj-text: #eaeaea;
+  --jj-muted: #9ca3af;
+  --jj-border: rgba(55, 65, 81, 0.65);
+  --jj-grid-alpha: 0.15;
+  --jj-glow-alpha: 0.2;
+
+  position: relative;
+  z-index: 0;
+  min-height: 100vh;
+  color: var(--jj-text);
+  background-color: var(--jj-bg);
+  background-image:
+    radial-gradient(
+      ellipse 80% 80% at 50% 50%,
+      hsla(85, 100%, 50%, var(--jj-glow-alpha)),
+      transparent 60%
+    ),
+    linear-gradient(hsla(85, 80%, 50%, var(--jj-grid-alpha)) 1px, transparent 1px),
+    linear-gradient(90deg, hsla(85, 80%, 50%, var(--jj-grid-alpha)) 1px, transparent 1px);
+  background-size: 100% 100%, 50px 50px, 50px 50px;
+  background-repeat: no-repeat, repeat, repeat;
+  background-attachment: fixed;
+  animation: jjSubtlePan 20s infinite ease-in-out alternate;
+  overflow-x: hidden;
+}
+
+.landingRoot[data-jj-theme="light"] {
+  --jj-bg: #f8fafc;
+  --jj-primary: rgba(255, 255, 255, 0.92);
+  --jj-header: rgba(255, 255, 255, 0.9);
+  --jj-secondary: rgba(243, 244, 246, 0.92);
+  --jj-surface: rgba(241, 245, 249, 0.9);
+  --jj-accent: #65a30d;
+  --jj-accent-hover: #4d7c0f;
+  --jj-accent-soft: rgba(101, 163, 13, 0.14);
+  --jj-logo: #ca8a04;
+  --jj-text: #111827;
+  --jj-muted: #4b5563;
+  --jj-border: rgba(209, 213, 219, 0.9);
+  --jj-grid-alpha: 0.09;
+  --jj-glow-alpha: 0.1;
+}
+
+.landingRoot::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    hsla(85, 100%, 50%, 0.09) 45%,
+    hsla(85, 100%, 50%, 0.09) 55%,
+    transparent 100%
+  );
+  background-size: 100% 200px;
+  background-repeat: no-repeat;
+  animation: jjScannerGlow 8s infinite linear;
+  pointer-events: none;
+}
+
+.landingRoot[data-jj-theme="light"]::before {
+  opacity: 0.45;
+}
+
+@keyframes jjScannerGlow {
+  0% { background-position: 50% -100%; }
+  100% { background-position: 50% 200%; }
+}
+
+@keyframes jjSubtlePan {
+  0%, 100% { background-position: 50% 50%, 0 0, 0 0; }
+  50% { background-position: 50% 50%, 25px 25px, 25px 25px; }
+}
+
+@keyframes jjBellRing {
+  0%, 100% { transform: rotate(0deg); }
+  5%, 15% { transform: rotate(14deg); }
+  10%, 20% { transform: rotate(-12deg); }
+  25% { transform: rotate(0deg); }
+}
+
+@keyframes jjPulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 14px rgba(158, 255, 0, 0.65), 0 0 28px rgba(158, 255, 0, 0.35);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 24px rgba(191, 255, 64, 0.85), 0 0 48px rgba(191, 255, 64, 0.45);
+    transform: scale(1.04);
+  }
+}
+
+@keyframes jjHeroGlow {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(1.08); }
+}
+
+.bellRing {
+  transform-origin: top center;
+  animation: jjBellRing 4s ease-in-out infinite;
+}
+
+.pulseGlowBtn {
+  animation: jjPulseGlow 2.2s ease-in-out infinite;
+}
+.pulseGlowBtn:hover {
+  animation: none;
+}
+
+.heroGlow {
+  animation: jjHeroGlow 5s ease-in-out infinite;
+}
+
+/* Protect dark modal text & inputs even when global html[data-theme="light"] is active */
+.darkModalSurface {
+  color: #f8fafc !important;
+  color-scheme: dark;
+}
+.darkModalSurface h1,
+.darkModalSurface h2,
+.darkModalSurface h3,
+.darkModalSurface span,
+.darkModalSurface label,
+.darkModalSurface p {
+  color: inherit;
+}
+.darkModalSurface input,
+.darkModalSurface select,
+.darkModalSurface textarea {
+  color: #ffffff !important;
+  background-color: #161a34 !important;
+}
+.darkModalSurface input::placeholder,
+.darkModalSurface textarea::placeholder {
+  color: #6b7280 !important;
+}
+
+/* Step 2 Assistant Gallery Stage — matches Screenshot 3 (5 + 4 purple 3D orbs on clean alabaster stage) */
+.assistantGallerySurface {
+  background: #f8f9fc;
+  color: #1e1b2e;
+}
+
+.orbGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 32px 18px;
+  padding: 24px 8px 18px;
+  perspective: 1100px;
+}
+
+.orbStation {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  padding-top: 6px;
+}
+
+.orbButton {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 164px;
+  height: 164px;
+  border-radius: 50%;
+  color: #f4f1ff !important;
+  background:
+    radial-gradient(circle at 35% 16%, rgba(170, 133, 232, 0.48), transparent 49%),
+    linear-gradient(145deg, #5b477b, #232039 68%);
+  box-shadow:
+    inset 1px 2px 3px rgba(255, 255, 255, 0.4),
+    inset -5px -10px 18px rgba(11, 6, 29, 0.55),
+    0 14px 22px -12px rgba(24, 12, 48, 0.72);
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.28s;
+  z-index: 1;
+  text-align: center;
+  cursor: pointer;
+  border: none;
+}
+
+.orbButton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid rgba(199, 162, 255, 0.42);
+  pointer-events: none;
+}
+
+.orbButton:hover,
+.orbButton:focus-visible {
+  transform: translateY(-6px) rotateX(4deg);
+  box-shadow:
+    inset 1px 2px 4px rgba(255, 255, 255, 0.48),
+    0 18px 28px -12px rgba(109, 68, 179, 0.55);
+}
+
+.orbHighlighted .orbButton {
+  box-shadow:
+    0 0 0 3px #7c3aed,
+    inset 1px 2px 4px rgba(255, 255, 255, 0.48),
+    0 18px 28px -12px rgba(124, 58, 237, 0.65);
+}
+
+.orbTitle {
+  font-size: 13.5px;
+  line-height: 1.25;
+  font-weight: 600;
+  max-width: 136px;
+  color: #f4f1ff !important;
+  text-wrap: balance;
+}
+
+.orbIcon {
+  color: #e4c9ff !important;
+}
+
+.orbStatus {
+  font-size: 10px;
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  color: #d6f4e3 !important;
+  background: rgba(22, 56, 45, 0.82);
+  border-radius: 20px;
+  padding: 3px 9px;
+}
+
+.orbStatusDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #5ce6a5;
+}
+
+.orbPlinth {
+  height: 16px;
+  width: 168px;
+  max-width: 100%;
+  border-radius: 50%;
+  margin-top: -3px;
+  background: radial-gradient(ellipse at 50% 15%, rgba(197, 162, 255, 0.42), #61458b 45%, #211831 72%);
+  box-shadow: 0 5px 0 -2px #251c3a, 0 7px 0 -3px #b788fa;
+}
+
+.orbVoice {
+  font-size: 11.5px;
+  color: #64607a !important;
+  margin-top: 14px;
+  font-weight: 500;
+}
+
+.tryDemoBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  min-height: 35px;
+  padding: 6px 14px;
+  margin-top: 6px;
+  color: #1f1b33 !important;
+  border-radius: 7px;
+  background: #f2eefc;
+  border: 1px solid #cfc6ea;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+}
+
+.tryDemoBtn:hover {
+  background: #e5dcfb;
+  border-color: #9f85e8;
+  transform: translateY(-1px);
+}
+
+.testTransferBtn {
+  margin-top: 7px;
+  font-size: 11.5px;
+  color: #1f1b33 !important;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.testTransferBtn:hover {
+  color: #6d28d9 !important;
+}
+
+@media (max-width: 1024px) {
+  .orbGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 28px 14px;
+  }
+  .orbButton {
+    width: 152px;
+    height: 152px;
+  }
+  .orbPlinth {
+    width: 158px;
+  }
+}
+
+@media (max-width: 640px) {
+  .orbGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px 10px;
+  }
+  .orbButton {
+    width: 132px;
+    height: 132px;
+  }
+  .orbTitle {
+    font-size: 12px;
+    max-width: 112px;
+  }
+  .orbPlinth {
+    width: 136px;
+    height: 14px;
+  }
+}

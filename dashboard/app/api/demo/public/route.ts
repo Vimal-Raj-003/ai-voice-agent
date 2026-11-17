@@ -2,10 +2,9 @@ import { voiceService } from "@/lib/voice-service";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
 
-// In-memory rate limiter for public demo (prevents spamming session token creation)
 const rateMap = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
-const MAX_REQUESTS_PER_WINDOW = 20;
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const MAX_REQUESTS_PER_WINDOW = 30;
 
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
@@ -67,10 +66,14 @@ export async function GET() {
 
     return Response.json({ assistants: formatted }, { headers: CORS_HEADERS });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = excMsg(err);
     console.error("Public demo assistants error:", msg);
     return Response.json({ error: msg }, { status: 500, headers: CORS_HEADERS });
   }
+}
+
+function excMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export async function POST(request: Request) {
@@ -98,7 +101,21 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({}));
     const { assistantId, lead } = body;
 
-    // Persist lead if provided
+    let assistant: { id: string; name: string } | null = null;
+    if (assistantId) {
+      assistant = await prisma.assistant.findFirst({
+        where: { id: assistantId, organizationId: org.id, isActive: true },
+        select: { id: true, name: true },
+      });
+      if (!assistant) {
+        return Response.json(
+          { error: "Assistant not found or inactive." },
+          { status: 404, headers: CORS_HEADERS }
+        );
+      }
+    }
+
+    // Persist lead in Contacts table
     if (lead?.phone) {
       try {
         const cleanPhone = String(lead.phone).trim();
@@ -108,7 +125,7 @@ export async function POST(request: Request) {
           lead.state ? `State: ${lead.state}` : "",
           lead.city ? `City: ${lead.city}` : "",
           lead.description ? `Description: ${lead.description}` : "",
-          assistantId ? `Requested Assistant: ${assistantId}` : "Pre-demo lead capture",
+          assistant ? `Demo Assistant: ${assistant.name}` : "Pre-demo lead capture",
         ]
           .filter(Boolean)
           .join(" | ");
@@ -134,24 +151,11 @@ export async function POST(request: Request) {
       }
     }
 
-    // If caller only submitted the lead form without picking an assistant yet
-    if (!assistantId) {
+    if (!assistant) {
       return Response.json({ success: true, leadSaved: true }, { headers: CORS_HEADERS });
     }
 
-    const assistant = await prisma.assistant.findFirst({
-      where: { id: assistantId, organizationId: org.id, isActive: true },
-      select: { id: true, name: true },
-    });
-
-    if (!assistant) {
-      return Response.json(
-        { error: "Assistant not found or inactive." },
-        { status: 404, headers: CORS_HEADERS }
-      );
-    }
-
-    const tokenData = await voiceService.demoToken(assistantId, org.id);
+    const tokenData = await voiceService.demoToken(assistant.id, org.id);
     return Response.json(
       {
         ...tokenData,
@@ -160,7 +164,7 @@ export async function POST(request: Request) {
       { status: 200, headers: CORS_HEADERS }
     );
   } catch (exc) {
-    const msg = exc instanceof Error ? exc.message : String(exc);
+    const msg = excMsg(exc);
     console.error("Public demo token error:", msg);
     return Response.json({ error: msg }, { status: 502, headers: CORS_HEADERS });
   }
