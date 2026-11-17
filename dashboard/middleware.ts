@@ -21,7 +21,10 @@ export default auth((req) => {
   const { pathname } = req.nextUrl;
   const isLogin = pathname.startsWith("/login");
   const isPublic =
+    pathname === "/" ||
     isLogin ||
+    pathname.startsWith("/api/demo/public") ||
+    pathname.startsWith("/api/demo/end") ||
     pathname.startsWith("/forgot-password") ||
     pathname.startsWith("/reset-password");
   const isAuthenticated = !!req.auth;
@@ -29,7 +32,7 @@ export default auth((req) => {
   // In development, allow direct access so the overview and all options show immediately without login
   if (process.env.NODE_ENV !== "production") {
     if (isAuthenticated && isLogin) {
-      return NextResponse.redirect(new URL("/", req.url));
+      return NextResponse.redirect(new URL("/overview", req.url));
     }
     return;
   }
@@ -41,12 +44,12 @@ export default auth((req) => {
     return NextResponse.redirect(url);
   }
   if (isAuthenticated && isLogin) {
-    return NextResponse.redirect(new URL("/", req.url));
+    return NextResponse.redirect(new URL("/overview", req.url));
   }
 });
 
 export const config = {
   matcher: [
-    "/((?!api/auth|api/webhooks|api/logs/proxy|api/demo/proxy|api/demo/public|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/auth|api/webhooks|api/logs/proxy|api/demo/proxy|api/demo/public|api/demo/end|_next/static|_next/image|favicon.ico).*)",
   ],
 };

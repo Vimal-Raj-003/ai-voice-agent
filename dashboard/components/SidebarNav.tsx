@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 
 const links = [
-  { href: "/", label: "Overview", icon: LayoutDashboard },
+  { href: "/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/assistants", label: "Assistants", icon: Bot },
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   // API keys are a tab of Settings (/settings?tab=api-keys).
