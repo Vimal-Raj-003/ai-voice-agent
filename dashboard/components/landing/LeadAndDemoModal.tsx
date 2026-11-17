@@ -66,8 +66,8 @@ const DEFAULT_ASSISTANTS: AssistantItem[] = [
   { id: "cmuv4xd8i0011v7f4fgsgfr5x", name: "Receptionist", role: "receptionist", active: true },
   {
     id: "cmvxs7rk10001v7e8kcdra9ez",
-    name: "Vasan Eye Care – Appointment",
-    role: "vasan",
+    name: "Hospital Assistant",
+    role: "hospital",
     active: true,
   },
 ];
@@ -76,6 +76,7 @@ const PREFERRED_ORDER = [
   "academy",
   "appointment",
   "clinic",
+  "hospital",
   "support",
   "ivr",
   "marketing",
@@ -111,6 +112,7 @@ const STATE_CITIES: Record<string, string[]> = {
 const roleIcons: Record<string, typeof Users> = {
   academy: GraduationCap,
   clinic: HeartPulse,
+  hospital: HeartPulse,
   vasan: HeartPulse,
   ivr: Workflow,
   appointment: CalendarDays,
@@ -193,6 +195,22 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         if (idx !== -1) {
           const updated = [...prev];
           updated[idx] = { id, speaker, text: cleaned, final: isFinal };
+          return updated;
+        }
+        // Deduplicate when both LiveKit legacy TranscriptionReceived & lk.transcription text stream emit the same utterance
+        const last = prev[prev.length - 1];
+        if (
+          last &&
+          last.speaker === speaker &&
+          (last.text === cleaned || cleaned.startsWith(last.text) || last.text.startsWith(cleaned))
+        ) {
+          const updated = [...prev];
+          updated[prev.length - 1] = {
+            id: last.id,
+            speaker,
+            text: cleaned.length >= last.text.length ? cleaned : last.text,
+            final: isFinal || last.final,
+          };
           return updated;
         }
         return [...prev, { id, speaker, text: cleaned, final: isFinal }];
@@ -732,11 +750,12 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                 onClick={() => setStep("lead")}
                 className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold bg-[#9eff00]/12 border border-[#9eff00]/30 text-[#d8ff99] hover:bg-[#9eff00]/20 transition-colors cursor-pointer"
               >
-                <span>
+                <span className="max-w-[380px] truncate">
                   {formData.fullName}
                   {formData.businessName ? ` • ${formData.businessName}` : ""}
+                  {formData.businessType ? ` (${formData.businessType})` : ""}
                 </span>
-                <span className="underline text-[#9eff00] ml-1">Edit</span>
+                <span className="underline text-[#9eff00] ml-1 flex-shrink-0">Edit</span>
               </button>
             )}
 
@@ -859,7 +878,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#b5c7b0] mb-1">
-                    BUSINESS TYPE *
+                    BUSINESS / SERVICE TYPE *
                   </label>
                   <select
                     required
@@ -867,14 +886,17 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                     onChange={(e) => setFormData({ ...formData, businessType: e.target.value })}
                     className="w-full rounded-xl border border-[#243d1c] bg-[#0b1508] px-3 py-2 text-sm focus:border-[#9eff00] focus:outline-none cursor-pointer"
                   >
-                    <option value="">Select type</option>
-                    <option value="Healthcare & Clinic">Healthcare & Clinic</option>
-                    <option value="Education & Academy">Education & Academy</option>
-                    <option value="Real Estate">Real Estate</option>
+                    <option value="">Select service or industry</option>
+                    <option value="Hospital Appointment Booking">Hospital Appointment Booking</option>
+                    <option value="Clinic Appointment Booking">Clinic Appointment Booking</option>
+                    <option value="Dental Appointment Booking">Dental Appointment Booking</option>
+                    <option value="Hospital Management Software (HMS)">Hospital Management Software (HMS)</option>
+                    <option value="Software & AI Services">Software & AI Services</option>
+                    <option value="Academic & Coaching Agency">Academic & Coaching Agency</option>
+                    <option value="Customer Support / IVR">Customer Support / Conversational IVR</option>
+                    <option value="Real Estate">Real Estate & Property</option>
                     <option value="E-Commerce & Retail">E-Commerce & Retail</option>
                     <option value="Banking & Finance">Banking & Finance</option>
-                    <option value="Customer Support / IVR">Customer Support / IVR</option>
-                    <option value="IT & SaaS">IT & SaaS</option>
                     <option value="Hospitality & Travel">Hospitality & Travel</option>
                     <option value="Other">Other</option>
                   </select>
@@ -1030,7 +1052,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                 Choose an AI Voice Agent to Speak Live
               </h2>
               <p className="text-xs text-[#9cb097] mt-0.5">
-                Click any specialized agent below — speaks naturally in your language with real-time live captions.
+                Click any specialized agent below — speaks naturally in English, Tamil, Telugu, Kannada, Malayalam &amp; Hindi with live captions.
               </p>
             </div>
 
@@ -1281,7 +1303,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                     <p className="text-xs sm:text-sm text-[#9cb097] leading-relaxed">
                       {callStatus === "connecting"
                         ? "Preparing live transcript stream..."
-                        : "Start speaking in English, Tamil, Tanglish, or Hindi — real-time captions for both you and the AI agent will appear here."}
+                        : "Start speaking in English, Tamil, Telugu, Kannada, Malayalam, or Hindi — real-time captions for both you and the AI agent will appear here."}
                     </p>
                   </div>
                 ) : (
