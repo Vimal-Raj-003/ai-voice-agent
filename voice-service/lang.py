@@ -85,18 +85,28 @@ def tts_route(base: str, provider: str) -> dict | None:
 # agent ping-pong between languages.
 
 # Languages this agent will actually converse in.
-_ALLOWED = {"en", "ta", "hi", "te", "ml"}
-_LANG_NAMES = {"en": "English", "ta": "Tamil", "hi": "Hindi", "te": "Telugu", "ml": "Malayalam"}
+_ALLOWED = {"en", "ta", "hi", "te", "kn", "ml"}
+_LANG_NAMES = {
+    "en": "English",
+    "ta": "Tamil",
+    "hi": "Hindi",
+    "te": "Telugu",
+    "kn": "Kannada",
+    "ml": "Malayalam",
+}
 
-# Tamil Unicode block — any Tamil script in the transcript means Tamil.
+# Indic Unicode blocks — native script in the transcript is unambiguous evidence.
 _TAMIL_SCRIPT = re.compile(r"[஀-௿]")
 _TELUGU_SCRIPT = re.compile(r"[ఀ-౿]")
+_KANNADA_SCRIPT = re.compile(r"[\u0C80-\u0CFF]")
 _MALAYALAM_SCRIPT = re.compile(r"[ഀ-ൿ]")
 
 _SCRIPT_WORDS = {
     "ta": re.compile(r"[\u0B80-\u0BFF]+"),
     "te": re.compile(r"[\u0C00-\u0C7F]+"),
+    "kn": re.compile(r"[\u0C80-\u0CFF]+"),
     "ml": re.compile(r"[\u0D00-\u0D7F]+"),
+    "hi": re.compile(r"[\u0900-\u097F]+"),
 }
 
 
@@ -111,6 +121,8 @@ def script_lang(text: str, *, include_hindi: bool = False) -> str:
         return "ta"
     if _TELUGU_SCRIPT.search(t):
         return "te"
+    if _KANNADA_SCRIPT.search(t):
+        return "kn"
     if _MALAYALAM_SCRIPT.search(t):
         return "ml"
     # Native-audio transcripts have no STT language code. Keep the historical
@@ -153,6 +165,14 @@ _RE_SWITCH_HI = re.compile(
     re.I,
 )
 
+_RE_SWITCH_KN = re.compile(
+    r"\b(?:in\s+kannada|speak\s+kannada|talk\s+(?:in\s+|with\s+me\s+in\s+)?kannada|switch\s+(?:back\s+)?to\s+kannada|to\s+kannada)\b"
+    r"|(?:கன்னடம்|கன்னட|kannada)[\s-]*(?:ல|la|il|alli|pesu|sollu|matadi|maathadi)"
+    r"|\bkannada\s+(?:sollung|pannung|pesung|matadi|heli|explain)\b"
+    r"|ಕನ್ನಡ",
+    re.I,
+)
+
 _RE_SWITCH_ML = re.compile(
     r"\b(?:in\s+malayalam|speak\s+malayalam|talk\s+(?:in\s+|with\s+me\s+in\s+)?malayalam|switch\s+(?:back\s+)?to\s+malayalam|to\s+malayalam)\b"
     r"|(?:மலையாளம்|malayalam)[\s-]*(?:ல|la|il|pesu|sollu|parayu)"
@@ -165,8 +185,8 @@ _RE_SWITCH_ML = re.compile(
 def detect_explicit_language_switch(text: str) -> str | None:
     """Detect an explicit user instruction to change the conversation language.
 
-    Matches instructions like 'Telugu la sollunga', 'switch back to Tamil',
-    'speak in English', 'Hindi me bolo'.
+    Matches instructions like 'Telugu la sollunga', 'Kannada alli matadi',
+    'switch back to Tamil', 'speak in English', 'Hindi me bolo'.
     Does not match capability questions like 'Do you know Tamil?'.
     """
     if not text:
@@ -194,6 +214,8 @@ def detect_explicit_language_switch(text: str) -> str | None:
         return "en"
     if _RE_SWITCH_TE.search(clean):
         return "te"
+    if _RE_SWITCH_KN.search(clean):
+        return "kn"
     if _RE_SWITCH_HI.search(clean):
         return "hi"
     if _RE_SWITCH_ML.search(clean):
@@ -205,21 +227,25 @@ def detect_explicit_language_switch(text: str) -> str | None:
 _SHORT_ACKS = {
     "சரி", "ஆமா", "ஆம்", "ம்", "ம்ம்",
     # STT may write the same neutral greeting in any detected script.
-    "हलो", "हेलो", "हैलो", "ஹலோ", "ஹலோவ்", "ഹലോ", "హలో",
+    "हलो", "हेलो", "हैलो", "ஹலோ", "ஹலோவ்", "ഹലോ", "హలో", "ಹಲೋ", "ಸರಿ", "ಹೌದು",
     "hello", "hi", "hey", "hii", "helo", "yes", "yeah", "yep", "yup", "ya",
     "no", "nope", "ok", "okay", "okey", "k", "kk", "hmm", "hmmm", "mm", "mmm",
     "mhm", "right", "wait", "sure", "fine", "good", "great", "thanks", "thank",
     "bye", "what", "huh", "oh", "ah", "hold", "one", "sec", "yup",
 }
 
-# English words commonly spoken INSIDE Tamil/Tanglish conversation. These must
-# not be read as "the caller switched to English" (rule 4).
+# English words commonly spoken INSIDE regional conversations (Tamil, Telugu,
+# Kannada, Malayalam, Hindi). These must not be read as "the caller switched to English".
 _LOAN_WORDS = {
     "appointment", "booking", "book", "service", "services", "doctor", "timing",
-    "time", "available", "availability", "hospital", "meeting", "call", "confirm",
-    "confirmed", "cancel", "reschedule", "slot", "slots", "morning", "evening",
-    "afternoon", "night", "number", "address", "email", "online", "offline",
-    "report", "test", "scan", "sir", "madam", "please", "ok", "okay", "yes",
+    "time", "available", "availability", "hospital", "clinic", "dental", "dentist",
+    "meeting", "call", "confirm", "confirmed", "cancel", "reschedule", "slot",
+    "slots", "morning", "evening", "afternoon", "night", "number", "address",
+    "email", "online", "offline", "report", "test", "scan", "xray", "lab",
+    "fee", "fees", "course", "courses", "batch", "demo", "software", "admission",
+    "counselling", "counseling", "emergency", "pharmacy", "insurance", "cashless",
+    "package", "consultation", "department", "specialist", "academy",
+    "sir", "madam", "please", "ok", "okay", "yes",
     "no", "date", "today", "tomorrow", "week", "name", "age", "years", "old",
     "am", "pm", "clock", "dot", "com", "at", "phone", "mobile", "gmail", "yahoo",
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
@@ -245,13 +271,9 @@ _TANGLISH_MARKERS = {
     "enakum", "ungalku", "aaguthu", "aagum", "panren", "panniten", "pannitan", "irunthen",
 }
 
-# Latin + every Indic script this agent supports. Devanagari (Hindi), Telugu
-# and Malayalam used to be missing, so _words() returned [] for any utterance
-# written in them — and is_short_ack() treats "no words" as an inert
-# acknowledgement. A full sentence like "నమస్కారం, నాకు అపాయింట్‌మెంట్ కావాలి"
-# was therefore discarded before rule 2b could read its native script, making
-# script-based switching unreachable for Telugu and Malayalam entirely.
-_WORD_RE = re.compile(r"[a-zऀ-ॿ஀-௿ఀ-౿ഀ-ൿ]+", re.I)
+# Latin + every Indic script this agent supports: Devanagari (Hindi), Tamil,
+# Telugu, Kannada, and Malayalam.
+_WORD_RE = re.compile(r"[a-zऀ-ॿ஀-௿ఀ-౿\u0C80-\u0CFFഀ-ൿ]+", re.I)
 
 
 def _words(text: str) -> list[str]:
@@ -302,55 +324,61 @@ def llm_language_directive(active: str) -> str | None:
     base = normalize_lang(active)
     if base == "ta":
         return (
-            "CONVERSATION LANGUAGE = Tamil. Reply ONLY in natural spoken Tamil "
-            "written in TAMIL SCRIPT (not Latin transliteration). Common English "
-            "terms the caller would normally say in English (appointment, "
-            "booking, doctor, time, 4 PM) SHOULD stay in English inside the Tamil "
-            "sentence. Language examples are not booking details; preserve the caller's actual date/time. "
-            "Keep replying in Tamil on EVERY turn, including short confirmations, tool "
-            "results and appointment/booking steps. English words the caller uses "
-            "(appointment, booking, doctor, timing, available, etc.) are normal "
-            "inside Tamil — do NOT switch to English because of them. Switch to "
-            "English only if the caller explicitly asks (e.g. 'speak in English'). "
+            "CONVERSATION LANGUAGE = Tamil. Reply ONLY in natural everyday spoken Tamil "
+            "written in TAMIL SCRIPT (not Latin transliteration), never stiff classical/literary Tamil. "
+            "Common English terms the caller would normally say in English (appointment, "
+            "booking, doctor, fees, timing, scan, report, course, batch, software, 4 PM) SHOULD stay "
+            "in English inside the Tamil sentence. Language examples are not booking details; preserve "
+            "the caller's actual date/time. Keep replying in Tamil on EVERY turn, including short "
+            "confirmations, tool results and appointment/booking steps. English words the caller uses "
+            "(appointment, booking, doctor, timing, available, etc.) are normal inside Tamil — do NOT "
+            "switch to English because of them. Switch to English only if the caller explicitly asks "
+            "(e.g. 'speak in English'). Address neutrally with நீங்க/நீங்கள். "
             "CRITICAL VOICE RULE: NEVER output parentheses like '(...)' or standalone "
             "English lists like '(Software Development, AI Automation)'. This is a phone call. "
             "Always state options naturally: 'Software Development, AI Automation போன்ற "
             "சேவைகளில் எது வேணும்?'. Every single sentence MUST contain Tamil words. "
             "TONE: Follow the caller's expressed situation and the contextual tone policy. "
-            "For illness, urgency or frustration stay calm, respectful and practical. "
-            "Use a brief acknowledgement naturally; do not repeat sympathy catchphrases "
-            "or claim human feelings. Do not guess a caller's hidden emotional state."
+            "For illness, urgency or frustration stay calm, respectful and practical."
         )
     if base == "hi":
         return (
-            "CONVERSATION LANGUAGE = Hindi. Reply in natural spoken Hindi every "
-            "turn, written in DEVANAGARI script. Everyday English words the "
-            "caller uses (appointment, booking, time) may stay in English."
+            "CONVERSATION LANGUAGE = Hindi. Reply in natural everyday spoken Hindi (conversational "
+            "Hinglish-friendly Hindi, NOT heavy Sanskritized/classical Hindi) every turn, written in "
+            "DEVANAGARI script. Keep familiar English words as-is (appointment, booking, doctor, fees, "
+            "timing, report, course, batch, software, confirmation) so the caller understands effortlessly. "
+            "Address respectfully with आप (never sir/madam spam). Keep sentences short and natural."
         )
     if base == "te":
         return (
-            "CONVERSATION LANGUAGE = Telugu. Reply in natural spoken Telugu every "
-            "turn, written in TELUGU SCRIPT (not transliteration). Everyday "
-            "English words the caller uses (appointment, booking, doctor, time) "
-            "may stay in English inside the Telugu sentence — that is normal "
-            "speech. Keep sentences short and conversational."
+            "CONVERSATION LANGUAGE = Telugu. Reply in natural everyday spoken Telugu (never classical/"
+            "grandhika literary Telugu) every turn, written in TELUGU SCRIPT (not transliteration). "
+            "Keep familiar English words as-is inside the Telugu sentence (appointment, booking, doctor, "
+            "fees, timing, scan, report, course, batch, software) — that is how real people speak. "
+            "Address respectfully with మీరు. Keep sentences short, warm and conversational."
+        )
+    if base == "kn":
+        return (
+            "CONVERSATION LANGUAGE = Kannada. Reply in natural everyday spoken Kannada (conversational "
+            "Bengaluru/Mysuru Kannada, never stiff literary/classical Kannada) every turn, written in "
+            "KANNADA SCRIPT (not transliteration). Keep familiar English words as-is inside the Kannada "
+            "sentence (appointment, booking, doctor, fees, timing, scan, report, course, batch, software) "
+            "for effortless clarity. Address respectfully with ನೀವು. Keep sentences short and warm."
         )
     if base == "ml":
         return (
-            "CONVERSATION LANGUAGE = Malayalam. Reply in natural spoken Malayalam "
-            "every turn, written in MALAYALAM SCRIPT (not transliteration). "
-            "Everyday English words the caller uses (appointment, booking, "
-            "doctor, time) may stay in English inside the Malayalam sentence — "
-            "that is normal speech. Keep sentences short and conversational."
+            "CONVERSATION LANGUAGE = Malayalam. Reply in natural everyday spoken Malayalam (never stiff "
+            "classical/literary Malayalam) every turn, written in MALAYALAM SCRIPT (not transliteration). "
+            "Keep familiar English words as-is inside the Malayalam sentence (appointment, booking, "
+            "doctor, fees, timing, scan, report, course, batch, software) — that is natural everyday speech. "
+            "Address respectfully with നിങ്ങൾ. Keep sentences short, polite and conversational."
         )
     if base == "en":
         return (
-            "CONVERSATION LANGUAGE = English. Reply in English (natural Indian "
-            "English, short conversational sentences) unless the caller clearly "
-            "speaks another Indian language or explicitly asks to switch. "
-            "EMPATHY & EMOTIONS: Show warmth, understanding, and care. When the caller "
-            "shares sorrow or stress, respond with comforting empathy first ('Oh no, I am so sorry to hear that...'). "
-            "If asked about emotions, reply warmly that you genuinely care."
+            "CONVERSATION LANGUAGE = English. Reply in clear, warm, natural Indian English (short, "
+            "simple conversational sentences) unless the caller clearly speaks an Indian regional "
+            "language (Tamil, Telugu, Kannada, Malayalam, Hindi) or explicitly asks to switch. "
+            "EMPATHY & EMOTIONS: Show calm warmth, understanding, and practical care."
         )
     return None
 
@@ -421,15 +449,13 @@ class LanguageState:
 
         # 2b. NATIVE SCRIPT = unambiguous evidence the caller switched language.
         #     This overrides the lock so the agent follows the caller turn-by-turn
-        #     (English → Tamil → Telugu → Malayalam → …). Mis-detections cannot
-        #     reach here: only real Tamil/Telugu/Malayalam glyphs match, and the
-        #     short-ack guard above already dropped "ok/சரி"-style utterances.
+        #     (English → Tamil → Telugu → Kannada → Malayalam → Hindi → …).
         scripted = script_lang(text)
         if scripted and scripted in _ALLOWED:
             pattern = _SCRIPT_WORDS.get(scripted)
             words = pattern.findall(text) if pattern else []
-            # Never switch to non-Tamil Indic languages (Malayalam, Telugu, Hindi) on single-word glitch
-            if scripted in ("ml", "te", "hi") and len(words) < 2:
+            # Never switch to non-Tamil Indic languages (Malayalam, Telugu, Kannada, Hindi) on single-word glitch
+            if scripted in ("ml", "te", "kn", "hi") and len(words) < 2:
                 return False
             if self.established and self.active != "en" and scripted != self.active:
                 if len(words) < 2:

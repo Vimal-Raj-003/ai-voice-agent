@@ -7,7 +7,7 @@ import InfoTooltip from './InfoTooltip';
 import styles from './AssistantLibrary.module.css';
 
 export type AssistantSummary={id:string;name:string;description:string|null;active:boolean;role:string;engine:string;model:string;voice:string;languages?:string[];knowledge:number;setupRequired:boolean;preview?:boolean};
-const icons:Record<string,typeof Users>={academy:GraduationCap,clinic:HeartPulse,vasan:HeartPulse,ivr:Workflow,appointment:CalendarDays,support:Headphones,marketing:Megaphone,sales:PhoneCall,receptionist:Users};
+const icons:Record<string,typeof Users>={academy:GraduationCap,clinic:HeartPulse,hospital:HeartPulse,vasan:HeartPulse,ivr:Workflow,appointment:CalendarDays,support:Headphones,marketing:Megaphone,sales:PhoneCall,receptionist:Users};
 const clock=(seconds:number)=>`${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;
 
 export default function AssistantLibrary({assistants}:{assistants:AssistantSummary[]}){
@@ -76,7 +76,7 @@ export default function AssistantLibrary({assistants}:{assistants:AssistantSumma
             <span className={styles.voice}>{assistant.voice||assistant.engine}</span>
             {assistant.preview?<button type="button" className={styles.listen} aria-label={`${isPlaying?'Pause':'Listen to'} ${assistant.name} voice preview`} aria-pressed={isPlaying} onClick={()=>listen(assistant)}>
               {loading&&audioId===assistant.id?<LoaderCircle size={14} className={styles.spinner}/>:isPlaying?<Pause size={14}/>:<Play size={14}/>}{isPlaying?'Pause':'Listen'}
-            </button>:<Link href={`/demo?assistant=${encodeURIComponent(assistant.id)}`} className={styles.listen}>Try Demo</Link>}
+            </button>:null}
             {assistant.role==='ivr'&&<Link href={`/demo?assistant=${encodeURIComponent(assistant.id)}`} className="mt-2 text-xs underline underline-offset-4">Test transfer</Link>}
           </article>;
         })}

@@ -138,7 +138,7 @@ export const Chatbot: React.FC = () => {
         ...prev,
         {
           sender: "bot",
-          text: "Thanks for reaching out! You can click 'Get A Free Demo' above to test a live call with our voice agents right now.",
+          text: "Thanks for reaching out! Tap 'Book a Live Demo' above to speak live with our voice agents right now.",
         },
       ]);
     } finally {
@@ -169,37 +169,40 @@ export const Chatbot: React.FC = () => {
 
   return (
     <>
-      {/* Chat Window */}
       <div
-        className={`fixed bottom-24 right-4 sm:right-6 w-[calc(100vw-2rem)] max-w-sm h-[60vh] max-h-[500px] bg-black/80 backdrop-blur-xl border border-gray-700/50 rounded-2xl shadow-2xl flex flex-col transition-all duration-300 ease-in-out origin-bottom-right z-50 ${
+        className={`fixed bottom-24 right-4 sm:right-6 w-[calc(100vw-2rem)] max-w-sm h-[58dvh] max-h-[480px] bg-[#111c30]/95 backdrop-blur-xl border border-teal-400/25 rounded-2xl shadow-2xl flex flex-col transition-all duration-300 ease-in-out origin-bottom-right z-40 ${
           isOpen ? "scale-100 opacity-100" : "scale-95 opacity-0 pointer-events-none"
         }`}
+        style={{ WebkitBackdropFilter: "blur(16px)" }}
         role="dialog"
         aria-hidden={!isOpen}
       >
-        {/* Header */}
-        <header className="flex items-center justify-between p-3.5 border-b border-gray-700/50 flex-shrink-0">
+        <header className="flex items-center justify-between p-3.5 border-b border-teal-400/20 flex-shrink-0">
           <div className="flex items-center gap-3">
-            <ProfessionalAvatarIcon className="w-9 h-9 text-[#9eff00]" />
+            <ProfessionalAvatarIcon className="w-9 h-9 text-teal-300" />
             <div>
-              <h2 className="font-bold text-white text-sm">Jill-Jill Support</h2>
-              <p className="text-xs text-gray-400 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+              <h2 className="font-bold text-white text-sm">Jill-Jill Concierge</h2>
+              <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-teal-400 animate-pulse" />
                 Online
               </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={handleEndChat}
-            className="p-1 rounded-full text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
+            className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-full text-slate-300 hover:bg-white/10 hover:text-white transition-colors touch-manipulation"
             aria-label="Close chat"
           >
             <XMarkIcon className="w-5 h-5" />
           </button>
         </header>
 
-        {/* Messages */}
-        <div ref={chatContainerRef} className="flex-grow p-4 overflow-y-auto space-y-3">
+        <div
+          ref={chatContainerRef}
+          className="flex-grow p-4 overflow-y-auto space-y-3"
+          style={{ WebkitOverflowScrolling: "touch" }}
+        >
           {chatHistory.map((chat, index) => (
             <div
               key={index}
@@ -208,13 +211,13 @@ export const Chatbot: React.FC = () => {
               }`}
             >
               {chat.sender === "bot" && (
-                <ProfessionalAvatarIcon className="w-7 h-7 text-[#9eff00] flex-shrink-0" />
+                <ProfessionalAvatarIcon className="w-7 h-7 text-teal-300 flex-shrink-0" />
               )}
               <div
-                className={`max-w-[80%] text-xs sm:text-sm px-3.5 py-2.5 rounded-2xl leading-relaxed ${
+                className={`max-w-[82%] text-xs sm:text-sm px-3.5 py-2.5 rounded-2xl leading-relaxed ${
                   chat.sender === "user"
-                    ? "bg-[#9eff00] text-black font-medium rounded-br-none"
-                    : "bg-[#161a30] border border-white/5 text-gray-200 rounded-bl-none"
+                    ? "bg-teal-400 text-teal-950 font-semibold rounded-br-none"
+                    : "bg-[#192946] border border-teal-400/15 text-slate-100 rounded-bl-none"
                 }`}
               >
                 <p>{chat.text}</p>
@@ -223,34 +226,33 @@ export const Chatbot: React.FC = () => {
           ))}
           {isSending && (
             <div className="flex gap-2.5 justify-start">
-              <ProfessionalAvatarIcon className="w-7 h-7 text-[#9eff00] flex-shrink-0" />
-              <div className="px-3.5 py-2.5 rounded-2xl bg-[#161a30] text-gray-300 rounded-bl-none flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-pulse" />
-                <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-pulse [animation-delay:0.15s]" />
-                <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-pulse [animation-delay:0.3s]" />
+              <ProfessionalAvatarIcon className="w-7 h-7 text-teal-300 flex-shrink-0" />
+              <div className="px-3.5 py-2.5 rounded-2xl bg-[#192946] text-slate-300 rounded-bl-none flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-pulse" />
+                <span className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-pulse [animation-delay:0.15s]" />
+                <span className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-pulse [animation-delay:0.3s]" />
               </div>
             </div>
           )}
         </div>
 
-        {/* Input */}
         <form
           onSubmit={handleSendMessage}
-          className="p-3 border-t border-gray-700/50 flex items-center gap-2 flex-shrink-0"
+          className="p-3 border-t border-teal-400/20 flex items-center gap-2 flex-shrink-0"
         >
           <input
             ref={inputRef}
             type="text"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="Type your message..."
-            className="w-full bg-[#161a30] border border-gray-600/60 rounded-xl py-2 px-3 text-xs sm:text-sm text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-[#9eff00] transition-all"
+            placeholder="Ask a question..."
+            className="w-full bg-[#17253e] border border-slate-700/80 rounded-xl py-2 px-3 text-base sm:text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-teal-400 transition-all"
             disabled={isSending}
           />
           <button
             type="submit"
             disabled={isSending || !message.trim()}
-            className="p-2.5 rounded-xl bg-[#9eff00] text-black hover:bg-[#bfff40] hover:scale-105 disabled:bg-gray-600 disabled:cursor-not-allowed transition-all"
+            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl bg-teal-400 text-teal-950 hover:bg-teal-300 disabled:bg-slate-600 disabled:cursor-not-allowed transition-all touch-manipulation"
             aria-label="Send message"
           >
             <PaperAirplaneIcon className="w-4 h-4" />
@@ -258,18 +260,21 @@ export const Chatbot: React.FC = () => {
         </form>
       </div>
 
-      {/* Floating Action Button */}
-      <div className="fixed bottom-6 right-4 sm:right-6 z-50">
+      <div
+        className="fixed right-4 sm:right-6 z-40"
+        style={{ bottom: "max(1.25rem, env(safe-area-inset-bottom, 0px))" }}
+      >
         <button
+          type="button"
           onClick={() => (isOpen ? handleEndChat() : setIsOpen(true))}
-          className="w-12 h-12 bg-[#9eff00] hover:bg-[#bfff40] rounded-full text-black flex items-center justify-center shadow-lg shadow-[#9eff00]/30 hover:scale-110 focus:outline-none transition-all cursor-pointer"
+          className="w-12 h-12 bg-teal-400 hover:bg-teal-300 rounded-full text-teal-950 flex items-center justify-center shadow-[0_8px_22px_rgba(20,184,166,0.32)] active:scale-95 focus:outline-none transition-all cursor-pointer touch-manipulation"
           aria-label={isOpen ? "Close chat" : "Open chat"}
         >
           <div className="relative w-6 h-6 flex items-center justify-center">
             {isOpen ? (
-              <XMarkIcon className="w-6 h-6 text-black" />
+              <XMarkIcon className="w-6 h-6 text-teal-950" />
             ) : (
-              <LogoIcon className="w-6 h-6 text-black" />
+              <LogoIcon className="w-6 h-6 text-teal-950" />
             )}
           </div>
         </button>

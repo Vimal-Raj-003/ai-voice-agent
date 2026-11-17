@@ -1,57 +1,87 @@
-/* Executive Soft-Forest Slate & Refined Emerald Brand System — Desktop, Tablet & Mobile Optimized */
+/* Executive Midnight Sapphire & Luminous Teal-Cyan Brand System — Universal iOS, Android, Tablet & Desktop */
 
 .landingRoot {
   color-scheme: normal !important;
 
-  --jj-bg: #0e1611;
-  --jj-primary: rgba(20, 31, 24, 0.92);
-  --jj-header: rgba(16, 25, 19, 0.92);
-  --jj-secondary: rgba(24, 37, 29, 0.92);
-  --jj-surface: rgba(33, 50, 39, 0.75);
-  --jj-accent: #7ed918;
-  --jj-accent-hover: #8ee32b;
-  --jj-accent-soft: rgba(126, 217, 24, 0.14);
-  --jj-logo: #f5ca3c;
-  --jj-text: #eef4ef;
-  --jj-muted: #a6b8ab;
-  --jj-border: rgba(126, 217, 24, 0.2);
-  --jj-grid-alpha: 0.08;
-  --jj-glow-alpha: 0.13;
+  --jj-bg: #0f172a;
+  --jj-primary: rgba(22, 34, 58, 0.93);
+  --jj-header: rgba(15, 23, 42, 0.90);
+  --jj-secondary: rgba(18, 28, 49, 0.94);
+  --jj-surface: rgba(30, 46, 76, 0.82);
+  --jj-accent: #14b8a6;
+  --jj-accent-bright: #2dd4bf;
+  --jj-accent-hover: #0d9488;
+  --jj-accent-soft: rgba(20, 184, 166, 0.14);
+  --jj-logo: #f59e0b;
+  --jj-text: #f1f5f9;
+  --jj-muted: #94a3b8;
+  --jj-border: rgba(45, 212, 191, 0.20);
+  --jj-grid-alpha: 0.05;
+  --jj-glow-alpha: 0.14;
 
   position: relative;
   z-index: 0;
   min-height: 100vh;
+  min-height: 100dvh;
   color: var(--jj-text);
   background-color: var(--jj-bg);
   background-image:
     radial-gradient(
-      ellipse 85% 75% at 50% 40%,
-      hsla(92, 72%, 45%, var(--jj-glow-alpha)),
-      transparent 65%
+      ellipse 80% 60% at 50% 14%,
+      rgba(20, 184, 166, var(--jj-glow-alpha)),
+      transparent 66%
     ),
-    linear-gradient(hsla(92, 65%, 52%, var(--jj-grid-alpha)) 1px, transparent 1px),
-    linear-gradient(90deg, hsla(92, 65%, 52%, var(--jj-grid-alpha)) 1px, transparent 1px);
-  background-size: 100% 100%, 52px 52px, 52px 52px;
-  background-repeat: no-repeat, repeat, repeat;
+    radial-gradient(
+      ellipse 70% 55% at 85% 68%,
+      rgba(56, 189, 248, 0.08),
+      transparent 64%
+    );
+  background-size: 100% 100%, 100% 100%;
+  background-repeat: no-repeat, no-repeat;
   background-attachment: fixed;
   overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+  accent-color: #14b8a6;
+}
+
+.landingRoot ::selection {
+  background-color: rgba(45, 212, 191, 0.28);
+  color: #f8fafc;
+}
+
+.landingRoot :focus-visible {
+  outline: 2px solid var(--jj-accent-bright);
+  outline-offset: 2px;
+}
+
+/* Fix iOS Safari / Mobile WebKit background-attachment:fixed repaint bug */
+@media (max-width: 1024px), (hover: none) and (pointer: coarse) {
+  .landingRoot {
+    background-attachment: scroll;
+    background-size: 100% 900px, 100% 900px;
+  }
 }
 
 .landingRoot[data-jj-theme="light"] {
-  --jj-bg: #f4f8f3;
-  --jj-primary: rgba(255, 255, 255, 0.95);
-  --jj-header: rgba(255, 255, 255, 0.94);
-  --jj-secondary: rgba(238, 245, 236, 0.94);
-  --jj-surface: rgba(230, 240, 228, 0.88);
-  --jj-accent: #4c8c0b;
-  --jj-accent-hover: #3d7308;
-  --jj-accent-soft: rgba(76, 140, 11, 0.12);
-  --jj-logo: #b88300;
-  --jj-text: #132016;
-  --jj-muted: #4b5e50;
-  --jj-border: rgba(76, 140, 11, 0.2);
+  --jj-bg: #f8fafc;
+  --jj-primary: rgba(255, 255, 255, 0.96);
+  --jj-header: rgba(255, 255, 255, 0.92);
+  --jj-secondary: rgba(241, 245, 249, 0.95);
+  --jj-surface: rgba(226, 232, 240, 0.85);
+  --jj-accent: #0d9488;
+  --jj-accent-bright: #0f766e;
+  --jj-accent-hover: #0f766e;
+  --jj-accent-soft: rgba(13, 148, 136, 0.11);
+  --jj-logo: #d97706;
+  --jj-text: #0f172a;
+  --jj-muted: #475569;
+  --jj-border: rgba(13, 148, 136, 0.20);
   --jj-grid-alpha: 0.06;
   --jj-glow-alpha: 0.08;
+}
+
+.tabularNums {
+  font-variant-numeric: tabular-nums;
 }
 
 .splineStage {
@@ -71,25 +101,14 @@
 
 @keyframes jjBellRing {
   0%, 100% { transform: rotate(0deg); }
-  5%, 15% { transform: rotate(12deg); }
-  10%, 20% { transform: rotate(-10deg); }
+  5%, 15% { transform: rotate(10deg); }
+  10%, 20% { transform: rotate(-8deg); }
   25% { transform: rotate(0deg); }
 }
 
-@keyframes jjPulseGlow {
-  0%, 100% {
-    box-shadow: 0 0 12px rgba(126, 217, 24, 0.35), 0 0 24px rgba(126, 217, 24, 0.16);
-    transform: scale(1);
-  }
-  50% {
-    box-shadow: 0 0 18px rgba(142, 227, 43, 0.48), 0 0 32px rgba(142, 227, 43, 0.22);
-    transform: scale(1.02);
-  }
-}
-
 @keyframes jjHeroGlow {
-  0%, 100% { opacity: 0.38; transform: scale(1); }
-  50% { opacity: 0.65; transform: scale(1.04); }
+  0%, 100% { opacity: 0.36; transform: scale(1); }
+  50% { opacity: 0.58; transform: scale(1.03); }
 }
 
 @keyframes jjOrbWobble {
@@ -101,41 +120,50 @@
 
 .bellRing {
   transform-origin: top center;
-  animation: jjBellRing 4s ease-in-out infinite;
-}
-
-.pulseGlowBtn {
-  animation: jjPulseGlow 2.6s ease-in-out infinite;
-}
-.pulseGlowBtn:hover {
-  animation: none;
+  animation: jjBellRing 5s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }
 
 .heroGlow {
-  animation: jjHeroGlow 5s ease-in-out infinite;
+  animation: jjHeroGlow 6s ease-in-out infinite;
 }
 
 .wobbleActive {
   animation: jjOrbWobble 1.6s ease-in-out infinite;
 }
 
-/* ── Softened Forest-Slate Modal Surface (Mobile Keyboard & Viewport Safe) ─── */
+/* ── Executive Sapphire-Slate Modal Surface (Mobile Keyboard & iOS Safe-Area) ─── */
 .cyberModalSurface {
   color-scheme: dark;
-  color: #eef4ef !important;
-  background-color: #131e17;
+  color: #f1f5f9 !important;
+  background-color: #111c30;
   background-image:
-    radial-gradient(ellipse 80% 65% at 50% 0%, rgba(126, 217, 24, 0.1), transparent 68%),
-    linear-gradient(rgba(126, 217, 24, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(126, 217, 24, 0.04) 1px, transparent 1px);
-  background-size: 100% 100%, 44px 44px, 44px 44px;
-  border: 1px solid rgba(126, 217, 24, 0.24);
+    radial-gradient(ellipse 80% 60% at 50% 0%, rgba(20, 184, 166, 0.12), transparent 68%),
+    radial-gradient(ellipse 65% 50% at 90% 90%, rgba(56, 189, 248, 0.08), transparent 65%);
+  border: 1px solid rgba(45, 212, 191, 0.24);
   box-shadow:
-    0 24px 72px rgba(0, 0, 0, 0.65),
-    0 0 42px rgba(126, 217, 24, 0.08);
+    0 24px 64px -12px rgba(2, 6, 23, 0.78),
+    0 8px 24px -8px rgba(15, 23, 42, 0.65);
+  max-height: 94vh;
   max-height: 94dvh;
   display: flex;
   flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.fullPageStudioSurface {
+  color-scheme: dark;
+  color: #f1f5f9 !important;
+  background-color: #0b1324;
+  background-image:
+    radial-gradient(ellipse 75% 55% at 25% 20%, rgba(20, 184, 166, 0.13), transparent 68%),
+    radial-gradient(ellipse 70% 55% at 80% 80%, rgba(56, 189, 248, 0.09), transparent 65%);
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .cyberModalSurface h1,
@@ -150,21 +178,39 @@
 .cyberModalSurface input,
 .cyberModalSurface select,
 .cyberModalSurface textarea {
-  color: #f3f7f4 !important;
-  background-color: #1a2920 !important;
+  color: #f8fafc !important;
+  background-color: #17253e !important;
 }
 
 .cyberModalSurface input::placeholder,
 .cyberModalSurface textarea::placeholder {
-  color: #788f7e !important;
+  color: #7c90ad !important;
 }
 
-/* ── Step 2: 9 Refined Sage-Emerald 3D Orbs (5x2 Desktop, 3x3 Tablet & Mobile!) */
+.modalScrollArea {
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  flex: 1 1 auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(45, 212, 191, 0.35) transparent;
+}
+
+.modalScrollArea::-webkit-scrollbar {
+  width: 6px;
+}
+.modalScrollArea::-webkit-scrollbar-thumb {
+  background: rgba(45, 212, 191, 0.32);
+  border-radius: 999px;
+}
+
+/* ── Tablet & Desktop 3D Sapphire-Teal Orbs (5x2 Desktop >=1024px, 3x3 Tablet) */
 .orbGrid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 16px 14px;
-  padding: 8px 4px 4px;
+  gap: 18px 14px;
+  padding: 8px 4px 6px;
   perspective: 1100px;
 }
 
@@ -186,20 +232,22 @@
   width: 128px;
   height: 128px;
   border-radius: 50%;
-  color: #f3f7f4 !important;
+  color: #f8fafc !important;
   background:
-    radial-gradient(circle at 34% 18%, rgba(138, 224, 48, 0.28), transparent 54%),
-    linear-gradient(145deg, #243c2b, #142218 72%);
+    radial-gradient(circle at 34% 18%, rgba(45, 212, 191, 0.28), transparent 54%),
+    linear-gradient(145deg, #1d3254, #101c33 74%);
   box-shadow:
-    inset 1px 2px 4px rgba(215, 250, 175, 0.26),
-    inset -5px -10px 18px rgba(7, 13, 9, 0.72),
-    0 12px 22px -10px rgba(0, 0, 0, 0.65);
-  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s;
+    inset 1px 2px 4px rgba(153, 246, 228, 0.24),
+    inset -5px -10px 18px rgba(4, 9, 20, 0.72),
+    0 12px 24px -10px rgba(2, 6, 23, 0.70);
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease;
   z-index: 1;
   text-align: center;
   cursor: pointer;
   border: none;
   padding: 8px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .orbButton::after {
@@ -207,7 +255,7 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  border: 1px solid rgba(138, 224, 48, 0.34);
+  border: 1px solid rgba(45, 212, 191, 0.32);
   pointer-events: none;
 }
 
@@ -215,15 +263,19 @@
 .orbButton:focus-visible {
   transform: translateY(-4px) scale(1.025);
   box-shadow:
-    inset 1px 2px 5px rgba(220, 252, 180, 0.36),
-    0 16px 28px -10px rgba(126, 217, 24, 0.3);
+    inset 1px 2px 5px rgba(153, 246, 228, 0.34),
+    0 16px 28px -10px rgba(20, 184, 166, 0.34);
+}
+
+.orbButton:active {
+  transform: scale(0.97);
 }
 
 .orbHighlighted .orbButton {
   box-shadow:
-    0 0 0 2px #7ed918,
-    inset 1px 2px 5px rgba(220, 252, 180, 0.4),
-    0 16px 28px -8px rgba(126, 217, 24, 0.38);
+    0 0 0 2px #2dd4bf,
+    inset 1px 2px 5px rgba(153, 246, 228, 0.38),
+    0 16px 28px -8px rgba(20, 184, 166, 0.42);
 }
 
 .orbTitle {
@@ -231,12 +283,12 @@
   line-height: 1.2;
   font-weight: 650;
   max-width: 112px;
-  color: #f3f7f4 !important;
+  color: #f8fafc !important;
   text-wrap: balance;
 }
 
 .orbIcon {
-  color: #8ee32b !important;
+  color: #2dd4bf !important;
 }
 
 .orbStatus {
@@ -245,9 +297,9 @@
   display: inline-flex;
   gap: 4px;
   align-items: center;
-  color: #dcfce7 !important;
-  background: rgba(24, 68, 38, 0.8);
-  border: 1px solid rgba(138, 224, 48, 0.25);
+  color: #ccfbf1 !important;
+  background: rgba(15, 62, 68, 0.80);
+  border: 1px solid rgba(45, 212, 191, 0.28);
   border-radius: 20px;
   padding: 2px 7px;
 }
@@ -256,7 +308,7 @@
   width: 4.5px;
   height: 4.5px;
   border-radius: 50%;
-  background: #8ee32b;
+  background: #2dd4bf;
 }
 
 .orbPlinth {
@@ -265,8 +317,8 @@
   max-width: 100%;
   border-radius: 50%;
   margin-top: -2px;
-  background: radial-gradient(ellipse at 50% 20%, rgba(138, 224, 48, 0.3), #233b29 48%, #101b13 76%);
-  box-shadow: 0 4px 0 -2px #132017, 0 6px 0 -3px rgba(126, 217, 24, 0.48);
+  background: radial-gradient(ellipse at 50% 20%, rgba(45, 212, 191, 0.30), #1b3050 48%, #0c1628 76%);
+  box-shadow: 0 4px 10px -2px rgba(2, 6, 23, 0.65);
 }
 
 .tryDemoBtn {
@@ -274,73 +326,114 @@
   align-items: center;
   justify-content: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 700;
-  min-height: 30px;
-  padding: 4px 13px;
+  min-height: 34px;
+  padding: 5px 15px;
   margin-top: 8px;
-  color: #0e1710 !important;
-  border-radius: 8px;
-  background: #84de22;
-  border: 1px solid #9aea42;
+  color: #042f2e !important;
+  border-radius: 9px;
+  background: #2dd4bf;
+  border: 1px solid #5eead4;
   cursor: pointer;
-  transition: background 0.18s ease, transform 0.18s ease;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.18s ease, transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .tryDemoBtn:hover {
-  background: #94e838;
+  background: #5eead4;
   transform: translateY(-1px);
 }
 
-/* Tablet View (3x3 clean layout) */
-@media (max-width: 960px) {
+.tryDemoBtn:active {
+  transform: scale(0.97);
+}
+
+/* Tablet View (iPad Mini / iPad Air / Android Tablet — 3x3 clean 3D Orb grid) */
+@media (max-width: 1023px) {
   .orbGrid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 14px 10px;
+    gap: 14px 12px;
   }
   .orbButton {
-    width: 116px;
-    height: 116px;
+    width: 114px;
+    height: 114px;
   }
   .orbPlinth {
-    width: 120px;
+    width: 118px;
   }
 }
 
-/* Mobile Phone View — 3x3 Single-Page Grid so all 9 agents fit on ONE mobile screen! */
-@media (max-width: 600px) {
+/* Strictly separate Phone (<640px) Tactile Cards vs Tablet/Desktop (>=640px) 3D Orbs */
+@media (max-width: 639px) {
   .orbGrid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px 6px;
-    padding: 4px 0 2px;
+    display: none !important;
   }
-  .orbButton {
-    width: 92px;
-    height: 92px;
-    gap: 3px;
-    padding: 5px;
+}
+
+/* ── Apple iPhone & Android Phone Tactile Agent Grid (<640px) ────────────────── */
+.mobileAgentGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+@media (min-width: 640px) {
+  .mobileAgentGrid {
+    display: none !important;
   }
-  .orbIcon {
-    width: 20px !important;
-    height: 20px !important;
-  }
-  .orbTitle {
-    font-size: 9.5px;
-    line-height: 1.15;
-    max-width: 82px;
-  }
-  .orbStatus {
-    display: none;
-  }
-  .orbPlinth {
-    width: 94px;
-    height: 8px;
-  }
-  .tryDemoBtn {
-    font-size: 10px;
-    min-height: 25px;
-    padding: 3px 9px;
-    margin-top: 5px;
-    border-radius: 6px;
+}
+
+.mobileAgentCard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 68px;
+  padding: 10px 11px;
+  border-radius: 16px;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  background:
+    radial-gradient(circle at 18% 20%, rgba(45, 212, 191, 0.15), transparent 60%),
+    linear-gradient(145deg, rgba(26, 43, 72, 0.96), rgba(17, 29, 50, 0.96));
+  border: 1px solid rgba(45, 212, 191, 0.25);
+  box-shadow: 0 8px 20px -10px rgba(2, 6, 23, 0.68);
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.mobileAgentCard:active {
+  transform: scale(0.975);
+  border-color: #2dd4bf;
+}
+
+.mobileAgentCardHighlighted {
+  border-color: #2dd4bf;
+  box-shadow:
+    0 0 0 1px #2dd4bf,
+    0 10px 22px -8px rgba(20, 184, 166, 0.32);
+}
+
+.mobileAgentOrb {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 35% 25%, rgba(45, 212, 191, 0.30), transparent 62%),
+    linear-gradient(145deg, #1f3960, #112038);
+  border: 1px solid rgba(45, 212, 191, 0.36);
+}
+
+@media (max-width: 350px) {
+  .mobileAgentGrid {
+    grid-template-columns: 1fr;
+    gap: 8px;
   }
 }

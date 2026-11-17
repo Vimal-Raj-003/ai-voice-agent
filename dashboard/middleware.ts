@@ -25,6 +25,7 @@ export default auth((req) => {
     isLogin ||
     pathname.startsWith("/api/demo/public") ||
     pathname.startsWith("/api/demo/end") ||
+    pathname.startsWith("/api/demo/caption") ||
     pathname.startsWith("/forgot-password") ||
     pathname.startsWith("/reset-password");
   const isAuthenticated = !!req.auth;
@@ -50,6 +51,6 @@ export default auth((req) => {
 
 export const config = {
   matcher: [
-    "/((?!api/auth|api/webhooks|api/logs/proxy|api/demo/proxy|api/demo/public|api/demo/end|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/auth|api/webhooks|api/logs/proxy|api/demo/proxy|api/demo/public|api/demo/end|api/demo/caption|_next/static|_next/image|favicon.ico).*)",
   ],
 };

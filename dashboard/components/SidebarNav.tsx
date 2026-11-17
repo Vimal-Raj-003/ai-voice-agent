@@ -9,19 +9,16 @@ import {
   Megaphone,
   Activity,
   Settings,
-  Sparkles,
   Calendar,
   Server,
+  PhoneCall,
 } from "lucide-react";
 
 const links = [
   { href: "/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/assistants", label: "Assistants", icon: Bot },
+  { href: "/contacts?section=calls", label: "Calls & Recordings", icon: PhoneCall },
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
-  // API keys are a tab of Settings (/settings?tab=api-keys).
-  // Costs & Usage is a section of Overview (/#costs).
-  // Do-Not-Call, Phone numbers and Calls are sections of Contacts
-  // (?section=dnc|numbers|calls)
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/calendar", label: "Calendar", icon: Calendar },
   { href: "/live-logs", label: "Live Logs", icon: Activity },

@@ -12,6 +12,8 @@ import {
 import CallsFilters from "@/components/CallsFilters";
 import PhoneDialer from "@/components/PhoneDialer";
 import {buildRateMap,callChannel,computeCallCost,voiceUsage,costPerMinute} from "@/lib/cost";
+import { resolveRecording } from "@/lib/recording-source";
+import { AudioLines, Download } from "lucide-react";
 
 // Call history, rendered as a SECTION of the Contacts page.
 //
@@ -125,49 +127,78 @@ export default async function CallsSection({
           const cost = breakdown.totalUsd;
           const channel=callChannel(c);
           const incomplete=breakdown.hasUnknownRates||(channel==='Demo'&&!voiceUsage(c.metadata)?.complete);
+          const recState = resolveRecording(c);
           return (
-            <li key={c.id} className="p-3 hover:bg-white/[0.02]">
-             <div className="flex items-start gap-3">
-              <Link href={`/calls/${c.id}`} className="block min-w-0 flex-1">
-                <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
-                  <div className="min-w-0">
-                    <div className="text-sm">{channel==='Demo'?`Browser demo · ${c.assistant?.name||'Assistant'}`:c.toNumber}</div>
-                    <div className="text-[11px] text-gray-500">
-                      {c.createdAt.toLocaleString()}
-                      {c.durationSeconds != null && ` · ${c.durationSeconds}s`}
-                      {incomplete&&cost===0?' · Cost incomplete':<> · <Money usd={cost} decimals={4}/>{incomplete?' + unmetered':' estimated'}</>}
-                      {(cost>0||!incomplete)&&costPerMinute(cost,c.durationSeconds)!=null&&<> · <Money usd={costPerMinute(cost,c.durationSeconds)!} decimals={4}/> / min</>}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center gap-2">
-                    {!direction&&<Badge tone={directionTone(c.direction)}>{channel}</Badge>}
-                    <Badge tone={statusTone(c.status)}>{c.status}</Badge>
-                    {c.outcome && c.outcome!==c.status && <Badge tone={outcomeTone(c.outcome)}>{c.outcome}</Badge>}
-                    {c.sentiment && <Badge tone={sentimentTone(c.sentiment)}>{c.sentiment}</Badge>}
-                  </div>
-                </div>
-                {q && snippetMap.has(c.id) && (
-                  <div
-                    className="mt-2 text-[11px] text-gray-400 italic line-clamp-2"
-                    dangerouslySetInnerHTML={{
-                      __html: snippetMap
-                        .get(c.id)!
-                        .replace(
-                          new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig"),
-                          '<mark class="bg-violet-500/30 text-white">$1</mark>',
-                        ),
-                    }}
+            <li key={c.id} className="p-3.5 hover:bg-white/[0.02]">
+             <div className="flex flex-col gap-2.5">
+              <div className="flex items-start gap-3">
+               <Link href={`/calls/${c.id}`} className="block min-w-0 flex-1">
+                 <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
+                   <div className="min-w-0">
+                     <div className="text-sm font-medium text-gray-100">{channel==='Demo'?`Browser demo · ${c.assistant?.name||'Assistant'}`:c.toNumber}</div>
+                     <div className="text-[11px] text-gray-500">
+                       {c.createdAt.toLocaleString()}
+                       {c.durationSeconds != null && ` · ${c.durationSeconds}s`}
+                       {incomplete&&cost===0?' · Cost incomplete':<> · <Money usd={cost} decimals={4}/>{incomplete?' + unmetered':' estimated'}</>}
+                       {(cost>0||!incomplete)&&costPerMinute(cost,c.durationSeconds)!=null&&<> · <Money usd={costPerMinute(cost,c.durationSeconds)!} decimals={4}/> / min</>}
+                     </div>
+                   </div>
+                   <div className="flex shrink-0 flex-wrap items-center gap-2">
+                     {!direction&&<Badge tone={directionTone(c.direction)}>{channel}</Badge>}
+                     <Badge tone={statusTone(c.status)}>{c.status}</Badge>
+                     {c.outcome && c.outcome!==c.status && <Badge tone={outcomeTone(c.outcome)}>{c.outcome}</Badge>}
+                     {c.sentiment && <Badge tone={sentimentTone(c.sentiment)}>{c.sentiment}</Badge>}
+                   </div>
+                 </div>
+                 {q && snippetMap.has(c.id) && (
+                   <div
+                     className="mt-2 text-[11px] text-gray-400 italic line-clamp-2"
+                     dangerouslySetInnerHTML={{
+                       __html: snippetMap
+                         .get(c.id)!
+                         .replace(
+                           new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig"),
+                           '<mark class="bg-violet-500/30 text-white">$1</mark>',
+                         ),
+                     }}
+                   />
+                 )}
+               </Link>
+               <div className="flex items-center gap-2 shrink-0 self-center">
+                 <Link
+                   href={`/calls/${c.id}`}
+                   className="rounded-lg border border-cyan-400/25 bg-cyan-400/10 px-2.5 py-1 text-[11px] font-medium text-cyan-300 hover:bg-cyan-400/20"
+                 >
+                   Details &amp; Transcript
+                 </Link>
+                 <Link
+                   href={`/calls/${c.id}/logs`}
+                   className="rounded-lg border border-white/15 px-2.5 py-1 text-[11px] text-gray-300 hover:bg-white/10 hover:text-white"
+                 >
+                   View Logs
+                 </Link>
+               </div>
+              </div>
+              {recState.status === "READY" && (
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-cyan-300 shrink-0">
+                    <AudioLines size={13} />
+                    <span>Recording</span>
+                  </span>
+                  <audio
+                    controls
+                    preload="none"
+                    src={`/api/calls/${c.id}/recording/stream`}
+                    className="h-8 w-full sm:flex-1"
                   />
-                )}
-              </Link>
-              {/* Per-call logs: recording, flow, breakpoint, timeline. Kept
-                  OUTSIDE the row <Link> so anchors are never nested. */}
-              <Link
-                href={`/calls/${c.id}/logs`}
-                className="shrink-0 self-center rounded-lg border border-white/15 px-2.5 py-1 text-[11px] text-gray-300 hover:bg-white/10 hover:text-white"
-              >
-                View Logs
-              </Link>
+                  <a
+                    href={`/api/calls/${c.id}/recording/download`}
+                    className="inline-flex items-center justify-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-gray-300 hover:bg-white/10 hover:text-white shrink-0"
+                  >
+                    <Download size={12} /> Download
+                  </a>
+                </div>
+              )}
              </div>
             </li>
           );

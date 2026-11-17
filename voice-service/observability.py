@@ -223,6 +223,13 @@ class _SdkLogBridge(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            msg_str = str(record.getMessage())
+            # Ignore benign WebRTC SCTP data-channel teardown & post-timeline tail frames on normal hangup
+            if (
+                ("publisher data channel '" in msg_str and "closed unexpectedly" in msg_str)
+                or "recorder dropped audio that reached it after its place in the timeline" in msg_str
+            ):
+                return
             meta: dict = {
                 "sdk_logger": record.name,
                 "func": record.funcName,
@@ -261,10 +268,9 @@ _SDK_RECORD_SKIP = frozenset((
 
 def attach_sdk_log_bridge(level: int = logging.WARNING) -> None:
     """Send the LiveKit SDK's own WARNING+ logs to Live Logs. Idempotent."""
-    for name in ("livekit", "livekit.agents"):
-        lg = logging.getLogger(name)
-        if any(isinstance(h, _SdkLogBridge) for h in lg.handlers):
-            continue
+    # Attach only on the parent 'livekit' logger; 'livekit.agents' propagates to 'livekit'
+    lg = logging.getLogger("livekit")
+    if not any(isinstance(h, _SdkLogBridge) for h in lg.handlers):
         h = _SdkLogBridge()
         h.setLevel(level)
         lg.addHandler(h)

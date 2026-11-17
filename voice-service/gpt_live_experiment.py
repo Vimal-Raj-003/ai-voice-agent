@@ -476,9 +476,16 @@ async def run_test_session(ctx, selected: TestSelection, *, resolve_profile, log
                 if session:
                     emit('session_usage_final', usage=str(session.usage), backend_requests=bridge.requests if bridge else 0)
                 if recorder:
-                    path, duration = recorder.stop()
+                    path, duration = await asyncio.to_thread(recorder.stop)
                     emit('recording_finalized', path=path, duration=duration,
                          boundary='generated agent PCM and subscribed caller track; not handset audio')
+                    if path:
+                        try:
+                            from voice_usage import save_demo_artifacts
+                            async with asyncio.timeout(5):
+                                await save_demo_artifacts(ctx.room.name, [], path, duration)
+                        except Exception:
+                            pass
                 emit('test_finished', meaningful_audio_latency_ms=None, interruption_cutoff_ms=None,
                      explanation='Requires audio review and aligned playback measurements; event counts are not proof.')
             finally:
@@ -495,10 +502,28 @@ async def run_test_session(ctx, selected: TestSelection, *, resolve_profile, log
         language_state.strict_lock = True
         targets = await demo_transfer_targets(profile['id'], emit)
         owner, tools = sandbox_tools(ctx, state, emit, transfer_targets=targets)
-        from assistant_identity import business_name_for_profile
-        business = business_name_for_profile(profile, config.BUSINESS_NAME)
-        backend_prompt = build_prompt(custom_prompt=profile.get('system_prompt'), business_name=business,
-                                      call_direction=selected.direction, native_audio=True, speech_style=profile.get('metadata'))
+        from demo_context import (
+            apply_business_name_to_text,
+            build_demo_company_context,
+            resolve_demo_business_name,
+            sanitize_demo_lead,
+        )
+        demo_lead = sanitize_demo_lead(dispatch.get('demo_lead'))
+        business = resolve_demo_business_name(profile, demo_lead, config.BUSINESS_NAME)
+        meta_obj = profile.get('metadata') if isinstance(profile.get('metadata'), dict) else {}
+        role_key = str((meta_obj or {}).get('roleKey') or profile.get('role') or 'assistant')
+        raw_prompt = apply_business_name_to_text(str(profile.get('system_prompt') or ''), profile, business)
+        backend_prompt = build_prompt(
+            lead_name=demo_lead.get('lead_name') or 'the caller',
+            custom_prompt=raw_prompt or None,
+            business_name=business,
+            service_type=demo_lead.get('business_type') or 'your enquiry',
+            call_direction=selected.direction,
+            native_audio=True,
+            speech_style=profile.get('metadata'),
+        )
+        if demo_lead:
+            backend_prompt += build_demo_company_context(demo_lead, role=role_key, business_name=business)
         backend_prompt += owner.demo_transfer_directory
         backend_prompt += ('\n[EXPERIMENT OVERRIDE] All tools here are sandbox-only. Never claim real booking, email or transfer. '
                            'Answer the current question before intake. Use update_call_details for understood corrections. '
@@ -522,10 +547,9 @@ async def run_test_session(ctx, selected: TestSelection, *, resolve_profile, log
                 self.duplex_session.on('input_speech_stopped', lambda ev: emit(
                     'caller_speech_end', turn_id=state.user_turn_id, sdk_event=str(ev),
                     boundary='SDK-estimated; verify against caller recording'))
-                opening = str(profile.get('first_message') or '').replace('{business_name}', business)
-                self.session.generate_reply(instructions='Begin once using the saved opening and language policy: ' + opening +
-                    ' Disclose briefly that this is a browser test with no real booking, email or transfer. '
-                    'If the caller already stated a request, continue it instead of asking their reason again.')
+                opening = apply_business_name_to_text(str(profile.get('first_message') or ''), profile, business)
+                self.session.generate_reply(instructions='Begin once warmly using the saved opening and language policy: ' + opening +
+                    ' If the caller already stated a request, continue it instead of asking their reason again.')
 
             async def realtime_audio_output_node(self, audio, model_settings):
                 async for frame in audio:

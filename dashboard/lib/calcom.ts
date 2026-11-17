@@ -44,6 +44,35 @@ export async function calcomStatus(): Promise<CalcomStatus> {
   }
 }
 
+export type CalcomBookResult =
+  | { ok: true; uid: string; meetingUrl: string }
+  | { ok: false; error: string };
+
+/** Create a Cal.com booking via API v2 and return its UID + Video Meeting Link. Never throws. */
+export async function calcomCreate(input: {
+  name: string;
+  email: string;
+  phone: string;
+  date: string;
+  time: string;
+  service: string;
+  notes?: string;
+}): Promise<CalcomBookResult> {
+  try {
+    const r = await voiceService.calcomCreateBooking(input);
+    if (r?.success && r.uid) {
+      return {
+        ok: true,
+        uid: r.uid,
+        meetingUrl: r.meeting_url || `https://app.cal.com/video/${r.uid}`,
+      };
+    }
+    return { ok: false, error: r?.message || "Cal.com booking failed" };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Cal.com booking error" };
+  }
+}
+
 /** Cancel a Cal.com booking by uid. Never throws. */
 export async function calcomCancel(uid: string, reason = ""): Promise<CalcomResult> {
   try {

@@ -105,6 +105,7 @@ class CallRecorder:
         self._high_water = 0           # furthest sample written on EITHER leg
         self._written = {_CH_CALLER: 0, _CH_AGENT: 0}   # samples per leg, for diagnostics
         self._max_samples = 0
+        self._ended_samples: int | None = None
         self._tasks: list[asyncio.Task] = []
         self._closed = False
         self._truncated = False
@@ -168,6 +169,12 @@ class CallRecorder:
             return
         start = max(0, round(at * self.rate), self._written[ch])
         end = start + len(pcm)
+        if self._ended_samples is not None:
+            if start >= self._ended_samples:
+                return
+            if end > self._ended_samples:
+                pcm = pcm[: self._ended_samples - start]
+                end = self._ended_samples
         if start >= self._max_samples:
             if not self._truncated:
                 self._truncated = True
@@ -242,8 +249,8 @@ class CallRecorder:
 
     def mark_ended(self) -> None:
         """Freeze the call boundary before asynchronous shutdown bookkeeping."""
-        if self.started_at is not None:
-            self._max_samples = min(self._max_samples,
+        if self.started_at is not None and self._ended_samples is None:
+            self._ended_samples = min(self._max_samples,
                 max(0, round((time.monotonic() - self.started_at) * self.rate)))
 
     def attach_caller_track(self, track: Any, track_sid: str = "") -> None:
@@ -332,7 +339,8 @@ class CallRecorder:
                         reason=self.failed_reason or "no audio captured", source="RECORDING")
             return None, None
         try:
-            n = min(self._max_samples, max(self._high_water, elapsed))
+            cap = self._ended_samples if self._ended_samples is not None else self._max_samples
+            n = min(cap, max(self._high_water, elapsed))
             # Per-channel soft limit. The legs are separate so neither can clip the
             # other, but a leg whose SOURCE already sits at full scale (synthesised
             # speech often does) would still square off against the int16 ceiling —

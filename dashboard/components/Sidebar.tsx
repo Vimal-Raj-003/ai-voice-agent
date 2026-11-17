@@ -6,7 +6,6 @@
 // client component SidebarFrame; the session-dependent parts are rendered here
 // and handed to it, so no server data has to move into the client.
 import { auth } from "@/lib/auth";
-import QuickDispatch from "./QuickDispatch";
 import SidebarNav from "./SidebarNav";
 import SidebarFrame from "./SidebarFrame";
 import SidebarFooter from "./SidebarFooter";
@@ -16,7 +15,7 @@ export default async function Sidebar() {
   const session = await auth();
   return (
     <SidebarFrame
-      quickDispatch={<QuickDispatch />}
+      quickDispatch={null}
       nav={<SidebarNav />}
       footer={<SidebarFooter signOut={<SignOutButton email={session?.user?.email} />} />}
     />

@@ -189,8 +189,25 @@ def test_detect_explicit_language_switch():
     assert lang.detect_explicit_language_switch("English la explain pannunga") == "en"
     assert lang.detect_explicit_language_switch("Hindi-la sollunga") == "hi"
     assert lang.detect_explicit_language_switch("Malayalam-la parayamo") == "ml"
+    assert lang.detect_explicit_language_switch("Kannada alli matadi") == "kn"
+    assert lang.detect_explicit_language_switch("Please speak in Kannada") == "kn"
     assert lang.detect_explicit_language_switch("Do you know Tamil?") is None
     assert lang.detect_explicit_language_switch("Do you know Telugu?") is None
+
+
+def test_kannada_script_switches_and_directive_uses_everyday_english_words():
+    st = lang.LanguageState(initial="en")
+    assert st.observe("kn", "ನಮಸ್ಕಾರ ನನಗೆ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬೇಕು") is True
+    assert st.active == "kn"
+    assert st.established is True
+    # Everyday English loanwords inside Kannada do not flip back to English
+    assert st.observe("en", "doctor appointment fees timing") is False
+    assert st.active == "kn"
+    for code in ("ta", "te", "kn", "ml", "hi"):
+        directive = lang.llm_language_directive(code)
+        assert directive is not None
+        assert "appointment" in directive
+        assert "classical" in directive.lower() or "literary" in directive.lower()
 
 
 def test_observe_with_explicit_switch():

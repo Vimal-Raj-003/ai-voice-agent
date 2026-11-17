@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { ChevronDown, Calendar } from "lucide-react";
 
 import { RANGE_OPTIONS, type RangeKey } from "@/lib/overview-range";
@@ -9,6 +9,7 @@ export { RANGE_OPTIONS, type RangeKey } from "@/lib/overview-range";
 
 export default function RangeSelector({ currentRange = "14d" }: { currentRange?: string }) {
   const router = useRouter();
+  const pathname = usePathname() || "/overview";
   const sp = useSearchParams();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -35,7 +36,7 @@ export default function RangeSelector({ currentRange = "14d" }: { currentRange?:
       params.set("range", value);
     }
     const qs = params.toString();
-    router.replace(qs ? `/?${qs}` : "/", { scroll: false });
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   };
 
   return (

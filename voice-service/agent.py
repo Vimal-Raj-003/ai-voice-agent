@@ -3269,18 +3269,32 @@ async def entrypoint(ctx: JobContext) -> None:
     # while the prompt body defaulted to "our company"). customer_name is the
     # cleaned lead name or "" — never a monitor/placeholder.
     from assistant_identity import business_name_for_profile
-    business_name = business_name_for_profile(profile, str(meta.get("business_name") or config.BUSINESS_NAME or ''))
-    customer_name = _clean_customer_name(meta.get("lead_name") or name)
+    from demo_context import (
+        apply_business_name_to_text,
+        build_demo_company_context,
+        resolve_demo_business_name,
+        sanitize_demo_lead,
+    )
+    _demo_lead = sanitize_demo_lead(meta.get("demo_lead")) if phone == "demo" else {}
+    business_name = (
+        resolve_demo_business_name(profile, _demo_lead, str(meta.get("business_name") or config.BUSINESS_NAME or ""))
+        if _demo_lead
+        else business_name_for_profile(profile, str(meta.get("business_name") or config.BUSINESS_NAME or ''))
+    )
+    customer_name = _clean_customer_name(_demo_lead.get("lead_name") or meta.get("lead_name") or name)
 
     # `_prompt_diag` carries hash + substitution counts only, never the prompt
     # text: the saved prompt is confidential, but WHICH prompt loaded and
     # WHETHER its placeholders were filled must be provable from Live Logs.
     _prompt_diag: dict = {}
+    _custom_prompt_src = profile.get("system_prompt")
+    if _demo_lead and _custom_prompt_src:
+        _custom_prompt_src = apply_business_name_to_text(str(_custom_prompt_src), profile, business_name)
     system_prompt = build_prompt(
         lead_name=customer_name or "the caller",
         business_name=business_name,
-        service_type=meta.get("service_type") or "your enquiry",
-        custom_prompt=profile.get("system_prompt"),
+        service_type=_demo_lead.get("business_type") or meta.get("service_type") or "your enquiry",
+        custom_prompt=_custom_prompt_src,
         language_preset=meta.get("language_preset") or "multilingual",
         caller_history=history,
         diagnostics=_prompt_diag,
@@ -3289,6 +3303,10 @@ async def entrypoint(ctx: JobContext) -> None:
         native_audio=_gpt_live_phone,
         speech_style=profile.get('metadata'),
     )
+    if _demo_lead:
+        _meta_obj = profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}
+        _role_key = str((_meta_obj or {}).get("roleKey") or profile.get("role") or "receptionist")
+        system_prompt += build_demo_company_context(_demo_lead, role=_role_key, business_name=business_name)
     logger.info("prompt_loaded", assistant_id=profile.get("id"),
                 assistant_name=profile.get("name"),
                 has_customer_name=bool(customer_name),
@@ -4734,7 +4752,16 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info('FIRST_GREETING_STARTED', source='gpt_live', call_id=ctx.room.name)
         session.generate_reply(instructions=opening)
     elif phone == "demo":
-        greeting = "Hello, welcome to VIMS Enterprise. This is Abi from the front desk. How may I help you today?"
+        _saved_demo_fm = (profile.get("first_message") or "").strip()
+        if _saved_demo_fm:
+            greeting = apply_business_name_to_text(_saved_demo_fm, profile, business_name)
+            greeting = (
+                greeting.replace("{lead_name}", customer_name or "")
+                .replace("{service_type}", str(_demo_lead.get("business_type") or meta.get("service_type") or "your enquiry"))
+            )
+            greeting = re.sub(r"\s{2,}", " ", greeting).strip()
+        else:
+            greeting = f"Hello, welcome to {business_name}. This is Abi from the front desk. How may I help you today?"
         logger.info("FIRST_GREETING_STARTED", call_id=ctx.room.name)
         try:
             # Non-blocking: say() schedules the greeting through the normal

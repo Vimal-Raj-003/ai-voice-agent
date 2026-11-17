@@ -2,7 +2,7 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
 import { isR2Configured, signRecordingUrl } from "@/lib/r2";
-import { isLocalRecordingKey, isLocalBackend } from "@/lib/recordings";
+import { isLocalRecordingKey, recordingFilename, effectiveStatus } from "@/lib/recordings";
 import { resolveRecording } from "@/lib/recording-source";
 
 // Recording status + a SHORT-LIVED signed playback URL for one call. The bucket
@@ -11,35 +11,6 @@ import { resolveRecording } from "@/lib/recording-source";
 //
 // Status (recordingStatus column, else inferred):
 //   NOT_CONFIGURED | STARTING | RECORDING | PROCESSING | READY | FAILED
-
-export function recordingFilename(call: { id: string; createdAt: Date | null; recordingObjectKey?: string | null }): string {
-  const ext = (call.recordingObjectKey?.split(".").pop() || "ogg").replace(/[^a-z0-9]/gi, "") || "ogg";
-  const d = call.createdAt ? new Date(call.createdAt) : new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
-  return `JillJill_Call_${call.id}_${stamp}.${ext}`;
-}
-
-// Normalise the stored status, inferring a sensible value for legacy rows that
-// predate the recordingStatus column.
-export function effectiveStatus(call: {
-  recordingStatus?: string | null; recordingObjectKey?: string | null; recordingUrl?: string | null;
-}): "NOT_CONFIGURED" | "STARTING" | "RECORDING" | "PROCESSING" | "READY" | "FAILED" | "NONE" {
-  const s = (call.recordingStatus || "").toUpperCase();
-  // Legacy rows: calls made BEFORE self-hosted recording existed were stamped
-  // NOT_CONFIGURED by the old Cloudflare R2 path. That is no longer a
-  // configuration problem — local recording is configured — the call simply has
-  // no audio. Report it as NONE so the UI stops telling the operator to fix env
-  // vars that are already correct. (A genuine local failure is written as
-  // FAILED by the worker, so it is unaffected.)
-  if (s === "NOT_CONFIGURED" && !call.recordingObjectKey && isLocalBackend()) return "NONE";
-  if (["NOT_CONFIGURED", "STARTING", "RECORDING", "PROCESSING", "READY", "FAILED"].includes(s)) {
-    return s as "NOT_CONFIGURED" | "STARTING" | "RECORDING" | "PROCESSING" | "READY" | "FAILED";
-  }
-  // Legacy inference: a stored object/URL means the recording finished.
-  if (call.recordingObjectKey || call.recordingUrl) return "READY";
-  return "NONE";
-}
 
 export async function GET(_request: Request, ctx: { params: Promise<{ id: string }> }) {
   const session = await auth();

@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/require-role";
-import { calcomCancel, calcomStatus } from "@/lib/calcom";
+import { calcomCancel, calcomCreate, calcomStatus } from "@/lib/calcom";
 import { reminderAtUtc, remindersEnabled } from "@/lib/reminders";
 import type { Prisma } from "@prisma/client";
 
@@ -26,7 +26,7 @@ function shortBookingId(): string {
 }
 
 export type BookingResult =
-  | { ok: true; bookingId: string }
+  | { ok: true; bookingId: string; meetingUrl?: string; calcomUid?: string | null }
   | { ok: false; error: string };
 
 // Back-compat alias: BookingForm imported this name before reschedule existed.
@@ -151,6 +151,37 @@ export async function createBooking(formData: FormData): Promise<BookingResult> 
   if (conflict) return { ok: false, error: conflict };
 
   const bookingId = shortBookingId();
+  let calcomUid: string | null = null;
+  let meetingUrl = `https://meet.jit.si/JillJill-${bookingId}`;
+
+  // Sync live with Cal.com API v2 when configured and booking an active appointment
+  if (parsed.status === "BOOKED") {
+    const cal = await calcomStatus();
+    if (cal.configured) {
+      const calRes = await calcomCreate({
+        name: parsed.name,
+        email: parsed.email || "",
+        phone: parsed.phone,
+        date: parsed.date,
+        time: parsed.time,
+        service: parsed.service,
+        notes: parsed.notes || "",
+      });
+      if (!calRes.ok) {
+        return { ok: false, error: `Cal.com slot error: ${calRes.error}` };
+      }
+      calcomUid = calRes.uid;
+      meetingUrl = calRes.meetingUrl;
+    }
+  }
+
+  const enrichedNotes = [
+    `[MEETING_URL:${meetingUrl}]`,
+    parsed.notes ? parsed.notes.replace(/\[MEETING_URL:[^\]]+\]\s*/g, "").trim() : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   try {
     await prisma.$transaction(async (tx) => {
       await tx.contact.upsert({
@@ -170,7 +201,8 @@ export async function createBooking(formData: FormData): Promise<BookingResult> 
           durationMinutes: parsed.durationMinutes,
           timezone: parsed.timezone,
           host: parsed.host,
-          notes: parsed.notes,
+          notes: enrichedNotes,
+          calcomBookingUid: calcomUid,
           status: parsed.status,
         },
         select: { id: true },
@@ -180,7 +212,9 @@ export async function createBooking(formData: FormData): Promise<BookingResult> 
       }
     });
   } catch (err) {
-    // The partial unique indexes turn a duplicate active slot into P2002.
+    if (calcomUid) {
+      await calcomCancel(calcomUid, "Rollback after local DB constraint");
+    }
     const msg = err instanceof Error ? err.message : "Failed to create booking.";
     if (msg.includes("appointments_active_customer_slot_idx") || msg.includes("Unique constraint")) {
       return { ok: false, error: "That customer already has a booking in this slot." };
@@ -192,7 +226,7 @@ export async function createBooking(formData: FormData): Promise<BookingResult> 
   }
 
   revalidatePath("/calendar");
-  return { ok: true, bookingId };
+  return { ok: true, bookingId, meetingUrl, calcomUid };
 }
 
 /**

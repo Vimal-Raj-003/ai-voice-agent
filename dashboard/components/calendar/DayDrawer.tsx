@@ -1,5 +1,18 @@
+"use client";
+
+import React, { useState } from "react";
 import Link from "next/link";
-import { CalendarCheck, ChevronLeft } from "lucide-react";
+import {
+  CalendarCheck,
+  ChevronLeft,
+  Video,
+  Copy,
+  Check,
+  Phone,
+  Mail,
+  Clock,
+  ExternalLink,
+} from "lucide-react";
 import { Badge } from "@/components/Badge";
 import BookingRowActions from "./BookingRowActions";
 
@@ -13,6 +26,7 @@ type Appt = {
   time: string;
   service: string;
   status: string;
+  notes?: string | null;
   durationMinutes?: number;
   host?: string | null;
   calcomBookingUid?: string | null;
@@ -24,6 +38,22 @@ function statusTone(s: string) {
   if (s === "CANCELLED" || s === "NO_SHOW") return "danger" as const;
   if (s === "COMPLETED") return "info" as const;
   return "neutral" as const;
+}
+
+function resolveMeetingUrl(a: Appt): string {
+  if (a.notes) {
+    const m = a.notes.match(/\[MEETING_URL:([^\]]+)\]/);
+    if (m && m[1]) return m[1].trim();
+  }
+  if (a.calcomBookingUid) {
+    return `https://app.cal.com/video/${a.calcomBookingUid}`;
+  }
+  return `https://meet.jit.si/JillJill-${a.bookingId}`;
+}
+
+function cleanUserNotes(notes?: string | null): string {
+  if (!notes) return "";
+  return notes.replace(/\[MEETING_URL:[^\]]+\]\s*/g, "").trim();
 }
 
 export default function DayDrawer({
@@ -39,6 +69,7 @@ export default function DayDrawer({
   monthLabel?: string;
   statusFilter?: string;
 }) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const isMonthOverview = !day;
   const list = isMonthOverview ? (allMonthAppts ?? appts) : appts;
 
@@ -50,103 +81,154 @@ export default function DayDrawer({
         timeZone: "UTC",
       })
     : statusFilter
-    ? `${statusFilter} Appointments · ${monthLabel ?? ""}`
-    : `All Bookings · ${monthLabel ?? ""}`;
+    ? `${statusFilter} Meetings · ${monthLabel ?? ""}`
+    : `Scheduled Meetings · ${monthLabel ?? ""}`;
+
+  const copyLink = async (id: string, url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId((prev) => (prev === id ? null : prev)), 2000);
+    } catch {
+      // ignore
+    }
+  };
 
   return (
-    <div className="glass rounded-2xl p-5 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+    <div className="glass rounded-2xl p-4 sm:p-5 h-full flex flex-col">
+      <div className="flex items-center justify-between mb-3.5 gap-2 flex-wrap">
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-widest text-gray-200">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-white">
             {heading}
           </h2>
-          {day && allMonthAppts && allMonthAppts.length > 0 && (
+          {day && (
             <Link
               href="/calendar"
-              className="inline-flex items-center gap-1 text-[11px] text-cyan-300 hover:underline mt-0.5"
+              className="inline-flex items-center gap-1 text-[11px] text-teal-300 hover:underline mt-0.5"
             >
-              <ChevronLeft size={12} /> Show all {statusFilter ? statusFilter.toLowerCase() : "month"} bookings
+              <ChevronLeft size={12} /> Show all month meetings
             </Link>
           )}
         </div>
-        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-white/10 bg-white/5 text-gray-300">
-          {list.length} {statusFilter === "BOOKED" ? "booked" : "booking"}{list.length === 1 ? "" : "s"}
+        <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-full border border-white/10 bg-white/5 text-gray-200">
+          {list.length} {list.length === 1 ? "meeting" : "meetings"}
         </span>
       </div>
 
       {list.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-500 py-12 min-h-[240px]">
-          <CalendarCheck size={28} className="text-gray-600 mb-2" />
-          <div className="text-sm font-medium text-gray-400">
-            {day
-              ? "No bookings on this day."
-              : `No ${statusFilter ? statusFilter.toLowerCase() : ""} bookings in ${monthLabel ?? "this month"}.`}
+        <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-500 py-10 min-h-[220px]">
+          <CalendarCheck size={30} className="text-teal-400/50 mb-2.5" />
+          <div className="text-sm font-semibold text-gray-300">
+            {day ? "No meetings scheduled on this date." : `No meetings in ${monthLabel ?? "this month"}.`}
           </div>
-          <div className="text-[11px] text-gray-600 mt-1">
-            {day
-              ? "Pick another day or view all month bookings."
-              : "When customers book via voice calls or manual entry, they appear here."}
+          <div className="text-xs text-gray-500 mt-1 max-w-xs">
+            Click &ldquo;Schedule Meeting&rdquo; above or book via your AI Voice Agent — meeting links generate automatically.
           </div>
         </div>
       ) : (
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full min-w-[560px] text-left text-sm">
-            <thead>
-              <tr className="border-b border-white/10 text-[10px] uppercase tracking-widest text-gray-500">
-                <th className="py-2 pr-3 font-medium">{day ? "Time" : "Date & Time"}</th>
-                <th className="py-2 pr-3 font-medium">Customer</th>
-                <th className="py-2 pr-3 font-medium">Phone</th>
-                <th className="py-2 pr-3 font-medium">Email</th>
-                <th className="py-2 pr-3 font-medium">Service</th>
-                <th className="py-2 pr-3 font-medium">Host</th>
-                <th className="py-2 pr-3 font-medium">Status</th>
-                <th className="py-2 font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {list.map((a) => (
-                <tr key={a.id} className="align-top hover:bg-white/[0.02] transition">
-                  <td className="py-2.5 pr-3 font-medium tabular-nums whitespace-nowrap">
-                    {day ? (
-                      a.time
-                    ) : (
-                      <div>
-                        <span className="font-semibold text-gray-200">{a.date}</span>
-                        <span className="block text-[11px] text-gray-400">{a.time}</span>
-                      </div>
-                    )}
-                  </td>
-                  <td className="py-2.5 pr-3">
-                    <div className="whitespace-nowrap font-medium text-gray-200">{a.name}</div>
-                    <div className="text-[10px] font-mono text-gray-500">
-                      {a.bookingId}
-                    </div>
-                  </td>
-                  <td className="py-2.5 pr-3 font-mono text-xs text-gray-400 whitespace-nowrap">
-                    {a.phoneNumber}
-                  </td>
-                  <td className="max-w-[140px] py-2.5 pr-3 font-mono text-xs text-gray-400">
-                    {a.email ? (
-                      <span className="block truncate text-gray-300" title={a.email}>{a.email}</span>
-                    ) : (
-                      <span className="text-gray-600">—</span>
-                    )}
-                  </td>
-                  <td className="py-2.5 pr-3 text-gray-300 whitespace-nowrap">
-                    {a.service}
-                    {a.durationMinutes ? (
-                      <span className="ml-1 text-[10px] text-gray-500">
-                        {a.durationMinutes}m
+        <div className="space-y-3 overflow-y-auto max-h-[620px] pr-1">
+          {list.map((a) => {
+            const meetUrl = resolveMeetingUrl(a);
+            const noteText = cleanUserNotes(a.notes);
+            const isActive = a.status === "BOOKED";
+
+            return (
+              <div
+                key={a.id}
+                className="rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.05] p-3.5 transition space-y-2.5"
+              >
+                {/* Top Row: Time + Service + Status */}
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="inline-flex items-center gap-1 text-xs font-mono font-bold text-teal-300 bg-teal-400/10 border border-teal-400/25 px-2 py-0.5 rounded-md tabular-nums">
+                        <Clock size={11} />
+                        {day ? a.time : `${a.date} · ${a.time}`}
                       </span>
-                    ) : null}
-                  </td>
-                  <td className="py-2.5 pr-3 whitespace-nowrap text-gray-400">
-                    {a.host || <span className="text-gray-600">—</span>}
-                  </td>
-                  <td className="py-2.5 pr-3">
-                    <Badge tone={statusTone(a.status)}>{a.status}</Badge>
-                  </td>
-                  <td className="py-2.5">
+                      <span className="text-xs text-gray-400">
+                        {a.durationMinutes ?? 30}m IST
+                      </span>
+                      {a.calcomBookingUid && (
+                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-400/25">
+                          Cal.com Synced
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="text-sm font-bold text-white mt-1.5">
+                      {a.service} — <span className="text-teal-200">{a.name}</span>
+                    </h3>
+                  </div>
+                  <Badge tone={statusTone(a.status)}>{a.status}</Badge>
+                </div>
+
+                {/* Contact Info */}
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-300">
+                  <a
+                    href={`tel:${a.phoneNumber}`}
+                    className="inline-flex items-center gap-1 hover:text-white font-mono"
+                  >
+                    <Phone size={11} className="text-gray-400" />
+                    {a.phoneNumber}
+                  </a>
+                  {a.email && (
+                    <a
+                      href={`mailto:${a.email}`}
+                      className="inline-flex items-center gap-1 hover:text-white truncate max-w-[220px]"
+                      title={a.email}
+                    >
+                      <Mail size={11} className="text-gray-400" />
+                      {a.email}
+                    </a>
+                  )}
+                  <span className="text-[10.5px] font-mono text-gray-500">
+                    ID: {a.bookingId}
+                  </span>
+                </div>
+
+                {noteText && (
+                  <p className="text-xs text-gray-400 bg-black/20 rounded-lg px-2.5 py-1.5">
+                    {noteText}
+                  </p>
+                )}
+
+                {/* Google Meet / Cal Video Meeting Link Bar */}
+                {a.status !== "CANCELLED" && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-teal-400/25 bg-teal-500/[0.07] px-2.5 py-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Video size={14} className="text-teal-300 shrink-0" />
+                      <a
+                        href={meetUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs font-semibold text-teal-200 hover:text-white underline underline-offset-2 truncate"
+                      >
+                        Join Video Meeting
+                      </a>
+                      <ExternalLink size={11} className="text-teal-300/70 shrink-0" />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => copyLink(a.id, meetUrl)}
+                      className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 hover:bg-white/10 px-2 py-1 text-[11px] font-medium text-gray-200 cursor-pointer"
+                    >
+                      {copiedId === a.id ? (
+                        <>
+                          <Check size={11} className="text-emerald-400" />
+                          <span className="text-emerald-300">Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={11} />
+                          <span>Copy Link</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+
+                {/* Booking Row Actions (Done / Reschedule / Cancel) */}
+                {isActive && (
+                  <div className="pt-1 flex justify-end">
                     <BookingRowActions
                       appointmentId={a.id}
                       status={a.status}
@@ -155,11 +237,11 @@ export default function DayDrawer({
                       durationMinutes={a.durationMinutes ?? 30}
                       externallyLinked={!!(a.calcomBookingUid || a.gcalEventId)}
                     />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

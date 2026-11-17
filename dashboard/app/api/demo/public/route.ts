@@ -6,6 +6,9 @@ const rateMap = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 30;
 
+const MAX_DEMO_SESSIONS = 5;
+const MAX_DEMO_CALL_SECONDS = 240; // Strict 4-minute maximum per demo call
+
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
   const entry = rateMap.get(ip);
@@ -25,6 +28,39 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
+
+function parseQuotaFromNotes(notes: string | null | undefined): { access: number; calls: number } {
+  if (!notes) return { access: 0, calls: 0 };
+  const accessMatch = notes.match(/\[DEMO_ACCESS:(\d+)\]/);
+  const callsMatch = notes.match(/\[DEMO_CALLS:(\d+)\]/);
+  return {
+    access: accessMatch ? parseInt(accessMatch[1], 10) || 0 : 0,
+    calls: callsMatch ? parseInt(callsMatch[1], 10) || 0 : 0,
+  };
+}
+
+function buildUpdatedNotes(
+  existingNotes: string | null | undefined,
+  access: number,
+  calls: number,
+  metaLine: string
+): string {
+  const stripped = (existingNotes || "")
+    .replace(/\[DEMO_ACCESS:\d+\]\s*/g, "")
+    .replace(/\[DEMO_CALLS:\d+\]\s*/g, "")
+    .trim();
+  const base = metaLine || stripped;
+  return `[DEMO_ACCESS:${access}] [DEMO_CALLS:${calls}] ${base}`.trim();
+}
+
+function normalizePhone10(raw: unknown): string {
+  const digits = String(raw || "").replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+function normalizeEmail(raw: unknown): string {
+  return String(raw || "").trim().toLowerCase();
+}
 
 export async function OPTIONS() {
   return new Response(null, {
@@ -48,7 +84,6 @@ export async function GET() {
       orderBy: { createdAt: "asc" },
     });
 
-    // Public response intentionally hides internal model & voice provider identifiers
     const formatted = assistants.map((a) => {
       const meta = (a.metadata as Record<string, unknown>) || {};
       return {
@@ -60,7 +95,14 @@ export async function GET() {
       };
     });
 
-    return Response.json({ assistants: formatted }, { headers: CORS_HEADERS });
+    return Response.json(
+      {
+        assistants: formatted,
+        maxSessions: MAX_DEMO_SESSIONS,
+        maxCallSeconds: MAX_DEMO_CALL_SECONDS,
+      },
+      { headers: CORS_HEADERS }
+    );
   } catch (err) {
     const msg = excMsg(err);
     console.error("Public demo assistants error:", msg);
@@ -97,6 +139,18 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({}));
     const { assistantId, lead } = body;
 
+    const cleanEmail = normalizeEmail(lead?.email);
+    const digits10 = normalizePhone10(lead?.phone);
+
+    if (!cleanEmail || !cleanEmail.includes("@") || digits10.length !== 10) {
+      return Response.json(
+        { error: "Please provide a valid email address and 10-digit mobile number to access the live demo." },
+        { status: 400, headers: CORS_HEADERS }
+      );
+    }
+
+    const canonicalPhone = `+91 ${digits10}`;
+
     let assistant: { id: string; name: string } | null = null;
     if (assistantId) {
       assistant = await prisma.assistant.findFirst({
@@ -111,52 +165,183 @@ export async function POST(request: Request) {
       }
     }
 
-    if (lead?.phone) {
-      try {
-        const cleanPhone = String(lead.phone).trim();
-        const notes = [
-          lead.businessType ? `Business Type: ${lead.businessType}` : "",
-          lead.country ? `Country: ${lead.country}` : "",
-          lead.state ? `State: ${lead.state}` : "",
-          lead.city ? `City: ${lead.city}` : "",
-          lead.description ? `Description: ${lead.description}` : "",
-          assistant ? `Demo Assistant: ${assistant.name}` : "Pre-demo lead capture",
-        ]
-          .filter(Boolean)
-          .join(" | ");
+    // Look up all contacts matching EITHER this email OR this 10-digit phone number
+    const matchingContacts = await prisma.contact.findMany({
+      where: {
+        OR: [
+          { email: { equals: cleanEmail, mode: "insensitive" } },
+          { phoneNumber: { contains: digits10 } },
+        ],
+      },
+      select: { id: true, phoneNumber: true, email: true, notes: true },
+    });
 
+    let maxAccessUsed = 0;
+    let maxCallsUsed = 0;
+    for (const c of matchingContacts) {
+      const q = parseQuotaFromNotes(c.notes);
+      if (q.access > maxAccessUsed) maxAccessUsed = q.access;
+      if (q.calls > maxCallsUsed) maxCallsUsed = q.calls;
+    }
+
+    const metaSummary = [
+      lead?.businessType ? `Industry: ${lead.businessType}` : "",
+      lead?.country ? `Country: ${lead.country}` : "Country: India",
+      lead?.state ? `State: ${lead.state}` : "",
+      lead?.city ? `City: ${lead.city}` : "",
+      lead?.description ? `Note: ${lead.description}` : "",
+      assistant ? `Last Demo: ${assistant.name}` : "Demo Portal Access",
+    ]
+      .filter(Boolean)
+      .join(" | ");
+
+    // Case A: Lead Form Submission (entering the Demo Page)
+    if (!assistant) {
+      if (maxAccessUsed >= MAX_DEMO_SESSIONS || maxCallsUsed >= MAX_DEMO_SESSIONS) {
+        return Response.json(
+          {
+            error: `Demo limit reached (${MAX_DEMO_SESSIONS}/${MAX_DEMO_SESSIONS} sessions used for ${cleanEmail}). Contact vims20.vs@gmail.com for full enterprise access.`,
+            limitReached: true,
+            usedSessions: MAX_DEMO_SESSIONS,
+            remainingSessions: 0,
+            maxSessions: MAX_DEMO_SESSIONS,
+          },
+          { status: 403, headers: CORS_HEADERS }
+        );
+      }
+
+      const nextAccess = maxAccessUsed + 1;
+      const updatedNotes = buildUpdatedNotes(
+        matchingContacts[0]?.notes,
+        nextAccess,
+        maxCallsUsed,
+        metaSummary
+      );
+
+      // Persist incremented quota across any existing matching contacts + upsert canonical phone
+      if (matchingContacts.length > 0) {
+        await Promise.all(
+          matchingContacts.map((c) =>
+            prisma.contact.update({
+              where: { id: c.id },
+              data: {
+                name: lead?.fullName?.trim() || undefined,
+                email: cleanEmail,
+                company: lead?.businessName?.trim() || undefined,
+                notes: buildUpdatedNotes(c.notes, nextAccess, maxCallsUsed, metaSummary),
+              },
+            })
+          )
+        );
+      } else {
         await prisma.contact.upsert({
-          where: { phoneNumber: cleanPhone },
+          where: { phoneNumber: canonicalPhone },
           update: {
-            name: lead.fullName || undefined,
-            email: lead.email || undefined,
-            company: lead.businessName || undefined,
-            notes: notes || undefined,
+            name: lead?.fullName?.trim() || undefined,
+            email: cleanEmail,
+            company: lead?.businessName?.trim() || undefined,
+            notes: updatedNotes,
           },
           create: {
-            phoneNumber: cleanPhone,
-            name: lead.fullName || null,
-            email: lead.email || null,
-            company: lead.businessName || null,
-            notes: notes || null,
+            phoneNumber: canonicalPhone,
+            name: lead?.fullName?.trim() || null,
+            email: cleanEmail,
+            company: lead?.businessName?.trim() || null,
+            notes: updatedNotes,
           },
         });
-      } catch (err) {
-        console.warn("Failed to persist lead contact:", err);
       }
+
+      return Response.json(
+        {
+          success: true,
+          leadSaved: true,
+          usedSessions: nextAccess,
+          remainingSessions: Math.max(0, MAX_DEMO_SESSIONS - Math.max(nextAccess, maxCallsUsed)),
+          maxSessions: MAX_DEMO_SESSIONS,
+          maxCallSeconds: MAX_DEMO_CALL_SECONDS,
+        },
+        { headers: CORS_HEADERS }
+      );
     }
 
-    if (!assistant) {
-      return Response.json({ success: true, leadSaved: true }, { headers: CORS_HEADERS });
+    // Case B: Starting a Live Voice Call with one of the 9 Assistants
+    if (maxCallsUsed >= MAX_DEMO_SESSIONS || maxAccessUsed > MAX_DEMO_SESSIONS) {
+      return Response.json(
+        {
+          error: `Demo call limit reached (${MAX_DEMO_SESSIONS}/${MAX_DEMO_SESSIONS} sessions used for ${cleanEmail}). Contact vims20.vs@gmail.com for full enterprise access.`,
+          limitReached: true,
+          usedSessions: MAX_DEMO_SESSIONS,
+          remainingSessions: 0,
+          maxSessions: MAX_DEMO_SESSIONS,
+        },
+        { status: 403, headers: CORS_HEADERS }
+      );
     }
 
-    const tokenData = await voiceService.demoToken(assistant.id, org.id);
+    const nextCalls = maxCallsUsed + 1;
+    const effectiveAccess = Math.max(1, maxAccessUsed);
+    const updatedCallNotes = buildUpdatedNotes(
+      matchingContacts[0]?.notes,
+      effectiveAccess,
+      nextCalls,
+      metaSummary
+    );
+
+    if (matchingContacts.length > 0) {
+      await Promise.all(
+        matchingContacts.map((c) =>
+          prisma.contact.update({
+            where: { id: c.id },
+            data: {
+              name: lead?.fullName?.trim() || undefined,
+              email: cleanEmail,
+              company: lead?.businessName?.trim() || undefined,
+              notes: buildUpdatedNotes(c.notes, effectiveAccess, nextCalls, metaSummary),
+            },
+          })
+        )
+      );
+    } else {
+      await prisma.contact.upsert({
+        where: { phoneNumber: canonicalPhone },
+        update: {
+          email: cleanEmail,
+          notes: updatedCallNotes,
+        },
+        create: {
+          phoneNumber: canonicalPhone,
+          name: lead?.fullName?.trim() || null,
+          email: cleanEmail,
+          company: lead?.businessName?.trim() || null,
+          notes: updatedCallNotes,
+        },
+      });
+    }
+
+    const leadContext = {
+      fullName: typeof lead?.fullName === "string" ? lead.fullName.trim() : undefined,
+      phone: canonicalPhone,
+      email: cleanEmail,
+      businessName: typeof lead?.businessName === "string" ? lead.businessName.trim() : undefined,
+      businessType: typeof lead?.businessType === "string" ? lead.businessType.trim() : undefined,
+      country: "India",
+      state: typeof lead?.state === "string" ? lead.state.trim() : undefined,
+      city: typeof lead?.city === "string" ? lead.city.trim() : undefined,
+      description: typeof lead?.description === "string" ? lead.description.trim() : undefined,
+    };
+
+    const tokenData = await voiceService.demoToken(assistant.id, org.id, leadContext);
     return Response.json(
       {
         token: tokenData.token,
         room: tokenData.room,
         url: tokenData.url,
         assistant_name: assistant.name,
+        usedSessions: Math.max(effectiveAccess, nextCalls),
+        remainingSessions: Math.max(0, MAX_DEMO_SESSIONS - Math.max(effectiveAccess, nextCalls)),
+        maxSessions: MAX_DEMO_SESSIONS,
+        maxCallSeconds: MAX_DEMO_CALL_SECONDS,
       },
       { status: 200, headers: CORS_HEADERS }
     );

@@ -109,9 +109,8 @@ export default async function CalendarPage({
     byDate.set(a.date, arr);
   }
 
-  // Month view keeps its existing behaviour: a day is selected only when it
-  // actually has bookings. Day/week views always show their range.
-  const day = sp.day && byDate.has(sp.day) ? sp.day : null;
+  // Allow selecting ANY calendar day (like Google Calendar) so users can inspect or schedule on it
+  const day = sp.day && /^\d{4}-\d{2}-\d{2}$/.test(sp.day) ? sp.day : null;
   const dayList = day ? byDate.get(day) ?? [] : [];
 
   const monthLabel = new Date(Date.UTC(y, m - 1, 1)).toLocaleString("en-US", {
@@ -146,26 +145,18 @@ export default async function CalendarPage({
         <BookingForm defaultDate={day ?? anchor} hosts={hostNames} />
       </div>
 
-      {/* Synchronisation status. Neon is the source of truth; this says
-          whether anything is mirrored outward. */}
-      <p className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-[11px] text-gray-400">
-        <Info size={12} className="shrink-0 text-gray-500" />
-        <span>
-          Bookings are stored in this dashboard.
-        </span>
-        <span className={calOn ? "text-emerald-300" : "text-gray-500"}>
-          Cal.com {calOn ? "connected" : "not configured"}
-        </span>
-        <span className="text-gray-700">·</span>
-        <span className={gcalOn ? "text-emerald-300" : "text-gray-500"}>
-          Google Calendar {gcalOn ? "connected" : "not configured"}
-        </span>
-        {!calOn && !gcalOn && (
-          <span className="text-gray-500">
-            — external calendar sync is not active, so bookings here are local only.
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-teal-400/20 bg-teal-400/[0.04] px-3.5 py-2.5 text-xs text-gray-300 flex-wrap">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`inline-block h-2 w-2 rounded-full ${calOn ? "bg-teal-400 animate-pulse" : "bg-gray-500"}`} />
+          <span className="font-semibold text-white">
+            Cal.com Live Meeting Sync: {calOn ? "Active & Connected (IST)" : "Local Mode"}
           </span>
-        )}
-      </p>
+          <span className="text-gray-500">·</span>
+          <span className="text-gray-400">
+            Every booked appointment automatically generates a shareable video meeting link.
+          </span>
+        </div>
+      </div>
 
       {/* Month-scoped stat tiles */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

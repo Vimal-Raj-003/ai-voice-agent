@@ -48,6 +48,10 @@ const AnimatedSection: React.FC<{
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
@@ -55,7 +59,7 @@ const AnimatedSection: React.FC<{
           observer.unobserve(element);
         }
       },
-      { threshold: 0.1 }
+      { threshold: 0.08 }
     );
     observer.observe(element);
     return () => observer.disconnect();
@@ -280,22 +284,23 @@ export default function LandingPage() {
       className={`${landingStyles.landingRoot} font-sans`}
       data-jj-theme={theme}
     >
-      {/* ── Fixed Responsive Header ──────────────────────────────────────────── */}
+      {/* ── Fixed Responsive Header (320px iPhone SE -> 2560px Desktop) ──────── */}
       <header
-        className="py-2.5 px-4 sm:px-8 md:px-12 fixed top-0 left-0 right-0 backdrop-blur-md z-40 border-b"
+        className="py-2.5 px-3.5 sm:px-8 md:px-12 fixed top-0 left-0 right-0 backdrop-blur-md z-40 border-b"
         style={{
           backgroundColor: "var(--jj-header)",
           borderColor: "var(--jj-border)",
+          WebkitBackdropFilter: "blur(12px)",
         }}
       >
-        <div className="container mx-auto flex justify-between items-center">
+        <div className="container mx-auto flex justify-between items-center gap-2">
           <button
             type="button"
             onClick={() => {
               setCurrentView("home");
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
-            className="flex items-center gap-2 transition-transform duration-300 hover:-translate-y-px cursor-pointer"
+            className="flex items-center gap-1.5 sm:gap-2 min-h-[38px] transition-transform duration-300 hover:-translate-y-px cursor-pointer touch-manipulation flex-shrink-0"
             aria-label="Jill-Jill Home"
           >
             <BellIcon
@@ -303,7 +308,7 @@ export default function LandingPage() {
               style={{ color: "var(--jj-logo)" }}
             />
             <span
-              className="text-lg sm:text-xl font-bold tracking-wider"
+              className="text-base sm:text-xl font-bold tracking-wider"
               style={{ color: "var(--jj-logo)" }}
             >
               Jill-Jill
@@ -316,7 +321,7 @@ export default function LandingPage() {
               <button
                 type="button"
                 onClick={() => setIsProductDropdownOpen(!isProductDropdownOpen)}
-                className="flex items-center gap-1 text-sm font-medium transition-colors cursor-pointer"
+                className="flex items-center gap-1 min-h-[38px] px-2 text-sm font-medium transition-colors cursor-pointer touch-manipulation"
                 style={{ color: "var(--jj-muted)" }}
                 aria-haspopup="true"
                 aria-expanded={isProductDropdownOpen}
@@ -334,6 +339,7 @@ export default function LandingPage() {
                   style={{
                     backgroundColor: "var(--jj-primary)",
                     borderColor: "var(--jj-border)",
+                    WebkitBackdropFilter: "blur(16px)",
                   }}
                 >
                   <ul className="text-sm space-y-0.5">
@@ -345,7 +351,7 @@ export default function LandingPage() {
                             setIsProductDropdownOpen(false);
                             openDemo(item.role);
                           }}
-                          className="w-full text-left px-3.5 py-2 rounded-lg hover:bg-lime-500/15 transition-colors cursor-pointer"
+                          className="w-full text-left px-3.5 py-2.5 rounded-lg hover:bg-teal-400/15 transition-colors cursor-pointer touch-manipulation"
                           style={{ color: "var(--jj-text)" }}
                         >
                           {item.label}
@@ -359,7 +365,7 @@ export default function LandingPage() {
 
             <Link
               href="/overview"
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase border transition-all duration-200 hover:-translate-y-px"
+              className="flex items-center gap-1.5 min-h-[38px] px-3.5 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase border transition-all duration-200 hover:-translate-y-px touch-manipulation"
               style={{
                 backgroundColor: "var(--jj-surface)",
                 borderColor: "var(--jj-border)",
@@ -367,14 +373,14 @@ export default function LandingPage() {
               }}
               title="Open Admin Dashboard"
             >
-              <LayoutDashboardIcon className="w-4 h-4 text-[#84de22]" />
+              <LayoutDashboardIcon className="w-4 h-4 text-teal-400" />
               <span>DASHBOARD</span>
             </Link>
 
             <button
               type="button"
               onClick={toggleTheme}
-              className="p-2 rounded-full transition-colors cursor-pointer"
+              className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-full transition-colors cursor-pointer touch-manipulation"
               style={{ color: "var(--jj-muted)" }}
               aria-label="Toggle theme"
             >
@@ -384,41 +390,38 @@ export default function LandingPage() {
             <button
               type="button"
               onClick={() => openDemo()}
-              className="py-2 px-5 text-xs sm:text-sm font-bold uppercase text-[#0e1710] bg-[#84de22] hover:bg-[#94e838] transition-all duration-300 hover:scale-105 cursor-pointer"
-              style={{
-                clipPath:
-                  "polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%)",
-              }}
+              className="min-h-[40px] py-2 px-5 text-xs sm:text-sm font-bold uppercase text-teal-950 bg-teal-400 hover:bg-teal-300 rounded-xl shadow-[0_6px_18px_rgba(20,184,166,0.25)] transition-all duration-200 hover:-translate-y-0.5 cursor-pointer touch-manipulation"
             >
-              AUTOMATE YOUR SALES..
+              BOOK A LIVE DEMO
             </button>
           </div>
 
-          {/* Mobile & Tablet Compact Controls */}
-          <div className="flex items-center gap-2 lg:hidden">
+          {/* Mobile & Tablet Compact Touch Controls */}
+          <div className="flex items-center gap-1.5 sm:gap-2 lg:hidden">
             <button
               type="button"
               onClick={() => openDemo()}
-              className="px-3 py-1.5 rounded-lg text-[11px] font-extrabold uppercase bg-[#84de22] text-[#0e1710]"
+              className="min-h-[38px] px-3 sm:px-3.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-extrabold uppercase bg-teal-400 hover:bg-teal-300 active:scale-95 text-teal-950 transition-transform cursor-pointer touch-manipulation"
             >
               LIVE DEMO
             </button>
             <Link
               href="/overview"
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border"
+              className="min-h-[38px] min-w-[38px] flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border touch-manipulation"
               style={{
                 backgroundColor: "var(--jj-surface)",
                 borderColor: "var(--jj-border)",
                 color: "var(--jj-accent)",
               }}
+              aria-label="Admin Dashboard"
             >
-              <LayoutDashboardIcon className="w-3.5 h-3.5" />
+              <LayoutDashboardIcon className="w-4 h-4" />
               <span className="hidden sm:inline">DASHBOARD</span>
             </Link>
             <button
               type="button"
               onClick={toggleTheme}
-              className="p-1.5 rounded-full"
+              className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-full touch-manipulation"
               style={{ color: "var(--jj-muted)" }}
               aria-label="Toggle theme"
             >
@@ -427,7 +430,7 @@ export default function LandingPage() {
             <button
               type="button"
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className="p-1.5"
+              className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg touch-manipulation"
               style={{ color: "var(--jj-text)" }}
               aria-label="Toggle menu"
             >
@@ -438,20 +441,20 @@ export default function LandingPage() {
 
         {isMobileMenuOpen && (
           <div
-            className="lg:hidden mt-3 pt-3.5 pb-4 px-2 border-t space-y-3"
-            style={{ borderColor: "var(--jj-border)" }}
+            className="lg:hidden mt-3 pt-3.5 pb-4 px-1 border-t space-y-3 max-h-[75dvh] overflow-y-auto"
+            style={{ borderColor: "var(--jj-border)", WebkitOverflowScrolling: "touch" }}
           >
             <Link
               href="/overview"
               onClick={() => setIsMobileMenuOpen(false)}
-              className="flex items-center justify-center gap-2 py-2.5 rounded-xl border text-xs font-bold uppercase"
+              className="min-h-[44px] flex items-center justify-center gap-2 py-2.5 rounded-xl border text-xs font-bold uppercase touch-manipulation"
               style={{
                 backgroundColor: "var(--jj-surface)",
                 borderColor: "var(--jj-border)",
                 color: "var(--jj-text)",
               }}
             >
-              <LayoutDashboardIcon className="w-4 h-4 text-[#84de22]" />
+              <LayoutDashboardIcon className="w-4 h-4 text-teal-400" />
               <span>Open Admin Dashboard</span>
             </Link>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -463,7 +466,7 @@ export default function LandingPage() {
                     setIsMobileMenuOpen(false);
                     openDemo(item.role);
                   }}
-                  className="text-left text-xs px-3 py-2 rounded-lg border truncate"
+                  className="min-h-[42px] text-left text-xs font-medium px-3 py-2 rounded-xl border truncate active:scale-95 transition-transform touch-manipulation"
                   style={{
                     backgroundColor: "var(--jj-surface)",
                     borderColor: "var(--jj-border)",
@@ -487,20 +490,13 @@ export default function LandingPage() {
           onScheduleDemo={() => openDemo()}
         />
       ) : (
-        <main className="pt-14 sm:pt-16">
-          {/* 1. HERO SECTION — Responsive across Mobile, Tablet & Desktop */}
+        <main className="pt-16 sm:pt-20">
+          {/* 1. HERO SECTION */}
           <section className="container mx-auto px-4 sm:px-8" aria-label="Hero">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-center lg:min-h-[calc(100vh-4.5rem)] py-6 sm:py-10 lg:py-12">
-              <div className="lg:col-span-7 text-left order-2 lg:order-1">
-                <p
-                  className="font-semibold text-xs sm:text-sm tracking-wide uppercase"
-                  style={{ color: "var(--jj-accent)" }}
-                >
-                  #1 Enterprise Human-Like AI Voice Agents
-                </p>
-
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-center lg:min-h-[calc(100vh-5rem)] py-5 sm:py-9 lg:py-12">
+              <div className="lg:col-span-7 text-left order-1">
                 <h1
-                  className="text-3xl sm:text-4xl md:text-5xl lg:text-[50px] font-extrabold mt-2 leading-[1.16]"
+                  className="text-[28px] sm:text-4xl md:text-5xl lg:text-[52px] font-extrabold tracking-tight leading-[1.14]"
                   style={{ color: "var(--jj-text)" }}
                 >
                   Deploy Your Custom Ready-to-Work AI Voice Agent in{" "}
@@ -536,7 +532,7 @@ export default function LandingPage() {
                   smart call routing, and appointment scheduling 24/7.
                 </p>
 
-                <div className="grid grid-cols-2 gap-x-4 sm:gap-x-6 gap-y-2.5 sm:gap-y-3 mt-5 sm:mt-6 max-w-lg">
+                <div className="grid grid-cols-1 min-[370px]:grid-cols-2 gap-x-4 sm:gap-x-6 gap-y-2.5 sm:gap-y-3 mt-5 sm:mt-6 max-w-lg">
                   {[
                     "Ultra-Natural Human Voice",
                     "Custom-Built in 2–3 Days",
@@ -566,17 +562,13 @@ export default function LandingPage() {
                   <button
                     type="button"
                     onClick={() => openDemo()}
-                    className="w-full sm:w-auto py-3.5 px-9 text-sm sm:text-base md:text-lg font-extrabold uppercase text-[#0e1710] bg-[#84de22] hover:bg-[#94e838] transition-all duration-300 sm:hover:scale-105 shadow-[0_6px_24px_rgba(126,217,24,0.28)] cursor-pointer"
-                    style={{
-                      clipPath:
-                        "polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%)",
-                    }}
+                    className="w-full sm:w-auto min-h-[48px] py-3.5 px-9 rounded-xl text-sm sm:text-base md:text-lg font-extrabold uppercase text-teal-950 bg-teal-400 hover:bg-teal-300 active:scale-[0.99] transition-all duration-200 sm:hover:-translate-y-0.5 shadow-[0_10px_28px_rgba(20,184,166,0.30)] cursor-pointer touch-manipulation"
                   >
                     BOOK A LIVE DEMO
                   </button>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-x-6 sm:gap-x-10 gap-y-3 mt-6 sm:mt-8">
+                <div className="flex flex-wrap items-center gap-x-5 sm:gap-x-10 gap-y-2.5 mt-6 sm:mt-8">
                   <div className="flex items-center gap-2">
                     <IsoCertificateIcon
                       className="w-5 h-5 sm:w-6 sm:h-6"
@@ -607,9 +599,9 @@ export default function LandingPage() {
                 </div>
               </div>
 
-              {/* 3D Animated Robot — Sized Properly for Mobile, Tablet & Desktop */}
+              {/* 3D Animated Robot — Touch-Scroll Safe on iPhone/iPad/Android, Interactive on Desktop */}
               <div
-                className={`lg:col-span-5 relative h-[230px] sm:h-[340px] lg:h-[540px] w-full flex items-center justify-center order-1 lg:order-2 ${landingStyles.splineStage}`}
+                className={`lg:col-span-5 relative h-[250px] sm:h-[340px] lg:h-[540px] w-full flex items-center justify-center order-2 pointer-events-none lg:pointer-events-auto ${landingStyles.splineStage}`}
               >
                 <div className={`relative w-full h-full ${landingStyles.splineStage}`}>
                   <div
@@ -623,7 +615,7 @@ export default function LandingPage() {
                       width="100%"
                       height="100%"
                       title="Jill-Jill Interactive 3D Voice Agent"
-                      loading="eager"
+                      loading="lazy"
                       className={landingStyles.splineIframe}
                       style={{ colorScheme: "normal", background: "transparent" }}
                     />
@@ -768,7 +760,7 @@ export default function LandingPage() {
 
                 <AnimatedSection delay={160}>
                   <div
-                    className="p-6 sm:p-7 rounded-xl border border-[#7ed918]/40 h-full"
+                    className="p-6 sm:p-7 rounded-xl border border-teal-400/35 h-full"
                     style={{ backgroundColor: "var(--jj-primary)" }}
                   >
                     <h3 className="text-xl sm:text-2xl font-bold mb-4 text-center">With Jill-Jill Voice AI</h3>
@@ -905,11 +897,7 @@ export default function LandingPage() {
                 <button
                   type="button"
                   onClick={() => openDemo()}
-                  className={`w-full sm:w-auto uppercase bg-[#84de22] hover:bg-[#94e838] text-[#0e1710] font-extrabold py-3.5 sm:py-4 px-8 sm:px-10 text-base sm:text-lg transition-all duration-300 cursor-pointer ${landingStyles.pulseGlowBtn}`}
-                  style={{
-                    clipPath:
-                      "polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%)",
-                  }}
+                  className="w-full sm:w-auto uppercase bg-teal-400 hover:bg-teal-300 text-teal-950 font-extrabold py-3.5 sm:py-4 px-8 sm:px-10 rounded-xl text-base sm:text-lg shadow-[0_10px_28px_rgba(20,184,166,0.30)] transition-all duration-200 hover:-translate-y-0.5 cursor-pointer touch-manipulation"
                 >
                   EXPERIENCE LIVE VOICE DEMO
                 </button>
@@ -1000,7 +988,7 @@ export default function LandingPage() {
         preselectedRole={preselectedRole}
       />
 
-      <Chatbot />
+      {!isDemoModalOpen && <Chatbot />}
     </div>
   );
 }
@@ -1122,11 +1110,7 @@ const PrivacyPolicyView: React.FC<{
           <button
             type="button"
             onClick={onScheduleDemo}
-            className="w-full sm:w-auto py-3 px-8 bg-[#84de22] text-[#0e1710] font-bold uppercase text-sm cursor-pointer"
-            style={{
-              clipPath:
-                "polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%)",
-            }}
+            className="w-full sm:w-auto py-3 px-8 rounded-xl bg-teal-400 hover:bg-teal-300 text-teal-950 font-bold uppercase text-sm cursor-pointer touch-manipulation"
           >
             Book a Live Demo
           </button>

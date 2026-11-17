@@ -48,8 +48,27 @@ export const voiceService = {
   ),
   // Room allocation and dispatch can exceed the ordinary read-request budget.
   // Aborting early leaves a worker without the browser that needs its token.
-  demoToken: (assistantId?:string, organizationId?:string) => call<{ token: string; room: string; url: string;call_id?:string;assistant_id?:string }>(`/api/demo/token`, {
-    method: "POST", timeoutMs: 15_000, body:assistantId?{assistant_id:assistantId,organization_id:organizationId}:undefined }),
+  demoToken: (
+    assistantId?: string,
+    organizationId?: string,
+    lead?: Record<string, string | undefined>,
+  ) =>
+    call<{ token: string; room: string; url: string; call_id?: string; assistant_id?: string }>(
+      `/api/demo/token`,
+      {
+        method: "POST",
+        timeoutMs: 15_000,
+        body: assistantId
+          ? {
+              assistant_id: assistantId,
+              organization_id: organizationId,
+              ...(lead ? { lead } : {}),
+            }
+          : lead
+            ? { lead }
+            : undefined,
+      },
+    ),
   monitorToken: (room: string) =>
     call<{ token: string; room: string; url: string }>(`/api/calls/monitor-token`, {
       method: "POST",
@@ -68,6 +87,20 @@ export const voiceService = {
     configured: boolean; has_api_key: boolean;
     event_type_id: string | null; timezone: string;
   }>(`/api/calcom/status`),
+  calcomCreateBooking: (body: {
+    name: string;
+    email: string;
+    phone: string;
+    date: string;
+    time: string;
+    service: string;
+    notes?: string;
+  }) => call<{
+    success: boolean;
+    uid: string | null;
+    meeting_url?: string | null;
+    message: string;
+  }>(`/api/calcom/bookings`, { method: "POST", body, timeoutMs: 18_000 }),
   calcomCancelBooking: (uid: string, reason = "") => call<{ success: boolean; message: string }>(
     `/api/calcom/bookings/${encodeURIComponent(uid)}/cancel`,
     { method: "POST", body: { reason } },

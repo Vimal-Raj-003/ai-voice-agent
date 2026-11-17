@@ -694,17 +694,29 @@ async def demo_token(request: Request = None) -> dict:
         selected_native = runtime_settings(profile)
         if selected_native is None or selected_native.engine == 'pipeline':
             experimental = None
+    from demo_context import sanitize_demo_lead
+    demo_lead = sanitize_demo_lead(body.get('lead'))
     if experimental:
         import secrets
         child = TestSelection(experimental.room + '-' + secrets.token_hex(8), experimental.assistant_id, experimental.direction)
         room_name, metadata = child.room, test_metadata(child, room_base=experimental.room)
         if explicit_selection:
             metadata.update(browser_assistant_selection=True, organization_id=body['organization_id'])
+        if demo_lead:
+            metadata['demo_lead'] = demo_lead
     else:
         room_name, metadata = f"demo-{random.randint(10000, 99999)}", {"phone_number": "demo", "is_demo": True}
         if selected_assistant:
             metadata['agent_profile_id'] = selected_assistant
             metadata['test_direction'] = selected_direction
+        if demo_lead:
+            metadata['demo_lead'] = demo_lead
+            if demo_lead.get('business_name'):
+                metadata['business_name'] = demo_lead['business_name']
+            if demo_lead.get('lead_name'):
+                metadata['lead_name'] = demo_lead['lead_name']
+            if demo_lead.get('business_type'):
+                metadata['service_type'] = demo_lead['business_type']
     if experimental:
         # No OpenAI connection is opened here. Fail before dispatch if the
         # selected assistant/credential is missing; normal demos are unchanged.
@@ -1289,6 +1301,63 @@ async def reconcile_active_calls(apply: bool = False, min_age_seconds: int = 180
         "applied": bool(apply),
         "deleted": deleted,
     }
+
+
+@app.post("/api/calcom/bookings", dependencies=[Depends(require_token)])
+async def calcom_create_booking(body: dict | None = None) -> dict:
+    """Create a Cal.com booking via API v2 and return its uid + live video meeting URL."""
+    import tools
+    payload = body or {}
+    if not tools.calcom_enabled():
+        return {"success": False, "uid": None, "meeting_url": None, "message": "Cal.com not configured"}
+    return await tools.calcom_book(
+        name=str(payload.get("name") or "").strip(),
+        email=str(payload.get("email") or "").strip(),
+        phone=str(payload.get("phone") or "").strip(),
+        date=str(payload.get("date") or "").strip(),
+        time=str(payload.get("time") or "").strip(),
+        service=str(payload.get("service") or "Consultation").strip(),
+        notes=str(payload.get("notes") or "").strip(),
+        call_id="dashboard-calendar",
+    )
+
+
+@app.post("/api/demo/caption", dependencies=[Depends(require_token)])
+async def demo_caller_caption(body: dict | None = None) -> dict:
+    """Transcribe a caller WAV utterance accurately in Indian languages + English (Sarvam saarika:v2.5)."""
+    import base64
+    import httpx
+
+    payload = body or {}
+    audio_b64 = str(payload.get("audio_wav_b64") or "").strip()
+    if not audio_b64 or len(audio_b64) > 4_000_000:
+        return {"text": ""}
+    try:
+        wav_bytes = base64.b64decode(audio_b64)
+    except Exception:
+        return {"text": ""}
+    if len(wav_bytes) < 1600:
+        return {"text": ""}
+
+    sarvam_key = os.getenv("SARVAM_API_KEY", "").strip()
+    if sarvam_key:
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                resp = await client.post(
+                    "https://api.sarvam.ai/speech-to-text",
+                    headers={"api-subscription-key": sarvam_key},
+                    data={"model": "saarika:v2.5", "language_code": "unknown"},
+                    files={"file": ("utterance.wav", wav_bytes, "audio/wav")},
+                )
+            if resp.status_code == 200:
+                j = resp.json()
+                transcript = str(j.get("transcript") or "").strip()
+                if transcript:
+                    return {"text": transcript, "language": j.get("language_code")}
+        except Exception as exc:
+            logger.warning("demo_caption_sarvam_failed", error=str(exc)[:120], source="STT")
+
+    return {"text": ""}
 
 
 @app.post("/api/calcom/bookings/{booking_uid}/cancel", dependencies=[Depends(require_token)])

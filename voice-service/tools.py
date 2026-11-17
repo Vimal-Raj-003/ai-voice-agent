@@ -177,14 +177,22 @@ async def calcom_book(name: str, email: str, phone: str, date: str, time: str,
             msg = str(data.get("message") or resp.text[:150])
             logger.error("CALCOM_BOOKING_FAILED", status=resp.status_code, message=msg, call_id=call_id)
             return {"success": False, "uid": None, "message": msg, 'ambiguous': resp.status_code >= 500}
-        uid = (data.get("uid")
-               or data.get("booking", {}).get("uid")
-               or data.get("data", {}).get("uid")
-               or "")
+        booking_obj = (
+            data.get("data")
+            if isinstance(data.get("data"), dict)
+            else (data.get("booking") if isinstance(data.get("booking"), dict) else data)
+        )
+        uid = (
+            data.get("uid")
+            or booking_obj.get("uid")
+            or ""
+        )
         if not uid:
             return {'success': False, 'uid': None, 'message': 'Provider accepted the request without a booking reference', 'ambiguous': True}
-        logger.info("CALCOM_BOOKING_SUCCESS", uid=uid, call_id=call_id)
-        return {"success": True, "uid": uid, "message": "ok", "start_iso": local_dt.isoformat()}
+        raw_loc = str(booking_obj.get("meetingUrl") or booking_obj.get("videoCallUrl") or booking_obj.get("location") or "")
+        meeting_url = raw_loc if raw_loc.startswith("http") else f"https://app.cal.com/video/{uid}"
+        logger.info("CALCOM_BOOKING_SUCCESS", uid=uid, meeting_url=meeting_url, call_id=call_id)
+        return {"success": True, "uid": uid, "meeting_url": meeting_url, "message": "ok", "start_iso": local_dt.isoformat()}
     except Exception as exc:
         logger.error("CALCOM_BOOKING_FAILED", error=str(exc), call_id=call_id)
         return {"success": False, "uid": None, "message": str(exc), 'ambiguous': True}

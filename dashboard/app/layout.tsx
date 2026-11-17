@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -12,10 +12,17 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#0f172a",
+};
+
 export const metadata: Metadata = {
-  title: "Jilljill Voice — Voice AI Platform",
+  title: "Jill-Jill — Enterprise AI Voice Agents",
   description:
-    "Inbound + outbound + bulk voice calling powered by LiveKit and a multi-LLM agent.",
+    "Deploy custom human-like AI voice specialists for inbound support, outbound sales, smart routing, and 24/7 appointment booking in 2–3 days.",
 };
 
 // Inline boot script — runs before body renders so the correct theme
