@@ -22,10 +22,12 @@ export default auth((req) => {
   const isLogin = pathname.startsWith("/login");
   const isPublic =
     pathname === "/" ||
+    pathname === "/robo-hi.wav" ||
     isLogin ||
     pathname.startsWith("/api/demo/public") ||
     pathname.startsWith("/api/demo/end") ||
     pathname.startsWith("/api/demo/caption") ||
+    pathname.startsWith("/accept-invite") ||
     pathname.startsWith("/forgot-password") ||
     pathname.startsWith("/reset-password");
   const isAuthenticated = !!req.auth;
@@ -51,6 +53,6 @@ export default auth((req) => {
 
 export const config = {
   matcher: [
-    "/((?!api/auth|api/webhooks|api/logs/proxy|api/demo/proxy|api/demo/public|api/demo/end|api/demo/caption|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/auth|api/webhooks|api/logs/proxy|api/demo/proxy|api/demo/public|api/demo/end|api/demo/caption|_next/static|_next/image|favicon.ico|robo-hi.wav).*)",
   ],
 };
