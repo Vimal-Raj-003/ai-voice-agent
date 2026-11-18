@@ -5682,14 +5682,16 @@ def _prewarm(proc: Any) -> None:  # noqa: ANN401 — livekit JobProcess
         uuid.uuid4()
         import redactor
         redactor.redact("warm 9999999999 test@example.com")
+        try:
+            ssl.create_default_context()
+            import httpcore  # noqa: F401
+            from google import genai as _warm_genai  # noqa: F401
+        except Exception:
+            pass
         import threading
         def _bg_warm_deps() -> None:
             try:
-                import native_voice, gemini_live_runtime
-            except Exception:
-                pass
-            try:
-                knowledge._load_embedder()
+                import native_voice, gemini_live_runtime  # noqa: F401
             except Exception:
                 pass
             try:
@@ -5707,4 +5709,5 @@ if __name__ == "__main__":
         entrypoint_fnc=entrypoint,
         prewarm_fnc=_prewarm,
         agent_name="voice-agent",
+        num_idle_processes=2,
     ))

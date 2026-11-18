@@ -6,6 +6,9 @@ import {
   RoomEvent,
   Track,
   DisconnectReason,
+  AudioPresets,
+  createLocalAudioTrack,
+  type LocalAudioTrack,
   type RemoteTrack,
   type TranscriptionSegment,
   type Participant,
@@ -372,9 +375,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
 
-  const [waveBars, setWaveBars] = useState<number[]>(() => new Array(WAVE_BARS).fill(0.08));
-  const [agentLevel, setAgentLevel] = useState(0);
-  const [userLevel, setUserLevel] = useState(0);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [userSpeaking, setUserSpeaking] = useState(false);
 
@@ -389,6 +389,13 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   const animFrameRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const captionProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const captionCloneTrackRef = useRef<MediaStreamTrack | null>(null);
+  const agentSpeakingRef = useRef(false);
+  const userSpeakingRef = useRef(false);
+  const agentSpeechEndTsRef = useRef(0);
+  const orbHaloRef = useRef<HTMLDivElement | null>(null);
+  const orbCoreRef = useRef<HTMLDivElement | null>(null);
+  const waveBarRefs = useRef<(HTMLDivElement | null)[]>([]);
   const userCapSeqRef = useRef(0);
 
   useEffect(() => {
@@ -530,6 +537,14 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       }
       captionProcessorRef.current = null;
     }
+    if (captionCloneTrackRef.current) {
+      try {
+        captionCloneTrackRef.current.stop();
+      } catch {
+        // ignore
+      }
+      captionCloneTrackRef.current = null;
+    }
     if (closeAudioCtx && audioContextRef.current && audioContextRef.current.state !== "closed") {
       try {
         void audioContextRef.current.close();
@@ -557,11 +572,10 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       }
     });
     audioElementsRef.current.clear();
-    setAgentLevel(0);
-    setUserLevel(0);
+    agentSpeakingRef.current = false;
+    userSpeakingRef.current = false;
     setAgentSpeaking(false);
     setUserSpeaking(false);
-    setWaveBars(new Array(WAVE_BARS).fill(0.08));
   }, []);
 
   const releaseActiveRoom = useCallback(async () => {
@@ -665,7 +679,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
     };
   }, [callStatus, maxCallSeconds, cleanupCall, releaseActiveRoom]);
 
-  // Attach parallel Sarvam Indic+English caller captioner (display-only, never touches LiveKit voice stream!)
+  // Attach parallel Sarvam Indic+English caller captioner on a cloned track, gated against speaker echo
   const attachCallerIndicCaptioner = useCallback(
     (ctx: AudioContext, micMst: MediaStreamTrack, lkRoom: Room) => {
       try {
@@ -673,8 +687,14 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           captionProcessorRef.current.disconnect();
           captionProcessorRef.current = null;
         }
-        const source = ctx.createMediaStreamSource(new MediaStream([micMst]));
-        const processor = ctx.createScriptProcessor(4096, 1, 1);
+        if (captionCloneTrackRef.current) {
+          captionCloneTrackRef.current.stop();
+          captionCloneTrackRef.current = null;
+        }
+        const clonedMst = micMst.clone();
+        captionCloneTrackRef.current = clonedMst;
+        const source = ctx.createMediaStreamSource(new MediaStream([clonedMst]));
+        const processor = ctx.createScriptProcessor(2048, 1, 1);
         const silentGain = ctx.createGain();
         silentGain.gain.value = 0;
 
@@ -685,29 +705,49 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         let utteranceMs = 0;
 
         const flushUtterance = (chunksToSend: Float32Array[]) => {
-          const wavB64 = encodeWav16kBase64(chunksToSend, ctx.sampleRate || 48000);
-          if (!wavB64) return;
-          const capId = `sarvam-user-${++userCapSeqRef.current}`;
-          fetch("/api/demo/caption", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ audioWavB64: wavB64 }),
-          })
-            .then((r) => (r.ok ? r.json() : null))
-            .then((j) => {
-              if (j?.text && typeof j.text === "string" && j.text.trim()) {
-                upsertTranscript(capId, "user", j.text.trim(), true);
-              }
+          // Defer HTTP upload 320ms so WebRTC turn-end RTP packets get 100% priority on mobile 4G/5G
+          setTimeout(() => {
+            if (!roomRef.current) return;
+            const wavB64 = encodeWav16kBase64(chunksToSend, ctx.sampleRate || 48000);
+            if (!wavB64) return;
+            const capId = `sarvam-user-${++userCapSeqRef.current}`;
+            fetch("/api/demo/caption", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ audioWavB64: wavB64 }),
             })
-            .catch(() => {});
+              .then((r) => (r.ok ? r.json() : null))
+              .then((j) => {
+                if (j?.text && typeof j.text === "string" && j.text.trim()) {
+                  upsertTranscript(capId, "user", j.text.trim(), true);
+                }
+              })
+              .catch(() => {});
+          }, 320);
         };
 
         processor.onaudioprocess = (ev) => {
           if (!roomRef.current) return;
           const micPub = lkRoom.localParticipant?.getTrackPublication(Track.Source.Microphone);
-          if (micPub?.isMuted) {
-            speaking = false;
-            speechChunks = [];
+          // Block mobile speakerphone echo when AI agent is speaking (plus 280ms acoustic tail cooldown)
+          if (
+            micPub?.isMuted ||
+            agentSpeakingRef.current ||
+            Date.now() - agentSpeechEndTsRef.current < 280
+          ) {
+            if (speaking && utteranceMs >= 420) {
+              const batch = speechChunks;
+              speechChunks = [];
+              speaking = false;
+              silenceMs = 0;
+              utteranceMs = 0;
+              flushUtterance(batch);
+            } else {
+              speaking = false;
+              speechChunks = [];
+              silenceMs = 0;
+              utteranceMs = 0;
+            }
             return;
           }
 
@@ -718,7 +758,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           const frameMs = (input.length / (ctx.sampleRate || 48000)) * 1000;
           const copy = new Float32Array(input);
 
-          if (rms > 0.015) {
+          if (rms > 0.018) {
             if (!speaking) {
               speaking = true;
               speechChunks = [...preRoll];
@@ -738,7 +778,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
             speechChunks.push(copy);
             silenceMs += frameMs;
             utteranceMs += frameMs;
-            if (silenceMs >= 520) {
+            if (silenceMs >= 440) {
               const batch = speechChunks;
               speechChunks = [];
               speaking = false;
@@ -750,7 +790,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
             }
           } else {
             preRoll.push(copy);
-            if (preRoll.length > 3) preRoll.shift();
+            if (preRoll.length > 4) preRoll.shift();
           }
         };
 
@@ -773,7 +813,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           const AudioContextClass =
             window.AudioContext ||
             (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-          ctx = new AudioContextClass();
+          ctx = new AudioContextClass({ latencyHint: "interactive" });
           audioContextRef.current = ctx;
         }
         if (ctx.state === "suspended") {
@@ -791,7 +831,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         const tick = (ts: number) => {
           if (!roomRef.current || !ctx || ctx.state === "closed") return;
           animFrameRef.current = requestAnimationFrame(tick);
-          if (ts - lastTs < 36) return;
+          if (ts - lastTs < 45) return;
           lastTs = ts;
 
           const micPub = lkRoom.localParticipant?.getTrackPublication(Track.Source.Microphone);
@@ -799,7 +839,7 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           if (micMst && micMst.id !== micTrackId) {
             micTrackId = micMst.id;
             try {
-              micAnalyser = makeAnalyser(ctx, micMst);
+              micAnalyser = makeAnalyser(ctx, micMst.clone());
               attachCallerIndicCaptioner(ctx, micMst, lkRoom);
             } catch {
               micAnalyser = null;
@@ -837,28 +877,52 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
           }
           const uAvg = micAnalyser && !muted ? uSum / micFreq.length : 0;
 
-          setAgentLevel(aAvg);
-          setUserLevel(uAvg);
           const isAgentActive = aAvg > 9;
-          const isUserActive = uAvg > 12;
-          setAgentSpeaking(isAgentActive);
-          setUserSpeaking(!isAgentActive && isUserActive);
+          const isUserActive = !isAgentActive && uAvg > 14;
+
+          if (agentSpeakingRef.current && !isAgentActive) {
+            agentSpeechEndTsRef.current = Date.now();
+          }
+          if (agentSpeakingRef.current !== isAgentActive) {
+            agentSpeakingRef.current = isAgentActive;
+            setAgentSpeaking(isAgentActive);
+          }
+          if (userSpeakingRef.current !== isUserActive) {
+            userSpeakingRef.current = isUserActive;
+            setUserSpeaking(isUserActive);
+          }
+
+          // Zero-React-Re-render Direct DOM Equalizer & Sphere Wobble (ultra-light on Mobile CPU!)
+          const combinedEnergy = Math.max(aAvg, uAvg);
+          if (orbHaloRef.current) {
+            orbHaloRef.current.style.transform = `scale(${(1 + (combinedEnergy / 100) * 0.75).toFixed(3)})`;
+          }
+          if (orbCoreRef.current) {
+            orbCoreRef.current.style.transform = `scale(${(1 + (combinedEnergy / 220) * 0.2).toFixed(3)})`;
+          }
 
           const activeFreq = aAvg >= uAvg ? agentFreq : micFreq;
           const hasSignal = isAgentActive || isUserActive;
-          const nextBars = new Array(WAVE_BARS);
           const half = WAVE_BARS / 2;
+          const barColor = isAgentActive
+            ? "#2dd4bf"
+            : isUserActive
+            ? "#fbbf24"
+            : "rgba(45, 212, 191, 0.35)";
           for (let i = 0; i < WAVE_BARS; i++) {
+            const barEl = waveBarRefs.current[i];
+            if (!barEl) continue;
             const distFromCenter = Math.abs(i - (half - 0.5)) / half;
             const envelope = Math.cos(distFromCenter * (Math.PI / 2));
             const binIdx = Math.min(activeFreq.length - 1, Math.floor(distFromCenter * 48));
             const raw = activeFreq[binIdx] / 255;
             const idleRipple = 0.08 + 0.04 * Math.sin(ts / 240 + i * 0.55);
-            nextBars[i] = hasSignal
+            const val = hasSignal
               ? Math.max(0.1, Math.min(1, raw * envelope * 1.45 + 0.08))
               : idleRipple;
+            barEl.style.height = `${Math.max(5, Math.round(val * 36))}px`;
+            barEl.style.backgroundColor = barColor;
           }
-          setWaveBars(nextBars);
         };
 
         animFrameRef.current = requestAnimationFrame(tick);
@@ -954,21 +1018,15 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
 
   const handleStartCall = async (assistant: AssistantItem) => {
     cleanupCall(false);
-    try {
-      const AudioContextClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (AudioContextClass) {
-        if (!audioContextRef.current || audioContextRef.current.state === "closed") {
-          audioContextRef.current = new AudioContextClass();
-        }
-        if (audioContextRef.current.state === "suspended") {
-          void audioContextRef.current.resume().catch(() => {});
-        }
-      }
-    } catch {
-      // ignore
-    }
+    // Request hardware-AEC microphone immediately inside user tap gesture (critical for iPhone Safari & Android!)
+    const preMicPromise: Promise<LocalAudioTrack | null> = createLocalAudioTrack({
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      voiceIsolation: true,
+      channelCount: 1,
+      sampleRate: 24000,
+    }).catch(() => null);
 
     setSelectedAssistant(assistant);
     setStep("call");
@@ -1012,6 +1070,8 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       const tokenData = await res.json().catch(() => ({}));
 
       if (!res.ok) {
+        const preTrack = await preMicPromise;
+        preTrack?.stop();
         if (res.status === 403 || tokenData?.limitReached) {
           setUsedSessions(tokenData?.maxSessions || MAX_DEMO_SESSIONS);
         }
@@ -1029,12 +1089,27 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
       activeRoomRef.current = roomName || null;
 
       if (!token || !url) {
+        const preTrack = await preMicPromise;
+        preTrack?.stop();
         throw new Error("Voice session credentials could not be created.");
       }
 
       const lkRoom = new Room({
         adaptiveStream: true,
         dynacast: true,
+        audioCaptureDefaults: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          voiceIsolation: true,
+          channelCount: 1,
+          sampleRate: 24000,
+        },
+        publishDefaults: {
+          audioPreset: AudioPresets.speech,
+          dtx: true,
+          red: true,
+        },
       });
       roomRef.current = lkRoom;
 
@@ -1044,7 +1119,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         (segments: TranscriptionSegment[], participant?: Participant) => {
           const isUser = participant?.identity === "demo-user";
           if (isUser) {
-            // Ignored in favor of native Sarvam Indic+English caller captioning so Spanish hallucinations never appear
             return;
           }
           for (const seg of segments) {
@@ -1084,14 +1158,33 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
         }
       });
 
+      const preMicTrack = await preMicPromise;
       await lkRoom.connect(url, token);
       await lkRoom.startAudio().catch(() => {});
-      await lkRoom.localParticipant.setMicrophoneEnabled(true);
+      if (preMicTrack) {
+        await lkRoom.localParticipant.publishTrack(preMicTrack, {
+          source: Track.Source.Microphone,
+          audioPreset: AudioPresets.speech,
+          dtx: true,
+          red: true,
+        });
+      } else {
+        await lkRoom.localParticipant.setMicrophoneEnabled(true, {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          voiceIsolation: true,
+          channelCount: 1,
+          sampleRate: 24000,
+        });
+      }
 
       setCallStatus("connected");
       setIsMuted(false);
       startDualAudioWobble(lkRoom);
     } catch (err) {
+      const preTrack = await preMicPromise;
+      preTrack?.stop();
       cleanupCall(true);
       await releaseActiveRoom();
       setCallStatus("error");
@@ -1132,7 +1225,6 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
   const modalWidthClass =
     step === "assistants" ? "sm:max-w-[1160px]" : "sm:max-w-[580px]";
 
-  const combinedEnergy = Math.max(agentLevel, userLevel);
   const remainingSeconds = Math.max(0, maxCallSeconds - callDuration);
   const isNearCutoff = callStatus === "connected" && remainingSeconds <= 30;
   const remainingSessions = Math.max(0, maxSessions - usedSessions);
@@ -1520,14 +1612,17 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                 {/* Large Wobbling Voice Sphere */}
                 <div className="relative my-5 sm:my-8 flex h-32 w-32 sm:h-48 sm:w-48 items-center justify-center">
                   <div
+                    ref={orbHaloRef}
                     className="absolute inset-0 rounded-full bg-teal-400/20 blur-2xl transition-transform duration-100 pointer-events-none"
                     style={{
-                      transform: `scale(${1 + (combinedEnergy / 100) * 0.75})`,
+                      transform: "scale(1)",
                       opacity: callStatus === "connected" ? 0.85 : 0.3,
+                      willChange: "transform",
                     }}
                   />
                   <div
-                    className={`relative flex h-28 w-28 sm:h-40 sm:w-40 items-center justify-center border-2 transition-all duration-150 ${
+                    ref={orbCoreRef}
+                    className={`relative flex h-28 w-28 sm:h-40 sm:w-40 items-center justify-center border-2 transition-colors duration-150 ${
                       agentSpeaking || userSpeaking ? landingStyles.wobbleActive : "rounded-full"
                     } ${
                       agentSpeaking
@@ -1537,7 +1632,8 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                         : "border-teal-400/40 shadow-[0_0_24px_rgba(20,184,166,0.18)] bg-gradient-to-br from-[#1a2f4e] to-[#101d33]"
                     }`}
                     style={{
-                      transform: `scale(${1 + (combinedEnergy / 220) * 0.2})`,
+                      transform: "scale(1)",
+                      willChange: "transform",
                     }}
                   >
                     {(() => {
@@ -1575,17 +1671,17 @@ export const LeadAndDemoModal: React.FC<LeadAndDemoModalProps> = ({
                   {callStatus === "connected" && (
                     <>
                       <div className="flex items-center justify-center gap-1 h-9 sm:h-11 px-2">
-                        {waveBars.map((val, idx) => (
+                        {Array.from({ length: WAVE_BARS }).map((_, idx) => (
                           <div
                             key={idx}
-                            className="w-1.5 rounded-full transition-all duration-75"
+                            ref={(el) => {
+                              waveBarRefs.current[idx] = el;
+                            }}
+                            className="w-1.5 rounded-full transition-[height] duration-75"
                             style={{
-                              height: `${Math.max(5, Math.round(val * 36))}px`,
-                              backgroundColor: agentSpeaking
-                                ? "#2dd4bf"
-                                : userSpeaking
-                                ? "#fbbf24"
-                                : "rgba(45, 212, 191, 0.35)",
+                              height: "5px",
+                              backgroundColor: "rgba(45, 212, 191, 0.35)",
+                              willChange: "height",
                             }}
                           />
                         ))}

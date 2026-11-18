@@ -29,15 +29,14 @@ def instructions(system_prompt: str, direction: str, *, sandbox=False) -> str:
     return system_prompt + f'''
 [NATIVE VOICE]
 {direction_fact} {actions}
-Follow this assistant's saved policy. Speak warmly and clearly with natural Indian rhythm, no Western accent.
+Follow this assistant's saved policy. Speak warmly with natural Indian rhythm, no Western accent.
+Use expressive prosody: vary pitch, pace and warmth by situation—smiling upbeat energy on greetings/confirmations; softer, slower empathy for pain, worry or frustration; steady clarity on numbers/spellings. Brief natural vocalizations (gentle mm/hmm, soft "Oh, got it") are welcome; never spam fillers, laugh at distress/complaints/bookings, read stage directions, or claim to know feelings.
 Match the caller's language across English, Tamil/Tanglish, Telugu, Kannada, Malayalam and Hindi; switch only
 on clear language choice or explicit request. In regional languages use everyday spoken phrasing mixed with
 familiar English words (appointment, booking, doctor, fees, timing, course, software), never classical words
 (appointment book pannalaam, not முன்பதிவு). Never speak tool code. Use English spoken_details dates/times;
 group phone repeats as double/triple, never email characters. Address callers neutrally (நீங்க/நீங்கள், మీరు,
-ನೀವು, നിങ്ങൾ, आप), never Sir/Madam/ஐயா/அம்மா. Occasional brief mm/hmm after listening is fine, never repeated
-fillers. Smile gently for happy news; never laugh at sadness, confusion, complaints or bookings. Stay calm
-with frustration, gentle with distress. Never read stage directions or claim to know feelings.
+ನೀವು, നിങ്ങൾ, आप), never Sir/Madam/ஐயா/அம்மா.
 Answer the actual question briefly; expand if asked. Ask only details needed for the current request.
 Complete answers need no follow-up. Never turn information questions into booking intake, rush or repeat intake.
 Use search_business_knowledge for unknown facts; never invent services, fees or expertise.
@@ -245,22 +244,26 @@ class GeminiRuntime:
         self._last_memory = memory_snapshot(state)
         self._last_memory_turn = state.user_turn_id
         self.agent = NativeAgent(instructions=self.base_instructions + '\n[APPLICATION CALL MEMORY]\n' + self._last_memory, tools=self.tools)
-        sensitivity=str(profile.get('end_of_speech_sensitivity') or 'MEDIUM').upper()
-        pause_floor={'LOW':650,'MEDIUM':450,'HIGH':250}.get(sensitivity,450)
-        silence_ms = max(pause_floor, min(3000, int(profile.get('min_pause_ms') or 350)))
-        end_sensitivity=(types.EndSensitivity.END_SENSITIVITY_HIGH if sensitivity=='HIGH'
-                         else types.EndSensitivity.END_SENSITIVITY_LOW)
+        sensitivity=str(profile.get('end_of_speech_sensitivity') or 'HIGH').upper()
+        pause_floor={'LOW':500,'MEDIUM':250,'HIGH':200}.get(sensitivity,240)
+        silence_ms = max(pause_floor, min(3000, int(profile.get('min_pause_ms') or 240)))
+        end_sensitivity=(types.EndSensitivity.END_SENSITIVITY_LOW if sensitivity=='LOW'
+                         else types.EndSensitivity.END_SENSITIVITY_HIGH)
         realtime_input = types.RealtimeInputConfig(automatic_activity_detection=(
             types.AutomaticActivityDetection(disabled=True) if input_stt is not None else
-            types.AutomaticActivityDetection(end_of_speech_sensitivity=end_sensitivity,
-                silence_duration_ms=silence_ms, prefix_padding_ms=300)))
+            types.AutomaticActivityDetection(
+                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                end_of_speech_sensitivity=end_sensitivity,
+                silence_duration_ms=silence_ms,
+                prefix_padding_ms=200)))
         model_class = google.realtime.RealtimeModel
         if input_stt is not None:
             from phone_text_input import PhoneTextModel
             model_class = PhoneTextModel
         self.voice = model_class(model=self.model, voice=self.voice_name, api_key=key,
             api_version='v1beta',
-            temperature=float(profile.get('temperature') if profile.get('temperature') is not None else 0.7),
+            temperature=float(profile.get('temperature') if profile.get('temperature') is not None else 0.75),
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
             realtime_input_config=realtime_input,
             input_audio_transcription=None if input_stt is not None else types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
