@@ -5605,6 +5605,30 @@ async def _shutdown_hook(ctx: JobContext, agent_tools, session, profile: dict, p
     except Exception:
         pass
 
+    # Sync completed OR missed/failed phone call + recording link to Twenty CRM & Zulip
+    try:
+        from crm_zulip_sync import sync_call_to_crm_and_zulip
+        call_dir = str(getattr(agent_tools, "call_direction", "") or "INBOUND").upper()
+        call_status_str = "COMPLETED" if (log_call_ok and (duration or 0) > 0) else str(outcome or "MISSED").upper()
+        async with asyncio.timeout(5):
+            await sync_call_to_crm_and_zulip(
+                call_id=str(call_id) if call_id else None,
+                room_name=getattr(ctx.room, "name", None),
+                call_kind=call_dir if call_dir in ("INBOUND", "OUTBOUND") else "INBOUND",
+                status=call_status_str,
+                caller_name=name or getattr(agent_tools, "lead_name", None) or phone,
+                phone=phone,
+                email=getattr(agent_tools, "_last_booking_email", None),
+                business_name=(profile.get("business_name") if isinstance(profile, dict) else None),
+                assistant_name=(profile.get("name") if isinstance(profile, dict) else "Voice Agent"),
+                duration_seconds=duration,
+                recording_ready=bool(getattr(agent_tools, "recording_url", None) or locals().get("rec_path")),
+                summary_or_transcript=reason or "",
+                was_booked=bool(was_booked),
+            )
+    except Exception:
+        pass
+
     # ── DB-row webhooks (Feature Pack 3 / Task 4) ────────────────────────────
     # HMAC-signed payloads to receivers configured via the dashboard. Records
     # delivery rows so /webhooks/[id] shows attempt history.

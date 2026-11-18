@@ -134,26 +134,106 @@ const StatItem: React.FC<{ value: string; label: string }> = ({ value, label }) 
   );
 };
 
-const PRODUCT_ROLES: Array<{ label: string; role: string }> = [
-  { label: "Academy Assistant", role: "academy" },
-  { label: "Appointment Booker", role: "appointment" },
-  { label: "Clinic Assistant", role: "clinic" },
-  { label: "Customer Support", role: "support" },
-  { label: "IVR Assistant", role: "ivr" },
-  { label: "Marketing Outreach", role: "marketing" },
-  { label: "Outbound Sales", role: "sales" },
-  { label: "Call Receptionist", role: "receptionist" },
-  { label: "Hospital Assistant", role: "vasan" },
-];
-
 export default function LandingPage() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [theme, setThemeState] = useState<"dark" | "light">("dark");
   const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
   const [preselectedRole, setPreselectedRole] = useState<string | null>(null);
-  const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
   const [currentView, setCurrentView] = useState<"home" | "privacy">("home");
-  const productDropdownRef = useRef<HTMLDivElement>(null);
+  const [roboGreetPhase, setRoboGreetPhase] = useState<"hidden" | "typing" | "greeted">("hidden");
+  const [roboSpeaking, setRoboSpeaking] = useState(false);
+  const roboAudioRef = useRef<HTMLAudioElement | null>(null);
+  const isDemoModalOpenRef = useRef(false);
+
+  useEffect(() => {
+    isDemoModalOpenRef.current = isDemoModalOpen;
+    if (isDemoModalOpen && roboAudioRef.current) {
+      roboAudioRef.current.pause();
+      roboAudioRef.current.currentTime = 0;
+      setRoboSpeaking(false);
+    }
+  }, [isDemoModalOpen]);
+
+  const playRoboGreeting = (force = false) => {
+    try {
+      if (!force && isDemoModalOpenRef.current) return;
+      if (!roboAudioRef.current) {
+        const audio = new Audio("/robo-hi.wav");
+        audio.preload = "auto";
+        audio.volume = 0.9;
+        audio.onplay = () => setRoboSpeaking(true);
+        audio.onended = () => setRoboSpeaking(false);
+        audio.onpause = () => setRoboSpeaking(false);
+        roboAudioRef.current = audio;
+      }
+      roboAudioRef.current.currentTime = 0;
+      const p = roboAudioRef.current.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => {
+          try {
+            sessionStorage.setItem("jj_robo_hi_played", "1");
+          } catch {}
+        }).catch(() => {
+          setRoboSpeaking(false);
+        });
+      }
+    } catch {
+      setRoboSpeaking(false);
+    }
+  };
+
+  useEffect(() => {
+    const t1 = window.setTimeout(() => setRoboGreetPhase("typing"), 380);
+    const t2 = window.setTimeout(() => {
+      setRoboGreetPhase("greeted");
+      let alreadyPlayed = false;
+      try {
+        alreadyPlayed = sessionStorage.getItem("jj_robo_hi_played") === "1";
+      } catch {}
+      if (!alreadyPlayed) {
+        const audio = new Audio("/robo-hi.wav");
+        audio.preload = "auto";
+        audio.volume = 0.9;
+        audio.onplay = () => setRoboSpeaking(true);
+        audio.onended = () => setRoboSpeaking(false);
+        audio.onpause = () => setRoboSpeaking(false);
+        roboAudioRef.current = audio;
+
+        const attachFirstGestureFallback = () => {
+          const triggerOnce = () => {
+            window.removeEventListener("pointerdown", triggerOnce);
+            window.removeEventListener("keydown", triggerOnce);
+            let done = false;
+            try {
+              done = sessionStorage.getItem("jj_robo_hi_played") === "1";
+            } catch {}
+            if (!done && !isDemoModalOpenRef.current) {
+              playRoboGreeting(false);
+            }
+          };
+          window.addEventListener("pointerdown", triggerOnce, { once: true, passive: true });
+          window.addEventListener("keydown", triggerOnce, { once: true, passive: true });
+        };
+
+        audio
+          .play()
+          .then(() => {
+            try {
+              sessionStorage.setItem("jj_robo_hi_played", "1");
+            } catch {}
+          })
+          .catch(() => {
+            setRoboSpeaking(false);
+            attachFirstGestureFallback();
+          });
+      }
+    }, 950);
+
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -172,20 +252,11 @@ export default function LandingPage() {
     persistGlobalTheme(next);
   };
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        productDropdownRef.current &&
-        !productDropdownRef.current.contains(event.target as Node)
-      ) {
-        setIsProductDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
   const openDemo = (role?: string | null) => {
+    if (roboAudioRef.current) {
+      roboAudioRef.current.pause();
+      setRoboSpeaking(false);
+    }
     setPreselectedRole(role ?? null);
     setIsDemoModalOpen(true);
   };
@@ -317,52 +388,6 @@ export default function LandingPage() {
 
           {/* Desktop & Large Tablet Nav */}
           <div className="hidden lg:flex items-center gap-5">
-            <div ref={productDropdownRef} className="relative">
-              <button
-                type="button"
-                onClick={() => setIsProductDropdownOpen(!isProductDropdownOpen)}
-                className="flex items-center gap-1 min-h-[38px] px-2 text-sm font-medium transition-colors cursor-pointer touch-manipulation"
-                style={{ color: "var(--jj-muted)" }}
-                aria-haspopup="true"
-                aria-expanded={isProductDropdownOpen}
-              >
-                <span>PRODUCTS</span>
-                <ChevronDownIcon
-                  className={`w-4 h-4 transition-transform duration-200 ${
-                    isProductDropdownOpen ? "rotate-180" : ""
-                  }`}
-                />
-              </button>
-              {isProductDropdownOpen && (
-                <div
-                  className="absolute top-full right-0 mt-2 w-64 rounded-xl border shadow-2xl p-1.5 z-50 backdrop-blur-xl"
-                  style={{
-                    backgroundColor: "var(--jj-primary)",
-                    borderColor: "var(--jj-border)",
-                    WebkitBackdropFilter: "blur(16px)",
-                  }}
-                >
-                  <ul className="text-sm space-y-0.5">
-                    {PRODUCT_ROLES.map((item) => (
-                      <li key={item.role}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsProductDropdownOpen(false);
-                            openDemo(item.role);
-                          }}
-                          className="w-full text-left px-3.5 py-2.5 rounded-lg hover:bg-teal-400/15 transition-colors cursor-pointer touch-manipulation"
-                          style={{ color: "var(--jj-text)" }}
-                        >
-                          {item.label}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-
             <Link
               href="/overview"
               className="flex items-center gap-1.5 min-h-[38px] px-3.5 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase border transition-all duration-200 hover:-translate-y-px touch-manipulation"
@@ -457,26 +482,6 @@ export default function LandingPage() {
               <LayoutDashboardIcon className="w-4 h-4 text-teal-400" />
               <span>Open Admin Dashboard</span>
             </Link>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {PRODUCT_ROLES.map((item) => (
-                <button
-                  key={item.role}
-                  type="button"
-                  onClick={() => {
-                    setIsMobileMenuOpen(false);
-                    openDemo(item.role);
-                  }}
-                  className="min-h-[42px] text-left text-xs font-medium px-3 py-2 rounded-xl border truncate active:scale-95 transition-transform touch-manipulation"
-                  style={{
-                    backgroundColor: "var(--jj-surface)",
-                    borderColor: "var(--jj-border)",
-                    color: "var(--jj-text)",
-                  }}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
           </div>
         )}
       </header>
@@ -599,23 +604,99 @@ export default function LandingPage() {
                 </div>
               </div>
 
-              {/* 3D Animated Robot — Touch-Scroll Safe on iPhone/iPad/Android, Interactive on Desktop */}
+              {/* 3D Animated Robot — Realistic Entrance Voice & Interactive Greeting */}
               <div
-                className={`lg:col-span-5 relative h-[250px] sm:h-[340px] lg:h-[540px] w-full flex items-center justify-center order-2 pointer-events-none lg:pointer-events-auto ${landingStyles.splineStage}`}
+                className={`lg:col-span-5 relative h-[270px] sm:h-[360px] lg:h-[540px] w-full flex items-center justify-center order-2 ${landingStyles.splineStage}`}
               >
                 <div className={`relative w-full h-full ${landingStyles.splineStage}`}>
                   <div
                     className={`absolute -inset-4 rounded-full blur-3xl pointer-events-none ${landingStyles.heroGlow}`}
                     style={{ backgroundColor: "var(--jj-accent-soft)" }}
                   />
-                  <div className={`relative w-full h-full z-10 ${landingStyles.splineStage}`}>
+
+                  {/* Realistic Floating Greeting Bubble synced with 3D Robot Wave */}
+                  {roboGreetPhase !== "hidden" && (
+                    <div
+                      className="absolute top-1 right-2 sm:top-4 sm:right-4 lg:top-8 lg:right-2 z-20 pointer-events-auto transition-all duration-500 ease-out animate-bounce"
+                      style={{ animationDuration: "3.4s" }}
+                    >
+                      <div
+                        className="relative flex items-center gap-2.5 px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-2xl rounded-bl-sm border shadow-[0_14px_34px_rgba(15,23,42,0.55)] backdrop-blur-xl max-w-[245px] sm:max-w-[280px]"
+                        style={{
+                          backgroundColor:
+                            theme === "dark"
+                              ? "rgba(15, 29, 51, 0.88)"
+                              : "rgba(255, 255, 255, 0.94)",
+                          borderColor: roboSpeaking
+                            ? "rgba(45, 212, 191, 0.75)"
+                            : "var(--jj-border)",
+                        }}
+                      >
+                        {roboGreetPhase === "typing" ? (
+                          <div className="flex items-center gap-1.5 px-2 py-1">
+                            <span className="h-2 w-2 rounded-full bg-teal-400 animate-ping" />
+                            <span className="h-2 w-2 rounded-full bg-teal-300 animate-pulse" />
+                            <span className="h-2 w-2 rounded-full bg-teal-400 animate-pulse" />
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                playRoboGreeting(true);
+                              }}
+                              title="Hear Jill-Jill say Hi!"
+                              aria-label="Hear Jill-Jill say Hi"
+                              className={`h-8 w-8 rounded-full flex items-center justify-center flex-shrink-0 transition-transform active:scale-90 cursor-pointer ${
+                                roboSpeaking
+                                  ? "bg-teal-400 text-teal-950 shadow-[0_0_16px_rgba(45,212,191,0.7)]"
+                                  : "bg-teal-400/15 text-teal-300 hover:bg-teal-400/25"
+                              }`}
+                            >
+                              {roboSpeaking ? (
+                                <span className="flex items-end gap-0.5 h-3.5">
+                                  <span className="w-0.5 h-2 bg-teal-950 animate-pulse rounded-full" />
+                                  <span className="w-0.5 h-3.5 bg-teal-950 animate-bounce rounded-full" />
+                                  <span className="w-0.5 h-2.5 bg-teal-950 animate-pulse rounded-full" />
+                                </span>
+                              ) : (
+                                <span className="text-sm leading-none">👋</span>
+                              )}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => openDemo()}
+                              className="text-left min-w-0 cursor-pointer group"
+                            >
+                              <p
+                                className="text-xs sm:text-[13px] font-extrabold leading-snug"
+                                style={{ color: "var(--jj-text)" }}
+                              >
+                                Hi! Welcome to Jill-Jill!
+                              </p>
+                              <p
+                                className="text-[11px] font-semibold mt-0.5 group-hover:underline"
+                                style={{ color: "var(--jj-accent)" }}
+                              >
+                                {roboSpeaking ? "Speaking live..." : "Tap to talk with me →"}
+                              </p>
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className={`relative w-full h-full z-10 pointer-events-none lg:pointer-events-auto ${landingStyles.splineStage}`}>
                     <iframe
                       src="https://my.spline.design/genkubgreetingrobot-7FQGM1zpHhOXPrzWz2zcIDUe/"
                       frameBorder="0"
                       width="100%"
                       height="100%"
                       title="Jill-Jill Interactive 3D Voice Agent"
-                      loading="lazy"
+                      loading="eager"
                       className={landingStyles.splineIframe}
                       style={{ colorScheme: "normal", background: "transparent" }}
                     />

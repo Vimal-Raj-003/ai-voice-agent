@@ -802,6 +802,25 @@ class AppointmentTools(llm.ToolContext):
                     msg += " No new email was queued; confirm the latest recipient and cancellation status."
 
 
+            # Non-blocking Twenty CRM + Zulip instant notification
+            try:
+                from crm_zulip_sync import fire_and_forget, sync_voice_booking_to_crm_and_zulip
+                meeting_link = res.get("meeting_url") if calcom_enabled() and isinstance(locals().get("res"), dict) else (f"https://app.cal.com/video/{calcom_uid}" if calcom_uid else None)
+                fire_and_forget(
+                    sync_voice_booking_to_crm_and_zulip(
+                        booking_id=str(booking_id),
+                        caller_name=name,
+                        phone=phone,
+                        email=final_email or None,
+                        date=date,
+                        time_str=time,
+                        service=service,
+                        meeting_url=meeting_link,
+                    )
+                )
+            except Exception:
+                pass
+
             return BookingReceipt(msg, booking_id)
         except Exception as exc:
             self.work.uncertain()

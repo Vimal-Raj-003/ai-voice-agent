@@ -1,6 +1,7 @@
 import { voiceService } from "@/lib/voice-service";
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrg } from "@/lib/org";
+import { syncDemoLeadEvent } from "@/lib/crm-zulip-sync";
 
 const rateMap = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
@@ -252,6 +253,18 @@ export async function POST(request: Request) {
         });
       }
 
+      void syncDemoLeadEvent({
+        eventType: "DEMO_PORTAL_OPENED",
+        fullName: lead?.fullName?.trim() || "Demo Visitor",
+        phone: canonicalPhone,
+        email: cleanEmail,
+        businessName: lead?.businessName?.trim() || undefined,
+        businessType: lead?.businessType?.trim() || undefined,
+        description: lead?.description?.trim() || undefined,
+        sessionNumber: nextAccess,
+        maxSessions: MAX_DEMO_SESSIONS,
+      });
+
       return Response.json(
         {
           success: true,
@@ -332,6 +345,19 @@ export async function POST(request: Request) {
     };
 
     const tokenData = await voiceService.demoToken(assistant.id, org.id, leadContext);
+    void syncDemoLeadEvent({
+      eventType: "DEMO_CALL_STARTED",
+      fullName: leadContext.fullName || "Demo Visitor",
+      phone: canonicalPhone,
+      email: cleanEmail,
+      businessName: leadContext.businessName,
+      businessType: leadContext.businessType,
+      description: leadContext.description,
+      assistantName: assistant.name,
+      sessionNumber: Math.max(effectiveAccess, nextCalls),
+      maxSessions: MAX_DEMO_SESSIONS,
+      roomName: tokenData.room,
+    });
     return Response.json(
       {
         token: tokenData.token,

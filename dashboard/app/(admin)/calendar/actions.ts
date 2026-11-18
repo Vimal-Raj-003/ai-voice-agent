@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/require-role";
 import { calcomCancel, calcomCreate, calcomStatus } from "@/lib/calcom";
 import { reminderAtUtc, remindersEnabled } from "@/lib/reminders";
+import { syncAppointmentBookedEvent } from "@/lib/crm-zulip-sync";
 import type { Prisma } from "@prisma/client";
 
 // Server actions for manual calendar management — admin can create a
@@ -224,6 +225,18 @@ export async function createBooking(formData: FormData): Promise<BookingResult> 
     }
     return { ok: false, error: msg };
   }
+
+  void syncAppointmentBookedEvent({
+    bookingId,
+    name: parsed.name,
+    phone: parsed.phone,
+    email: parsed.email,
+    date: parsed.date,
+    time: parsed.time,
+    service: parsed.service,
+    meetingUrl,
+    source: "DASHBOARD_CALENDAR",
+  });
 
   revalidatePath("/calendar");
   return { ok: true, bookingId, meetingUrl, calcomUid };

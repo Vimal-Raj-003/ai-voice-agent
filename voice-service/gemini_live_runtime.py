@@ -674,6 +674,7 @@ async def run_browser_test(ctx, selected, profile, log):
     import config
     journal = Journal(selected.room)
     runtime = recorder = None
+    demo_lead: dict = {}
     failed = False
     stopped = asyncio.Event()
     def emit(event, **fields):
@@ -825,6 +826,32 @@ async def run_browser_test(ctx, selected, profile, log):
                 emit('demo_artifacts_saved', status='ready')
             except Exception as exc:
                 emit('demo_artifacts_save_failed',error_type=type(exc).__name__)
+        try:
+            from crm_zulip_sync import sync_call_to_crm_and_zulip
+            demo_items = list(runtime.transcript_items.values()) if runtime is not None else []
+            transcript_excerpt = " | ".join(
+                f"{it.get('role','speaker')}: {it.get('content','')}" for it in demo_items[-6:] if it.get('content')
+            )
+            call_status = 'FAILED' if (runtime is None or failed) else 'COMPLETED'
+            call_dur = max(0, int(finished_at - (runtime.started_at or finished_at))) if runtime is not None else 0
+            async with asyncio.timeout(5):
+                await sync_call_to_crm_and_zulip(
+                    call_id=None,
+                    room_name=ctx.room.name,
+                    call_kind='DEMO',
+                    status=call_status,
+                    caller_name=demo_lead.get('lead_name') or 'Demo Caller',
+                    phone=demo_lead.get('phone'),
+                    email=demo_lead.get('email'),
+                    business_name=demo_lead.get('business_name'),
+                    assistant_name=str(profile.get('name') or 'AI Voice Agent'),
+                    duration_seconds=duration or call_dur,
+                    recording_ready=bool(path),
+                    summary_or_transcript=transcript_excerpt,
+                    was_booked=bool(runtime and runtime.state.tool_state.get('booking')),
+                )
+        except Exception:
+            pass
         emit('test_finished', actions='sandbox_only', meaningful_audio_latency_ms=None)
         from observability import flush_logs
         await flush_logs(timeout=3)
